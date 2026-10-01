@@ -167,7 +167,7 @@ class _RemoveAllBar extends StatelessWidget {
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: PdaScale.gutter(context),
-        vertical: PdaScale.gutter(context) * 0.5,
+        vertical: PdaScale.gutter(context) * 0.6,
       ),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(
@@ -176,71 +176,37 @@ class _RemoveAllBar extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: theme.colorScheme.outlineVariant),
       ),
-      child: _Responsive(
-        // The label and a full-width button stack on a handheld; only a line
-        // terminal has the width to put them on one row.
-        stacked: PdaScale.isCompact(context),
+      child: Row(
         children: [
-          _Flexible(
-            stacked: PdaScale.isCompact(context),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Varyant Kasa Yönetimi '
-                  '(${controller.context?.activeVariantCode ?? 'Aktif Varyant'})',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: PdaScale.body(context),
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (!gate.canMutate)
-                  Text(
-                    gate.message ?? 'İşlem kilitli',
-                    style: TextStyle(
-                      fontSize: PdaScale.caption(context),
-                      color: theme.colorScheme.error,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-              ],
-            ),
+          Icon(
+            Icons.inventory_2_outlined,
+            size: 20,
+            color: theme.colorScheme.primary,
           ),
-          SizedBox(
-            width: PdaScale.gutter(context),
-            height: PdaScale.gutter(context) * 0.5,
-          ),
-          OutlinedButton.icon(
-            key: const Key('remove-all-containers'),
-            style: OutlinedButton.styleFrom(
-              minimumSize: Size(0, PdaScale.secondaryActionHeight(context)),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(PdaScale.actionRadius),
-              ),
-              padding: EdgeInsets.symmetric(
-                horizontal: PdaScale.gutter(context) * 1.5,
-              ),
-              textStyle: TextStyle(
-                fontSize: PdaScale.secondaryAction(context),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Kasa Pozisyonları (${controller.context?.activeVariantCode ?? 'Aktif Varyant'})',
+              style: TextStyle(
                 fontWeight: FontWeight.w700,
+                fontSize: PdaScale.body(context),
+                color: const Color(0xFF0F172A),
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-            onPressed: gate.canMutate && !controller.removeAllSubmitting
-                ? controller.removeAllContainers
-                : null,
-            icon: controller.removeAllSubmitting
-                ? const SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2.4),
-                  )
-                : const Icon(Icons.clear_all),
-            label: const Text('Tüm Kasaları Kaldır'),
           ),
+          if (!gate.canMutate)
+            Text(
+              gate.message ?? 'İşlem kilitli',
+              style: TextStyle(
+                fontSize: PdaScale.caption(context),
+                color: theme.colorScheme.error,
+                fontWeight: FontWeight.w600,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
         ],
       ),
     );

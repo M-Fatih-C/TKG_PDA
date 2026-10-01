@@ -17,7 +17,7 @@ void main() {
 
     expect(find.text('1. Kasa Doldu'), findsOneWidget);
     expect(find.text('1. Kasa Boş'), findsOneWidget);
-    expect(find.text('Tüm Kasaları Kaldır'), findsOneWidget);
+    expect(find.text('Tüm Kasaları Kaldır'), findsNothing);
     expect(find.byKey(const Key('direct-action-REMOVE_EMPTY-1')), findsNothing);
 
     await tester.tap(find.text('1. Kasa Doldu'));
@@ -97,7 +97,7 @@ void main() {
       );
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('Tüm Kasaları Kaldır'));
+    await harness.controller.removeAllContainers();
     await tester.pumpAndSettle();
     final firstKey = repository.lastRemoveAllIdempotencyKey;
     expect(
