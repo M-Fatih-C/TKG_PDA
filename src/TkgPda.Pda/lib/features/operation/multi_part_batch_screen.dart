@@ -245,7 +245,7 @@ class _AddPartsCard extends StatelessWidget {
             if (alt.isNotEmpty) ...[
               const SizedBox(height: 14),
               const Text(
-                'Alternatif Parçalar',
+                'Alt Parçalar',
                 style: TextStyle(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),

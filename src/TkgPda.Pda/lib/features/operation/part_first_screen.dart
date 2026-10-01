@@ -202,7 +202,7 @@ class _PartFirstSelectorState extends State<PartFirstSelector> {
 }
 
 /// A consistent, visually subordinate section heading used to keep
-/// "Ana Parçalar" and "Alternatif / İlgili Parçalar" clearly separated.
+/// "Ana Parçalar" and "Alt / İlgili Parçalar" clearly separated.
 class _SectionLabel extends StatelessWidget {
   const _SectionLabel(this.text);
 
@@ -336,7 +336,7 @@ class _EffectivePartCard extends StatelessWidget {
     final requestedPartLabel = usingMain
         ? 'Ana ürün için talep: ${main.partCode}'
         : selectedRelation.length == 1 && selectedRelation.single == 'ALT_PART'
-        ? 'Alternatif parça için talep: ${effective?.partCode ?? ''}'
+        ? 'Alt parça için talep: ${effective?.partCode ?? ''}'
         : selectedRelation.length == 1 && selectedRelation.single == 'RELATED'
         ? 'İlgili parça için talep: ${effective?.partCode ?? ''}'
         : 'Seçilen parça için talep: ${effective?.partCode ?? ''}';
@@ -451,7 +451,7 @@ class _EffectivePartCard extends StatelessWidget {
             ],
             if (hasContextualParts) ...[
               const Divider(height: 18),
-              const _SectionLabel('Alternatif / İlgili Parçalar'),
+              const _SectionLabel('Alt / İlgili Parçalar'),
               const SizedBox(height: 2),
               const Text(
                 'Taşıma talebi için ilgili parçayı seçebilirsiniz.',
@@ -479,7 +479,7 @@ class _EffectivePartCard extends StatelessWidget {
             if (alt.isNotEmpty) ...[
               const SizedBox(height: 14),
               const Text(
-                'Alternatif Parçalar',
+                'Alt Parçalar',
                 style: TextStyle(
                   fontWeight: FontWeight.w800,
                   color: Color(0xFFB45309),
