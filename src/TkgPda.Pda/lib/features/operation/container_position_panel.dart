@@ -435,13 +435,14 @@ class _BusinessActionButton extends StatelessWidget {
                       ? () => controller.submitContainerAction(position, action)
                       : null,
                   style: ElevatedButton.styleFrom(
-                    // The surrounding Expanded sets the real size; the theme's
-                    // 120x56 floor would otherwise force an overflow in the narrow
-                    // side-by-side arrangement.
                     minimumSize: Size.zero,
-                    // Stated explicitly: the Material 3 default is a stadium,
-                    // which turns into a giant capsule once the button is as
-                    // tall as a terminal card.
+                    backgroundColor: enabled
+                        ? (action == 'FULL'
+                            ? const Color(0xFFC2410C)
+                            : const Color(0xFF0B4F6C))
+                        : null,
+                    foregroundColor: enabled ? Colors.white : null,
+                    elevation: enabled ? 2 : 0,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(
                         PdaScale.actionRadius,
@@ -449,17 +450,16 @@ class _BusinessActionButton extends StatelessWidget {
                     ),
                     padding: EdgeInsets.symmetric(
                       horizontal: PdaScale.gutter(context) * 0.75,
+                      vertical: 6,
                     ),
                     textStyle: TextStyle(
                       fontSize: enabled
                           ? PdaScale.primaryAction(context)
                           : PdaScale.secondaryAction(context),
-                      fontWeight: enabled ? FontWeight.w700 : FontWeight.w600,
+                      fontWeight: enabled ? FontWeight.w800 : FontWeight.w600,
                     ),
                   ),
                   child: submitting
-                      // Which container is in flight stays readable from the card
-                      // header above, so the button reports only the state.
                       ? Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -493,7 +493,8 @@ class _BusinessActionButton extends StatelessWidget {
                             Flexible(
                               child: Text(
                                 label,
-                                maxLines: 1,
+                                maxLines: 2,
+                                textAlign: TextAlign.center,
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
@@ -507,11 +508,9 @@ class _BusinessActionButton extends StatelessWidget {
                 padding: EdgeInsets.only(top: PdaScale.gutter(context) * 0.25),
                 child: Text(
                   disabledReason,
-                  maxLines: 1,
+                  maxLines: 2,
                   textAlign: TextAlign.center,
                   overflow: TextOverflow.ellipsis,
-                  // A line terminal has no hover, so a tooltip alone is not an
-                  // accessible explanation — the reason is printed as well.
                   style: TextStyle(
                     fontSize: PdaScale.caption(context),
                     color: theme.colorScheme.error,

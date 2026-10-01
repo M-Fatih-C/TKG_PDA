@@ -105,17 +105,40 @@ class _HomeTile extends StatelessWidget {
     final enabled = onPressed != null;
     return Material(
       key: actionKey,
-      color: color.withValues(alpha: enabled ? 0.14 : 0.07),
-      borderRadius: BorderRadius.circular(PdaScale.actionRadius),
+      color: Colors.white,
+      elevation: enabled ? 3 : 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(
+          color: enabled ? color.withValues(alpha: 0.4) : const Color(0xFFCBD5E1),
+          width: enabled ? 2 : 1,
+        ),
+      ),
       child: InkWell(
         onTap: onPressed,
-        borderRadius: BorderRadius.circular(PdaScale.actionRadius),
+        borderRadius: BorderRadius.circular(18),
         child: Padding(
-          padding: EdgeInsets.all(PdaScale.cardPadding(context)),
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
           child: Row(
             children: [
-              Icon(icon, size: 48, color: enabled ? color : Colors.grey),
-              SizedBox(width: PdaScale.gutter(context)),
+              Container(
+                width: 76,
+                height: 76,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: enabled ? 0.12 : 0.06),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(
+                    color: color.withValues(alpha: enabled ? 0.3 : 0.15),
+                    width: 1.5,
+                  ),
+                ),
+                child: Icon(
+                  icon,
+                  size: 42,
+                  color: enabled ? color : Colors.grey.shade400,
+                ),
+              ),
+              const SizedBox(width: 24),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -124,19 +147,40 @@ class _HomeTile extends StatelessWidget {
                     Text(
                       title,
                       style: TextStyle(
-                        fontSize: PdaScale.title(context),
-                        fontWeight: FontWeight.w700,
+                        fontSize: PdaScale.title(context) * 1.08,
+                        fontWeight: FontWeight.w900,
+                        color: const Color(0xFF0F172A),
+                        letterSpacing: -0.5,
                       ),
                     ),
-                    SizedBox(height: PdaScale.gutter(context) / 3),
+                    const SizedBox(height: 6),
                     Text(
                       description,
-                      style: TextStyle(fontSize: PdaScale.body(context)),
+                      style: TextStyle(
+                        fontSize: PdaScale.body(context),
+                        color: const Color(0xFF475569),
+                        fontWeight: FontWeight.w500,
+                        height: 1.35,
+                      ),
                     ),
                   ],
                 ),
               ),
-              if (enabled) const Icon(Icons.chevron_right),
+              const SizedBox(width: 16),
+              if (enabled)
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.arrow_forward_rounded,
+                    color: color,
+                    size: 26,
+                  ),
+                ),
             ],
           ),
         ),

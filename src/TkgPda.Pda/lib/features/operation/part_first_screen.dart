@@ -180,7 +180,7 @@ class _PartFirstSelectorState extends State<PartFirstSelector> {
             ),
           ],
           if (controller.selectedMainPart case final main?) ...[
-            const SizedBox(height: 22),
+            const SizedBox(height: 10),
             _EffectivePartCard(main: main, controller: controller),
           ],
           if (controller.selectedEffectivePart != null) ...[
@@ -262,12 +262,13 @@ class _MainPartChip extends StatelessWidget {
       key: Key('main-part-${option.partId}'),
       selected: selected,
       backgroundColor: Colors.white,
-      selectedColor: const Color(0xFFFDE68A),
+      selectedColor: const Color(0xFFE0F2FE),
       side: BorderSide(
-        color: selected ? const Color(0xFFB45309) : const Color(0xFFCBD5E1),
+        color: selected ? const Color(0xFF0B4F6C) : const Color(0xFFCBD5E1),
         width: selected ? 2.5 : 1,
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      elevation: selected ? 2 : 0,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       label: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -278,16 +279,17 @@ class _MainPartChip extends StatelessWidget {
             style: TextStyle(
               fontSize: 16,
               fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+              color: selected ? const Color(0xFF0B4F6C) : const Color(0xFF0F172A),
             ),
           ),
           if (description != null && description.isNotEmpty)
             Text(
               description,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
-                color: Color(0xFF475569),
+                color: selected ? const Color(0xFF0369A1) : const Color(0xFF475569),
               ),
             ),
         ],
@@ -331,8 +333,6 @@ class _EffectivePartCard extends StatelessWidget {
         .where((part) => part.partId == effective?.partId)
         .map((part) => part.relationType)
         .toSet();
-    // Unknown/conflicting relationships are not silently reclassified as
-    // alternatives or inferred to be a production bill of materials.
     final requestedPartLabel = usingMain
         ? 'Ana ürün için talep: ${main.partCode}'
         : selectedRelation.length == 1 && selectedRelation.single == 'ALT_PART'
@@ -343,38 +343,97 @@ class _EffectivePartCard extends StatelessWidget {
 
     return Card(
       key: Key('main-part-detail-${main.partId}'),
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: Color(0xFFCBD5E1)),
+      ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Production main-part context is distinct from the requested part.
             Row(
               children: [
-                const Icon(Icons.inventory_2_outlined, size: 20),
-                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0B4F6C).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.inventory_2_outlined,
+                    size: 20,
+                    color: Color(0xFF0B4F6C),
+                  ),
+                ),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: Text(
-                    'Seçili Ana Parça · ${main.partCode}',
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w800,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'SEÇİLİ ANA PARÇA',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                      Text(
+                        main.partCode,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF0F172A),
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 6),
-            Text(
-              requestedPartLabel,
-              key: const Key('effective-part-summary'),
-              style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF475569),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: usingMain
+                    ? const Color(0xFFF1F5F9)
+                    : const Color(0xFFEFF6FF),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: usingMain
+                      ? const Color(0xFFCBD5E1)
+                      : const Color(0xFF93C5FD),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    usingMain ? Icons.check_circle_outline : Icons.alt_route,
+                    size: 16,
+                    color: usingMain ? const Color(0xFF0B4F6C) : const Color(0xFF1D4ED8),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      requestedPartLabel,
+                      key: const Key('effective-part-summary'),
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: usingMain ? const Color(0xFF334155) : const Color(0xFF1E40AF),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
             ),
-            if (!usingMain)
+            if (!usingMain) ...[
+              const SizedBox(height: 4),
               TextButton.icon(
                 key: const Key('request-main-part'),
                 onPressed: !controller.canChangeEffectivePart
@@ -386,24 +445,27 @@ class _EffectivePartCard extends StatelessWidget {
                           isMain: true,
                         ),
                       ),
-                icon: const Icon(Icons.inventory_2_outlined),
-                label: const Text('Ana Ürün İçin Talep'),
+                icon: const Icon(Icons.arrow_back, size: 16),
+                label: const Text('Ana Ürün İçin Talep Oluştur'),
               ),
+            ],
             if (hasContextualParts) ...[
-              const Divider(height: 26),
+              const Divider(height: 18),
               const _SectionLabel('Alternatif / İlgili Parçalar'),
-              const SizedBox(height: 4),
+              const SizedBox(height: 2),
               const Text(
-                'Taşıma talebi oluşturulacak parçayı seçin. '
-                'İlgili parça, ana ürünün alternatifi değildir.',
-                style: TextStyle(fontSize: 13, color: Color(0xFF475569)),
+                'Taşıma talebi için ilgili parçayı seçebilirsiniz.',
+                style: TextStyle(fontSize: 12, color: Color(0xFF475569)),
               ),
             ],
             if (related.isNotEmpty) ...[
               const SizedBox(height: 14),
               const Text(
                 'İlgili Parçalar',
-                style: TextStyle(fontWeight: FontWeight.w800),
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF0369A1),
+                ),
               ),
               const SizedBox(height: 8),
               _RelatedPartChips(
@@ -411,13 +473,17 @@ class _EffectivePartCard extends StatelessWidget {
                 keyPrefix: 'related',
                 effective: effective,
                 controller: controller,
+                isAlternative: false,
               ),
             ],
             if (alt.isNotEmpty) ...[
               const SizedBox(height: 14),
               const Text(
                 'Alternatif Parçalar',
-                style: TextStyle(fontWeight: FontWeight.w800),
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFFB45309),
+                ),
               ),
               const SizedBox(height: 8),
               _RelatedPartChips(
@@ -425,13 +491,14 @@ class _EffectivePartCard extends StatelessWidget {
                 keyPrefix: 'alt',
                 effective: effective,
                 controller: controller,
+                isAlternative: true,
               ),
             ],
             if (other.isNotEmpty) ...[
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
               const Text(
                 'Diğer Parçalar',
-                style: TextStyle(fontWeight: FontWeight.w800),
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
               ),
               const SizedBox(height: 8),
               _RelatedPartChips(
@@ -439,6 +506,7 @@ class _EffectivePartCard extends StatelessWidget {
                 keyPrefix: 'other',
                 effective: effective,
                 controller: controller,
+                isAlternative: false,
               ),
             ],
           ],
@@ -454,12 +522,14 @@ class _RelatedPartChips extends StatelessWidget {
     required this.keyPrefix,
     required this.effective,
     required this.controller,
+    required this.isAlternative,
   });
 
   final List<MachineRelatedPart> parts;
   final String keyPrefix;
   final EffectivePartSelection? effective;
   final AppController controller;
+  final bool isAlternative;
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -478,6 +548,7 @@ class _RelatedPartChips extends StatelessWidget {
                   !effective!.isMain &&
                   effective!.partId == part.partId,
               controller: controller,
+              isAlternative: isAlternative,
             ),
           ),
       ],
@@ -491,45 +562,60 @@ class _RelatedPartChip extends StatelessWidget {
     required this.part,
     required this.selected,
     required this.controller,
+    required this.isAlternative,
   });
 
   final Key chipKey;
   final MachineRelatedPart part;
   final bool selected;
   final AppController controller;
+  final bool isAlternative;
 
   @override
-  Widget build(BuildContext context) => ChoiceChip(
-    key: chipKey,
-    selected: selected,
-    backgroundColor: Colors.white,
-    selectedColor: const Color(0xFFFDE68A),
-    side: BorderSide(
-      color: selected ? const Color(0xFFB45309) : const Color(0xFFCBD5E1),
-      width: selected ? 2.5 : 1,
-    ),
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-    label: Text(
-      part.partCode,
-      overflow: TextOverflow.ellipsis,
-      style: TextStyle(
-        fontSize: 15,
-        fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+  Widget build(BuildContext context) {
+    final selectedBg = isAlternative
+        ? const Color(0xFFFEF3C7)
+        : const Color(0xFFE0F2FE);
+    final selectedBorder = isAlternative
+        ? const Color(0xFFD97706)
+        : const Color(0xFF0284C7);
+    final selectedText = isAlternative
+        ? const Color(0xFF92400E)
+        : const Color(0xFF0369A1);
+
+    return ChoiceChip(
+      key: chipKey,
+      selected: selected,
+      backgroundColor: Colors.white,
+      selectedColor: selectedBg,
+      side: BorderSide(
+        color: selected ? selectedBorder : const Color(0xFFCBD5E1),
+        width: selected ? 2.5 : 1,
       ),
-    ),
-    onSelected: !controller.canChangeEffectivePart
-        ? null
-        : (_) {
-            FocusScope.of(context).unfocus();
-            controller.selectEffectivePart(
-              EffectivePartSelection(
-                partId: part.partId,
-                partCode: part.partCode,
-                isMain: false,
-              ),
-            );
-          },
-  );
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      label: Text(
+        part.partCode,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 15,
+          fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
+          color: selected ? selectedText : const Color(0xFF1E293B),
+        ),
+      ),
+      onSelected: !controller.canChangeEffectivePart
+          ? null
+          : (_) {
+              FocusScope.of(context).unfocus();
+              controller.selectEffectivePart(
+                EffectivePartSelection(
+                  partId: part.partId,
+                  partCode: part.partCode,
+                  isMain: false,
+                ),
+              );
+            },
+    );
+  }
 }
 
 class _CompatibleVariantCard extends StatelessWidget {

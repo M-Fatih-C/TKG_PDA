@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
+import '../../app/design_tokens.dart';
 import '../../data/models/pda_models.dart';
 import '../../shared/widgets/feedback_banners.dart';
 
@@ -337,38 +338,123 @@ class _QueueCard extends StatelessWidget {
         !controller.operatorQueueTerminal &&
         item.requestId != null &&
         item.canCancel;
+    final stateColor = PdaStatusColors.of(item.state);
+    final stateBg = PdaStatusColors.surfaceOf(item.state);
+
     return Card(
-      child: ListTile(
-        leading: CircleAvatar(child: Text('${item.queuePosition}')),
-        title: Text(
-          item.machine,
-          style: const TextStyle(fontWeight: FontWeight.w900),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: Color(0xFFE2E8F0)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
           children: [
-            Text(item.part),
-            Text(
-              '${item.logicalContainerNumber == null ? 'Kasa' : '${item.logicalContainerNumber}. Kasa'} · ${item.businessAction}',
-            ),
-            Text(_requestTime(item.requestedAt)),
-            Text(
-              _etaText(item),
-              style: TextStyle(
-                color: item.etaState == 'AVAILABLE'
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
-                fontWeight: item.etaState == 'AVAILABLE'
-                    ? FontWeight.w600
-                    : null,
+            Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: const Color(0xFF0B4F6C),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '#${item.queuePosition}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 14,
+                ),
               ),
             ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Chip(label: Text(_stateText(item.state))),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        item.machine,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                          color: Color(0xFF0F172A),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          item.part,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14,
+                            color: Color(0xFF334155),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${item.logicalContainerNumber == null ? 'Kasa' : '${item.logicalContainerNumber}. Kasa'} · ${item.businessAction}',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF475569),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text(
+                        _requestTime(item.requestedAt),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                      const Text(
+                        ' · ',
+                        style: TextStyle(color: Color(0xFF94A3B8)),
+                      ),
+                      Expanded(
+                        child: Text(
+                          _etaText(item),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: item.etaState == 'AVAILABLE'
+                                ? const Color(0xFF0B4F6C)
+                                : const Color(0xFF64748B),
+                            fontWeight: item.etaState == 'AVAILABLE'
+                                ? FontWeight.w700
+                                : FontWeight.normal,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Chip(
+              backgroundColor: stateBg,
+              side: BorderSide(color: stateColor.withValues(alpha: 0.3)),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              label: Text(
+                _stateText(item.state),
+                style: TextStyle(
+                  color: stateColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ),
             if (canCancel) ...[
               const SizedBox(width: 4),
               IconButton(
@@ -376,6 +462,7 @@ class _QueueCard extends StatelessWidget {
                 icon: const Icon(
                   Icons.cancel_outlined,
                   color: Colors.redAccent,
+                  size: 24,
                 ),
                 tooltip: 'Görevi İptal Et',
                 onPressed: controller.mutationGate.canMutate

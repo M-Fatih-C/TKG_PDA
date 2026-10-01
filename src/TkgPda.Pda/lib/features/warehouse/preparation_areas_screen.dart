@@ -132,17 +132,31 @@ class _AreaGrid extends StatelessWidget {
     }
 
     final gutter = PdaScale.gutter(context);
-    return GridView.count(
-      key: const Key('preparation-area-grid'),
-      padding: EdgeInsets.all(gutter),
-      crossAxisCount: columns,
-      crossAxisSpacing: gutter,
-      mainAxisSpacing: gutter,
-      childAspectRatio: 1.35,
-      children: [
-        for (final area in coordinator.areas)
-          _AreaCard(coordinator: coordinator, area: area),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        double aspectRatio = 1.35;
+        if (columns == 2 && constraints.maxHeight.isFinite) {
+          final availableHeight = constraints.maxHeight - 3 * gutter;
+          final itemHeight = availableHeight / 2;
+          final availableWidth = constraints.maxWidth - (columns + 1) * gutter;
+          final itemWidth = availableWidth / columns;
+          if (itemHeight > 160) {
+            aspectRatio = itemWidth / itemHeight;
+          }
+        }
+        return GridView.count(
+          key: const Key('preparation-area-grid'),
+          padding: EdgeInsets.all(gutter),
+          crossAxisCount: columns,
+          crossAxisSpacing: gutter,
+          mainAxisSpacing: gutter,
+          childAspectRatio: aspectRatio,
+          children: [
+            for (final area in coordinator.areas)
+              _AreaCard(coordinator: coordinator, area: area),
+          ],
+        );
+      },
     );
   }
 }
@@ -160,11 +174,19 @@ class _AreaCard extends StatelessWidget {
     final busy =
         coordinator.isBusy(area.id) ||
         (pallet != null && coordinator.isBusy(pallet.id));
+    final statusColor = PdaStatusColors.of(state);
 
     return Material(
       key: Key('preparation-area-${area.areaNumber}'),
-      color: PdaStatusColors.surfaceOf(state),
-      borderRadius: BorderRadius.circular(PdaScale.actionRadius),
+      color: Colors.white,
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: statusColor.withValues(alpha: 0.35),
+          width: 1.5,
+        ),
+      ),
       child: Padding(
         padding: EdgeInsets.all(PdaScale.cardPadding(context)),
         child: Column(
@@ -179,7 +201,8 @@ class _AreaCard extends StatelessWidget {
                         : 'Alan ${area.areaNumber}',
                     style: TextStyle(
                       fontSize: PdaScale.title(context),
-                      fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w800,
+                      color: const Color(0xFF0F172A),
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -190,14 +213,20 @@ class _AreaCard extends StatelessWidget {
             SizedBox(height: PdaScale.gutter(context) / 2),
             Expanded(
               child: pallet == null
-                  ? Text(
-                      'Bu alan boş.',
-                      style: TextStyle(fontSize: PdaScale.body(context)),
+                  ? Center(
+                      child: Text(
+                        'Bu alan boş.',
+                        style: TextStyle(
+                          fontSize: PdaScale.body(context),
+                          color: const Color(0xFF64748B),
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
                     )
                   : _PalletSummary(pallet: pallet),
             ),
             if (busy)
-              const LinearProgressIndicator(minHeight: 3)
+              const LinearProgressIndicator(minHeight: 4)
             else
               _AreaActions(coordinator: coordinator, area: area),
           ],
@@ -222,7 +251,8 @@ class _PalletSummary extends StatelessWidget {
   Widget build(BuildContext context) {
     final caption = TextStyle(
       fontSize: PdaScale.caption(context),
-      color: Theme.of(context).colorScheme.onSurfaceVariant,
+      color: const Color(0xFF475569),
+      fontWeight: FontWeight.w500,
     );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -234,14 +264,31 @@ class _PalletSummary extends StatelessWidget {
               : 'Boş kap',
           style: TextStyle(
             fontSize: PdaScale.body(context),
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w800,
+            color: const Color(0xFF0F172A),
           ),
           overflow: TextOverflow.ellipsis,
         ),
+        const SizedBox(height: 4),
+        if (pallet.targetMachineCode case final machine?)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            margin: const EdgeInsets.only(bottom: 2),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0B4F6C).withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              'Hedef: $machine',
+              style: TextStyle(
+                fontSize: PdaScale.caption(context),
+                fontWeight: FontWeight.w700,
+                color: const Color(0xFF0B4F6C),
+              ),
+            ),
+          ),
         if (pallet.containerCode.isNotEmpty)
           Text('Kap: ${pallet.containerCode}', style: caption),
-        if (pallet.targetMachineCode case final machine?)
-          Text('Hedef: $machine', style: caption),
         if (pallet.requestNo case final number?)
           Text('Talep #$number', style: caption),
         if (!pallet.isBoundToRequest)
@@ -275,10 +322,18 @@ class _AreaActions extends StatelessWidget {
         width: double.infinity,
         child: FilledButton.icon(
           key: Key('fill-area-${area.areaNumber}'),
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFF0B4F6C),
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
           onPressed: coordinator.inFlight
               ? null
               : () => _openDemandPicker(context),
-          icon: const Icon(Icons.add),
+          icon: const Icon(Icons.add_circle_outline, size: 20),
           label: const Text('Doldur'),
         ),
       );
@@ -292,12 +347,21 @@ class _AreaActions extends StatelessWidget {
               height: height,
               child: FilledButton.icon(
                 key: Key('ready-area-${area.areaNumber}'),
-                // Only a pallet matched to a demand can be confirmed; unmatched
-                // empty stock waits until a demand is assigned to it.
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF16835D),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
                 onPressed: coordinator.inFlight || !pallet.isBoundToRequest
                     ? null
                     : () => coordinator.markReady(pallet),
-                icon: const Icon(Icons.check),
+                icon: const Icon(Icons.check_circle_outline, size: 20),
                 label: const Text('Hazır'),
               ),
             ),
@@ -307,6 +371,11 @@ class _AreaActions extends StatelessWidget {
             height: height,
             child: OutlinedButton(
               key: Key('withdraw-area-${area.areaNumber}'),
+              style: OutlinedButton.styleFrom(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
               onPressed: coordinator.inFlight
                   ? null
                   : () => coordinator.release(pallet, 'WITHDRAWN'),
@@ -324,12 +393,21 @@ class _AreaActions extends StatelessWidget {
             height: height,
             child: FilledButton.icon(
               key: Key('collected-area-${area.areaNumber}'),
-              // The operator states that the robot physically took it. The
-              // server never frees an area because a request changed status.
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF2F6FED),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                textStyle: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
               onPressed: coordinator.inFlight
                   ? null
                   : () => coordinator.release(pallet, 'COLLECTED'),
-              icon: const Icon(Icons.local_shipping_outlined),
+              icon: const Icon(Icons.local_shipping_outlined, size: 20),
               label: const Text('Robot Aldı'),
             ),
           ),
@@ -339,6 +417,11 @@ class _AreaActions extends StatelessWidget {
           height: height,
           child: OutlinedButton(
             key: Key('withdraw-ready-area-${area.areaNumber}'),
+            style: OutlinedButton.styleFrom(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
             onPressed: coordinator.inFlight
                 ? null
                 : () => coordinator.release(pallet, 'WITHDRAWN'),
@@ -509,29 +592,75 @@ class _DemandTile extends StatelessWidget {
   final WarehouseDemand demand;
 
   @override
-  Widget build(BuildContext context) => ListTile(
-    key: Key('demand-${demand.requestNo}'),
-    dense: true,
-    title: Text(
-      demand.partCode ?? 'Parça bilinmiyor',
-      style: TextStyle(
-        fontSize: PdaScale.body(context),
-        fontWeight: FontWeight.w600,
-      ),
-      overflow: TextOverflow.ellipsis,
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: const Color(0xFFE2E8F0)),
     ),
-    subtitle: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text('${demand.machineCode} · Talep #${demand.requestNo}'),
-        Text(_waitedLabel(demand.requestedAt)),
-        if (demand.claimedByAreaNumber case final number?)
+    child: ListTile(
+      key: Key('demand-${demand.requestNo}'),
+      dense: true,
+      title: Text(
+        demand.partCode ?? 'Parça bilinmiyor',
+        style: TextStyle(
+          fontSize: PdaScale.body(context),
+          fontWeight: FontWeight.w800,
+          color: const Color(0xFF0F172A),
+        ),
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 2),
           Text(
-            'Alan $number hazırlıyor',
-            style: TextStyle(color: PdaStatusColors.running),
+            '${demand.machineCode} · Talep #${demand.requestNo}',
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF475569),
+            ),
           ),
-      ],
+          const SizedBox(height: 2),
+          Text(
+            _waitedLabel(demand.requestedAt),
+            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+          ),
+          if (demand.claimedByAreaNumber case final number?) ...[
+            const SizedBox(height: 2),
+            Text(
+              'Alan $number hazırlıyor',
+              style: const TextStyle(
+                color: Color(0xFF2F6FED),
+                fontWeight: FontWeight.w700,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ],
+      ),
+      trailing: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: demand.needsMaterial
+              ? const Color(0xFFC2410C).withValues(alpha: 0.1)
+              : const Color(0xFF0B4F6C).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(
+          demand.needsMaterial ? 'Dolu' : 'Boş',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: demand.needsMaterial
+                ? const Color(0xFFC2410C)
+                : const Color(0xFF0B4F6C),
+          ),
+        ),
+      ),
     ),
   );
 }
@@ -548,19 +677,32 @@ class _StatusChip extends StatelessWidget {
       'PLACED' => 'Hazırlanıyor',
       _ => 'Boş',
     };
+    final color = PdaStatusColors.of(state);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
-        color: PdaStatusColors.of(state),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
       ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: PdaScale.caption(context),
-          fontWeight: FontWeight.w600,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: PdaScale.caption(context),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
       ),
     );
   }
