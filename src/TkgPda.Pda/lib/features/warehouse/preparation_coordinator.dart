@@ -8,6 +8,8 @@ import '../../core/errors/api_problem.dart';
 import '../../data/models/preparation_area.dart';
 import '../../data/repositories/pda_repository.dart';
 
+import 'warehouse_notification_coordinator.dart';
+
 /// Server-owned state for the four shared preparation areas.
 ///
 /// Every decision stays on the server: this holds what the last read reported
@@ -15,11 +17,15 @@ import '../../data/repositories/pda_repository.dart';
 /// showing. It never marks an area free on its own, never infers that a robot
 /// collected a pallet, and never fills in a timestamp the server omitted.
 class PreparationCoordinator extends ChangeNotifier {
-  PreparationCoordinator(this.repository, {Uuid? uuid})
-    : _uuid = uuid ?? const Uuid();
+  PreparationCoordinator(
+    this.repository, {
+    Uuid? uuid,
+    this.notificationCoordinator,
+  }) : _uuid = uuid ?? const Uuid();
 
   final PdaDataSource repository;
   final Uuid _uuid;
+  final WarehouseNotificationCoordinator? notificationCoordinator;
 
   /// The tablet polls; the customer asked for 5-10 seconds.
   static const pollInterval = Duration(seconds: 6);
@@ -29,6 +35,7 @@ class PreparationCoordinator extends ChangeNotifier {
   bool loading = false;
   bool inFlight = false;
   String? error;
+  DateTime? lastSuccessfulRefresh;
 
   /// Demands that appeared since the operator last looked. Drives the alert,
   /// and is cleared only by an explicit acknowledgement so a poll cannot
@@ -86,15 +93,42 @@ class PreparationCoordinator extends ChangeNotifier {
         final known = demands.map((demand) => demand.requestId).toSet();
         final arrived = loadedDemands
             .where((demand) => !known.contains(demand.requestId))
-            .map((demand) => demand.requestId);
+            .toList(growable: false);
         if (arrived.isNotEmpty) {
-          unseenDemandIds = {...unseenDemandIds, ...arrived};
-          _alert(SystemSoundType.alert);
+          unseenDemandIds = {
+            ...unseenDemandIds,
+            ...arrived.map((demand) => demand.requestId),
+          };
+          if (notificationCoordinator != null) {
+            for (final demand in arrived) {
+              notificationCoordinator!.notifyDemand(
+                requestId: demand.requestId,
+                machineCode: demand.machineCode,
+                partCode: demand.partCode ?? 'Parça',
+                needsMaterial: demand.needsMaterial,
+                requestNo: demand.requestNo,
+              );
+            }
+          } else {
+            _alert(SystemSoundType.alert);
+          }
         }
       }
 
       areas = loadedAreas;
       demands = loadedDemands;
+      lastSuccessfulRefresh = DateTime.now();
+
+      // Report capacity warnings to the notification coordinator if available
+      if (isNearlyFull) {
+        notificationCoordinator?.notifyPreparationCapacity(
+          freeAreaCount: freeAreaCount,
+          totalAreas: areas.length,
+        );
+      } else {
+        notificationCoordinator?.clearPreparationCapacityAlert();
+      }
+
       // Drop acknowledgements for demands that have since gone away, so the
       // badge cannot count work that no longer exists.
       final live = loadedDemands.map((demand) => demand.requestId).toSet();

@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../../app/app_controller.dart';
 import '../../app/design_tokens.dart';
 import '../../data/models/pda_models.dart';
 import '../../shared/widgets/feedback_banners.dart';
+import '../../shared/widgets/pda_empty_state.dart';
 
 class OperatorQueueScreen extends StatelessWidget {
   const OperatorQueueScreen({required this.controller, super.key});
@@ -25,7 +27,31 @@ class OperatorQueueScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Görevler'),
+            Row(
+              children: [
+                const Text('Görevler'),
+                if (controller.lastSuccessfulQueueRefresh case final last?) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    controller.offline || controller.operatorQueueError != null
+                        ? '· Bağlantı kesildi (${DateFormat('HH:mm:ss').format(last)})'
+                        : '· ${DateFormat('HH:mm:ss').format(last)}',
+                    key: controller.offline ||
+                            controller.operatorQueueError != null
+                        ? const Key('queue-stale-warning')
+                        : const Key('queue-last-update'),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.normal,
+                      color: controller.offline ||
+                              controller.operatorQueueError != null
+                          ? const Color(0xFFFCA5A5)
+                          : Colors.white70,
+                    ),
+                  ),
+                ],
+              ],
+            ),
             if (controller.user case final user?)
               Text(
                 '${user.fullName.trim().isNotEmpty ? user.fullName : user.username} (Sicil: ${user.employeeNo?.trim().isNotEmpty == true ? user.employeeNo! : "—"})',
@@ -263,13 +289,16 @@ class _QueueBody extends StatelessWidget {
     final page = controller.operatorQueue;
     final items = page?.items ?? const <OperatorQueueItem>[];
     if (items.isEmpty) {
-      return Center(
-        child: Text(
-          controller.operatorQueueTerminal
-              ? 'Yakın zamanda tamamlanan görev yok.'
-              : 'Aktif görev yok.',
-          key: const Key('operator-queue-empty'),
-        ),
+      final isTerminal = controller.operatorQueueTerminal;
+      return PdaEmptyState(
+        icon: isTerminal ? Icons.history_rounded : Icons.task_outlined,
+        title: isTerminal
+            ? 'Yakın zamanda tamamlanan görev yok.'
+            : 'Aktif görev yok.',
+        subtitle: isTerminal
+            ? 'Tamamlanan veya iptal edilen taşıma görevleri burada listelenecektir.'
+            : 'Makinelerden yeni bir taşıma talebi başlatıldığında görev listesi otomatik olarak güncellenecektir.',
+        textKey: const Key('operator-queue-empty'),
       );
     }
     return Column(

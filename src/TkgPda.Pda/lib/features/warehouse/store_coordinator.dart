@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../../core/errors/api_problem.dart';
 import '../../data/models/store_location.dart';
 import '../../data/repositories/pda_repository.dart';
+import 'warehouse_notification_coordinator.dart';
 
 /// Server-owned state for the finished-goods store.
 ///
@@ -13,9 +14,10 @@ import '../../data/repositories/pda_repository.dart';
 /// that carried it completes. This only reports what the operator physically
 /// took away, and always with the row version the screen was showing.
 class StoreCoordinator extends ChangeNotifier {
-  StoreCoordinator(this.repository);
+  StoreCoordinator(this.repository, {this.notificationCoordinator});
 
   final PdaDataSource repository;
+  final WarehouseNotificationCoordinator? notificationCoordinator;
 
   /// The customer asked for a 5-10 second refresh.
   static const pollInterval = Duration(seconds: 6);
@@ -24,6 +26,7 @@ class StoreCoordinator extends ChangeNotifier {
   bool loading = false;
   bool inFlight = false;
   String? error;
+  DateTime? lastSuccessfulRefresh;
 
   /// Containers that arrived since the operator last looked. Cleared only by an
   /// explicit acknowledgement, so a later poll cannot swallow one.
@@ -92,11 +95,44 @@ class StoreCoordinator extends ChangeNotifier {
         final arrived = live.difference(known);
         if (arrived.isNotEmpty) {
           unseenUnitIds = {...unseenUnitIds, ...arrived};
-          _alert();
+          if (notificationCoordinator != null) {
+            for (final unitId in arrived) {
+              for (final location in loaded) {
+                final unit =
+                    location.units.where((u) => u.id == unitId).firstOrNull;
+                if (unit != null) {
+                  notificationCoordinator!.notifyDelivery(
+                    unitId: unit.id,
+                    locationName: location.displayName,
+                    partCode: unit.partCode ?? 'Parça',
+                    machineCode: unit.machineCode,
+                    requestNo: unit.requestNo,
+                  );
+                  break;
+                }
+              }
+            }
+          } else {
+            _alert();
+          }
         }
       }
 
       locations = loaded;
+      lastSuccessfulRefresh = DateTime.now();
+
+      // Check capacity warning for store locations with defined capacity
+      if (notificationCoordinator != null) {
+        for (final loc in fullLocations) {
+          notificationCoordinator!.notifyStoreCapacity(
+            locationId: loc.id,
+            locationName: loc.displayName,
+            unitCount: loc.unitCount,
+            capacity: loc.capacity ?? loc.unitCount,
+          );
+        }
+      }
+
       unseenUnitIds = unseenUnitIds.intersection(live);
       _primed = true;
       if (!keepError) error = null;

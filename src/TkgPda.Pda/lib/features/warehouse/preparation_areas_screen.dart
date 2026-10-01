@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../app/app_controller.dart' show AppStage;
 import '../../app/design_tokens.dart';
 import '../../data/models/preparation_area.dart';
+import '../../shared/widgets/pda_empty_state.dart';
 import 'preparation_coordinator.dart';
+import 'widgets/warehouse_notification_widgets.dart';
 
 /// The warehouse tablet's semi-finished preparation screen: the four shared
 /// areas on the left, the machines' outstanding demands on the right.
@@ -15,12 +18,14 @@ class PreparationAreasScreen extends StatelessWidget {
   const PreparationAreasScreen({
     required this.coordinator,
     required this.onBack,
+    this.onNavigate,
     this.title = 'Yarı Mamul Hazırlık',
     super.key,
   });
 
   final PreparationCoordinator coordinator;
   final VoidCallback onBack;
+  final void Function(AppStage stage)? onNavigate;
   final String title;
 
   @override
@@ -37,8 +42,39 @@ class PreparationAreasScreen extends StatelessWidget {
             onPressed: coordinator.inFlight ? null : onBack,
             icon: const Icon(Icons.arrow_back),
           ),
-          title: Text(title),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(title),
+              if (coordinator.lastSuccessfulRefresh case final last?)
+                Text(
+                  coordinator.error != null
+                      ? 'Bağlantı kesildi · Son güncelleme: ${DateFormat('HH:mm:ss').format(last)}'
+                      : 'Son güncelleme: ${DateFormat('HH:mm:ss').format(last)}',
+                  key: coordinator.error != null
+                      ? const Key('preparation-stale-warning')
+                      : const Key('preparation-last-update'),
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.normal,
+                    color: coordinator.error != null
+                        ? const Color(0xFFFCA5A5)
+                        : Colors.white70,
+                  ),
+                ),
+            ],
+          ),
           actions: [
+            if (coordinator.notificationCoordinator case final notifCoord?)
+              WarehouseNotificationBell(
+                coordinator: notifCoord,
+                onNavigate: (stage) {
+                  if (stage != AppStage.preparationAreas) {
+                    onNavigate?.call(stage);
+                  }
+                },
+              ),
             IconButton(
               key: const Key('refresh-preparation-areas'),
               tooltip: 'Yenile',
@@ -52,6 +88,15 @@ class PreparationAreasScreen extends StatelessWidget {
         body: SafeArea(
           child: Column(
             children: [
+              if (coordinator.notificationCoordinator case final notifCoord?)
+                WarehouseNotificationBanner(
+                  coordinator: notifCoord,
+                  onNavigate: (stage) {
+                    if (stage != AppStage.preparationAreas) {
+                      onNavigate?.call(stage);
+                    }
+                  },
+                ),
               if (coordinator.error case final message?)
                 _Banner(
                   key: const Key('preparation-error'),
@@ -254,46 +299,55 @@ class _PalletSummary extends StatelessWidget {
       color: const Color(0xFF475569),
       fontWeight: FontWeight.w500,
     );
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          pallet.holdsMaterial
-              ? (pallet.partCode ?? 'Parça bilinmiyor')
-              : 'Boş kap',
-          style: TextStyle(
-            fontSize: PdaScale.body(context),
-            fontWeight: FontWeight.w800,
-            color: const Color(0xFF0F172A),
-          ),
-          overflow: TextOverflow.ellipsis,
-        ),
-        const SizedBox(height: 4),
-        if (pallet.targetMachineCode case final machine?)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            margin: const EdgeInsets.only(bottom: 2),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0B4F6C).withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(6),
+    return SingleChildScrollView(
+      physics: const ClampingScrollPhysics(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            pallet.holdsMaterial
+                ? (pallet.partCode ?? 'Parça bilinmiyor')
+                : 'Boş kap',
+            style: TextStyle(
+              fontSize: PdaScale.body(context),
+              fontWeight: FontWeight.w800,
+              color: const Color(0xFF0F172A),
             ),
-            child: Text(
-              'Hedef: $machine',
-              style: TextStyle(
-                fontSize: PdaScale.caption(context),
-                fontWeight: FontWeight.w700,
-                color: const Color(0xFF0B4F6C),
-              ),
-            ),
+            overflow: TextOverflow.ellipsis,
           ),
-        if (pallet.containerCode.isNotEmpty)
-          Text('Kap: ${pallet.containerCode}', style: caption),
-        if (pallet.requestNo case final number?)
-          Text('Talep #$number', style: caption),
-        if (!pallet.isBoundToRequest)
-          Text('Talebe bağlı değil', style: caption),
-      ],
+          const SizedBox(height: 3),
+          Wrap(
+            spacing: 6,
+            runSpacing: 2,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (pallet.targetMachineCode case final machine?)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0B4F6C).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    'Hedef: $machine',
+                    style: TextStyle(
+                      fontSize: PdaScale.caption(context),
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF0B4F6C),
+                    ),
+                  ),
+                ),
+              if (pallet.containerCode.isNotEmpty)
+                Text('Kap: ${pallet.containerCode}', style: caption),
+              if (pallet.requestNo case final number?)
+                Text('Talep #$number', style: caption),
+              if (!pallet.isBoundToRequest)
+                Text('Talebe bağlı değil', style: caption),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
@@ -565,12 +619,12 @@ class _DemandList extends StatelessWidget {
           ),
           Expanded(
             child: demands.isEmpty
-                ? Center(
-                    key: const Key('demand-list-empty'),
-                    child: Text(
-                      'Bekleyen talep yok.',
-                      style: TextStyle(fontSize: PdaScale.body(context)),
-                    ),
+                ? const PdaEmptyState(
+                    icon: Icons.checklist_rtl_rounded,
+                    title: 'Bekleyen talep yok.',
+                    subtitle:
+                        'Makinelerden yeni bir yarı mamul veya boş kasa hazırlık talebi geldiğinde burada listelenecektir.',
+                    textKey: Key('demand-list-empty'),
                   )
                 : ListView.separated(
                     key: const Key('demand-list'),

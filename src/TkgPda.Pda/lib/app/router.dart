@@ -73,6 +73,11 @@ GoRouter buildRouter(AppController controller) => GoRouter(
       builder: (context, state) => StoreScreen(
         coordinator: controller.store,
         onBack: controller.leaveFinishedGoodsStore,
+        onNavigate: (stage) {
+          if (stage == AppStage.preparationAreas) {
+            controller.enterPreparationAreas();
+          }
+        },
       ),
     ),
     GoRoute(
@@ -80,6 +85,11 @@ GoRouter buildRouter(AppController controller) => GoRouter(
       builder: (context, state) => PreparationAreasScreen(
         coordinator: controller.preparation,
         onBack: controller.leavePreparationAreas,
+        onNavigate: (stage) {
+          if (stage == AppStage.finishedGoodsStore) {
+            controller.enterFinishedGoodsStore();
+          }
+        },
       ),
     ),
   ],

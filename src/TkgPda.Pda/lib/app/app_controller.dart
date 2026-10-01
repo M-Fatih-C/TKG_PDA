@@ -12,6 +12,7 @@ import '../features/transport/submission_coordinator.dart';
 import '../features/operation/production_coordinator.dart';
 import '../features/warehouse/preparation_coordinator.dart';
 import '../features/warehouse/store_coordinator.dart';
+import '../features/warehouse/warehouse_notification_coordinator.dart';
 
 enum AppStage {
   starting,
@@ -78,10 +79,33 @@ class BatchCartItem {
 }
 
 class AppController extends ChangeNotifier {
-  AppController({
+  factory AppController({
     required PdaDataSource repository,
     required DeviceCodeStore deviceCodeStore,
     required SessionMemory session,
+    SubmissionCoordinator? submissionCoordinator,
+    WarehouseNotificationCoordinator? warehouseNotificationCoordinator,
+    bool enablePolling = true,
+    bool enableProductionWorkflow = true,
+  }) {
+    final notifications =
+        warehouseNotificationCoordinator ?? WarehouseNotificationCoordinator();
+    return AppController._(
+      repository: repository,
+      deviceCodeStore: deviceCodeStore,
+      session: session,
+      submissionCoordinator: submissionCoordinator,
+      notifications: notifications,
+      enablePolling: enablePolling,
+      enableProductionWorkflow: enableProductionWorkflow,
+    );
+  }
+
+  AppController._({
+    required PdaDataSource repository,
+    required DeviceCodeStore deviceCodeStore,
+    required SessionMemory session,
+    required WarehouseNotificationCoordinator notifications,
     SubmissionCoordinator? submissionCoordinator,
     bool enablePolling = true,
     bool enableProductionWorkflow = true,
@@ -91,10 +115,18 @@ class AppController extends ChangeNotifier {
        _submission = submissionCoordinator ?? SubmissionCoordinator(),
        _enablePolling = enablePolling,
        _enableProductionWorkflow = enableProductionWorkflow,
+       warehouseNotifications = notifications,
        production = ProductionCoordinator(repository),
-       preparation = PreparationCoordinator(repository),
-       store = StoreCoordinator(repository) {
+       preparation = PreparationCoordinator(
+         repository,
+         notificationCoordinator: notifications,
+       ),
+       store = StoreCoordinator(
+         repository,
+         notificationCoordinator: notifications,
+       ) {
     production.addListener(notifyListeners);
+    warehouseNotifications.addListener(notifyListeners);
   }
 
   final PdaDataSource _repository;
@@ -103,11 +135,15 @@ class AppController extends ChangeNotifier {
   final SubmissionCoordinator _submission;
   final bool _enablePolling;
   final bool _enableProductionWorkflow;
+  final WarehouseNotificationCoordinator warehouseNotifications;
   final ProductionCoordinator production;
   int _machineGeneration = 0;
   String? _restoredProductionId;
   int? _restoringProductionGeneration;
   String? _productionContextError;
+  DateTime? _lastSuccessfulQueueRefresh;
+
+  DateTime? get lastSuccessfulQueueRefresh => _lastSuccessfulQueueRefresh;
 
   bool get usesProductionWorkflow =>
       _enableProductionWorkflow &&
@@ -955,6 +991,8 @@ class AppController extends ChangeNotifier {
     _stage = AppStage.warehouseHome;
     _clearFeedback();
     notifyListeners();
+    preparation.start();
+    store.start();
   }
 
   void enterPreparationAreas() {
@@ -967,7 +1005,6 @@ class AppController extends ChangeNotifier {
 
   void leavePreparationAreas() {
     if (preparation.inFlight) return;
-    preparation.stop();
     _stage = AppStage.warehouseHome;
     _clearFeedback();
     notifyListeners();
@@ -987,7 +1024,6 @@ class AppController extends ChangeNotifier {
 
   void leaveFinishedGoodsStore() {
     if (store.inFlight) return;
-    store.stop();
     _stage = AppStage.warehouseHome;
     _clearFeedback();
     notifyListeners();
@@ -995,6 +1031,8 @@ class AppController extends ChangeNotifier {
 
   void leaveWarehouseHome() {
     if (isMutationInFlight) return;
+    preparation.stop();
+    store.stop();
     _stage = AppStage.machines;
     _clearFeedback();
     notifyListeners();
@@ -1531,6 +1569,7 @@ class AppController extends ChangeNotifier {
         offset: offset,
       );
       _offline = false;
+      _lastSuccessfulQueueRefresh = DateTime.now();
     } on ConnectivityException {
       _offline = true;
       if (!silent) {
@@ -2161,6 +2200,8 @@ class AppController extends ChangeNotifier {
     _stopQueuePolling();
     production.removeListener(notifyListeners);
     production.dispose();
+    warehouseNotifications.removeListener(notifyListeners);
+    warehouseNotifications.dispose();
     super.dispose();
   }
 }

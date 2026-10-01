@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../../app/app_controller.dart' show AppStage;
 import '../../app/design_tokens.dart';
 import '../../data/models/store_location.dart';
+import '../../shared/widgets/pda_empty_state.dart';
 import 'store_coordinator.dart';
+import 'widgets/warehouse_notification_widgets.dart';
 
 /// The finished-goods half of the warehouse tablet: what the robot left, and
 /// the operator's statement that they took it away.
@@ -14,11 +17,13 @@ class StoreScreen extends StatelessWidget {
   const StoreScreen({
     required this.coordinator,
     required this.onBack,
+    this.onNavigate,
     super.key,
   });
 
   final StoreCoordinator coordinator;
   final VoidCallback onBack;
+  final void Function(AppStage stage)? onNavigate;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -31,8 +36,39 @@ class StoreScreen extends StatelessWidget {
           onPressed: coordinator.inFlight ? null : onBack,
           icon: const Icon(Icons.arrow_back),
         ),
-        title: const Text('Bitmiş Ürün Deposu'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Bitmiş Ürün Deposu'),
+            if (coordinator.lastSuccessfulRefresh case final last?)
+              Text(
+                coordinator.error != null
+                    ? 'Bağlantı kesildi · Son güncelleme: ${DateFormat('HH:mm:ss').format(last)}'
+                    : 'Son güncelleme: ${DateFormat('HH:mm:ss').format(last)}',
+                key: coordinator.error != null
+                    ? const Key('store-stale-warning')
+                    : const Key('store-last-update'),
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.normal,
+                  color: coordinator.error != null
+                      ? const Color(0xFFFCA5A5)
+                      : Colors.white70,
+                ),
+              ),
+          ],
+        ),
         actions: [
+          if (coordinator.notificationCoordinator case final notifCoord?)
+            WarehouseNotificationBell(
+              coordinator: notifCoord,
+              onNavigate: (stage) {
+                if (stage != AppStage.finishedGoodsStore) {
+                  onNavigate?.call(stage);
+                }
+              },
+            ),
           if (coordinator.hasUnseenUnits)
             TextButton(
               key: const Key('acknowledge-arrivals'),
@@ -53,6 +89,15 @@ class StoreScreen extends StatelessWidget {
       body: SafeArea(
         child: Column(
           children: [
+            if (coordinator.notificationCoordinator case final notifCoord?)
+              WarehouseNotificationBanner(
+                coordinator: notifCoord,
+                onNavigate: (stage) {
+                  if (stage != AppStage.finishedGoodsStore) {
+                    onNavigate?.call(stage);
+                  }
+                },
+              ),
             if (coordinator.error case final message?)
               _Banner(
                 key: const Key('store-error'),
@@ -99,13 +144,14 @@ class _LocationList extends StatelessWidget {
         key: const Key('store-empty'),
         child: Padding(
           padding: EdgeInsets.all(PdaScale.gutter(context) * 2),
-          child: Text(
-            coordinator.loading
+          child: PdaEmptyState(
+            icon: Icons.warehouse_outlined,
+            title: coordinator.loading
                 ? 'Depo alanları yükleniyor…'
-                : 'Tanımlı depo alanı yok. Alanlar müşteri tarafından '
-                      'belirlendikten sonra burada görünecek.',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: PdaScale.body(context)),
+                : 'Tanımlı depo alanı yok',
+            subtitle: coordinator.loading
+                ? null
+                : 'Tanımlı depo alanı yok. Alanlar müşteri tarafından belirlendikten sonra burada görünecek.',
           ),
         ),
       );

@@ -186,6 +186,14 @@ void main() {
     }
 
     // 5. WAREHOUSE HOME SCREEN
+    controller.warehouseNotifications.notifyDemand(
+      requestId: 'req-screen-1',
+      machineCode: 'SH-01-A',
+      partCode: '71550BN000-10-HAOS',
+      needsMaterial: true,
+      requestNo: 52,
+    );
+
     for (final entry in sizes.entries) {
       final key = GlobalKey();
       await tester.pumpWidget(
@@ -200,7 +208,10 @@ void main() {
     }
 
     // 6. PREPARATION AREAS SCREEN (4 Areas)
-    final prepCoordinator = PreparationCoordinator(repository);
+    final prepCoordinator = PreparationCoordinator(
+      repository,
+      notificationCoordinator: controller.warehouseNotifications,
+    );
     repository.preparationAreasValue = [
       fakeArea(number: 1), // Free
       fakeArea(
@@ -265,7 +276,10 @@ void main() {
     }
 
     // 7. STORE SCREEN (Finished goods)
-    final storeCoordinator = StoreCoordinator(repository);
+    final storeCoordinator = StoreCoordinator(
+      repository,
+      notificationCoordinator: controller.warehouseNotifications,
+    );
     repository.storeLocationsValue = [
       fakeStoreLocation(
         code: 'DEP-01',
@@ -326,5 +340,9 @@ void main() {
         size: entry.value,
       );
     }
+
+    controller.warehouseNotifications.dismissActiveBanner();
+    await tester.pump(const Duration(seconds: 6));
+    controller.dispose();
   });
 }

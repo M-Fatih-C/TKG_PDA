@@ -491,34 +491,6 @@ class _BusinessActionButton extends StatelessWidget {
   }
 }
 
-/// Row on a wide surface, Column on a narrow one, with one child able to give
-/// up space in either direction.
-class _Responsive extends StatelessWidget {
-  const _Responsive({required this.stacked, required this.children});
-
-  final bool stacked;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) => stacked
-      ? Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          mainAxisSize: MainAxisSize.min,
-          children: children,
-        )
-      : Row(children: children);
-}
-
-class _Flexible extends StatelessWidget {
-  const _Flexible({required this.stacked, required this.child});
-
-  final bool stacked;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) =>
-      stacked ? child : Expanded(child: child);
-}
 
 class _StateBadge extends StatefulWidget {
   const _StateBadge({required this.position});

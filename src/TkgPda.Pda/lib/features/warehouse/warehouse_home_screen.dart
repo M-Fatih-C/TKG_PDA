@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
 import '../../app/design_tokens.dart';
+import 'widgets/warehouse_notification_widgets.dart';
 
 /// The warehouse tablet's home: the two halves of the job. Semi-finished
 /// preparation feeds machines; the finished-goods store receives what they
@@ -38,6 +39,16 @@ class WarehouseHomeScreen extends StatelessWidget {
           ],
         ),
         actions: [
+          WarehouseNotificationBell(
+            coordinator: controller.warehouseNotifications,
+            onNavigate: (stage) {
+              if (stage == AppStage.preparationAreas) {
+                controller.enterPreparationAreas();
+              } else if (stage == AppStage.finishedGoodsStore) {
+                controller.enterFinishedGoodsStore();
+              }
+            },
+          ),
           IconButton(
             key: const Key('logout-button'),
             tooltip: 'Çıkış',
@@ -47,11 +58,25 @@ class WarehouseHomeScreen extends StatelessWidget {
         ],
       ),
       body: SafeArea(
-        child: Padding(
-          padding: EdgeInsets.all(PdaScale.gutter(context)),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            WarehouseNotificationBanner(
+              coordinator: controller.warehouseNotifications,
+              onNavigate: (stage) {
+                if (stage == AppStage.preparationAreas) {
+                  controller.enterPreparationAreas();
+                } else if (stage == AppStage.finishedGoodsStore) {
+                  controller.enterFinishedGoodsStore();
+                }
+              },
+            ),
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.all(PdaScale.gutter(context)),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
               Expanded(
                 child: _HomeTile(
                   actionKey: const Key('open-preparation-areas'),
@@ -75,8 +100,11 @@ class WarehouseHomeScreen extends StatelessWidget {
                   onPressed: controller.enterFinishedGoodsStore,
                 ),
               ),
-            ],
-          ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     ),

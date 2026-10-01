@@ -33,21 +33,36 @@ class ProblemBanner extends StatelessWidget {
   final ApiProblem problem;
 
   @override
-  Widget build(BuildContext context) => Container(
-    key: const Key('problem-banner'),
-    width: double.infinity,
-    color: Theme.of(context).colorScheme.errorContainer,
-    padding: const EdgeInsets.all(12),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          problem.operatorMessage,
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const Key('problem-banner'),
+      width: double.infinity,
+      color: theme.colorScheme.errorContainer,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.error_outline_rounded,
+            color: theme.colorScheme.onErrorContainer,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              problem.operatorMessage,
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: theme.colorScheme.onErrorContainer,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Customer Monitoring — Robot Alarm Visibility. A coarse, non-technical
@@ -139,11 +154,42 @@ class NoticeBanner extends StatelessWidget {
   final String message;
 
   @override
-  Widget build(BuildContext context) => Container(
-    key: const Key('notice-banner'),
-    width: double.infinity,
-    color: const Color(0xFFDBEAFE),
-    padding: const EdgeInsets.all(12),
-    child: Text(message, style: const TextStyle(fontWeight: FontWeight.w700)),
-  );
+  Widget build(BuildContext context) {
+    final isSuccess = message.contains('oluşturuldu') ||
+        message.contains('güncellendi') ||
+        message.contains('başladı') ||
+        message.contains('doğrulandı') ||
+        message.contains('temizlendi') ||
+        message.contains('iptal edildi');
+    final bgColor =
+        isSuccess ? const Color(0xFFDCFCE7) : const Color(0xFFDBEAFE);
+    final fgColor =
+        isSuccess ? const Color(0xFF14532D) : const Color(0xFF1E40AF);
+    final icon = isSuccess
+        ? Icons.check_circle_outline_rounded
+        : Icons.info_outline_rounded;
+
+    return Container(
+      key: const Key('notice-banner'),
+      width: double.infinity,
+      color: bgColor,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Icon(icon, color: fgColor, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                color: fgColor,
+                fontWeight: FontWeight.w700,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
