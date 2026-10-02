@@ -108,7 +108,8 @@ export interface Slot {
 }
 
 export interface SlotPartRecord {
-  id: string
+  partId: string
+  id?: string
   partCode: string
   description: string | null
 }

@@ -39,8 +39,16 @@ export function UsersPage() {
       <PageHeader eyebrow="Kimlik ve erişim" title="Kullanıcılar & yetkiler" description="Bireysel hesapları, sistem rollerini ve makine bazlı izinleri tek yerden yönetin." actions={<Button onClick={() => setCreateOpen(true)}><Plus size={17} /> Kullanıcı oluştur</Button>} />
       <Panel>
         <div className="table-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Ad, kullanıcı adı veya sicil ara…" /><span>{filtered.length} kayıt</span></div>
-        {filtered.length ? <TableFrame><thead><tr><th>Kullanıcı</th><th>Roller</th><th>Son giriş</th><th>Durum</th><th className="align-right">İşlemler</th></tr></thead><tbody>
-          {filtered.map((user) => <tr key={user.id}><td><div className="identity-cell"><span>{user.fullName.slice(0, 2).toUpperCase()}</span><div><strong>{user.fullName}</strong><small>@{user.username}{user.employeeNo ? ` · ${user.employeeNo}` : ''}</small></div></div></td><td><div className="pill-list">{user.roles.map((role) => <StatusPill key={role} value={role} tone={role === 'ADMIN' ? 'info' : 'neutral'} />)}</div></td><td>{formatDate(user.lastLoginAt)}</td><td><StatusPill value={user.isActive ? 'ACTIVE' : 'INACTIVE'} /></td><td><div className="row-actions"><Button size="sm" variant="ghost" onClick={() => setPermissionId(user.id)}><Shield size={15} /> Yetkiler</Button><Button size="sm" variant="ghost" onClick={() => setResetId(user.id)}><KeyRound size={15} /> Parola</Button><Button size="sm" variant="secondary" onClick={() => setEditId(user.id)}><UserCog size={15} /> Düzenle</Button></div></td></tr>)}
+        {filtered.length ? <TableFrame><thead><tr><th>Kullanıcı</th><th>Sicil No</th><th>Sistem Rolleri</th><th>Makine İzni</th><th>Son Giriş</th><th>Durum</th><th className="align-right">İşlemler</th></tr></thead><tbody>
+          {filtered.map((user) => <tr key={user.id}>
+            <td><div className="identity-cell"><span>{user.fullName.slice(0, 2).toUpperCase()}</span><div><strong>{user.fullName}</strong><small>@{user.username}</small></div></div></td>
+            <td>{user.employeeNo ? <code className="mono-code">{user.employeeNo}</code> : <span className="muted">—</span>}</td>
+            <td><div className="pill-list">{user.roles.map((role) => <StatusPill key={role} value={role} tone={role === 'ADMIN' ? 'info' : 'neutral'} />)}</div></td>
+            <td>{user.roles.includes('ADMIN') ? <span className="perm-chip perm-chip--admin">Tüm Makineler</span> : user.machinePermissions.length > 0 ? <span className="perm-chip">{user.machinePermissions.length} makine</span> : <span className="muted">Tanımsız</span>}</td>
+            <td>{formatDate(user.lastLoginAt)}</td>
+            <td><StatusPill value={user.isActive ? 'ACTIVE' : 'INACTIVE'} /></td>
+            <td><div className="row-actions"><Button size="sm" variant="ghost" onClick={() => setPermissionId(user.id)}><Shield size={15} /> Yetkiler</Button><Button size="sm" variant="ghost" onClick={() => setResetId(user.id)}><KeyRound size={15} /> Parola</Button><Button size="sm" variant="secondary" onClick={() => setEditId(user.id)}><UserCog size={15} /> Düzenle</Button></div></td>
+          </tr>)}
         </tbody></TableFrame> : <EmptyState title="Kullanıcı bulunamadı" description="Arama ölçütünü değiştirin veya yeni kullanıcı oluşturun." />}
       </Panel>
 

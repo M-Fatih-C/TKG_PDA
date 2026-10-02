@@ -16,6 +16,7 @@ import {
 import { useState, type PropsWithChildren } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { NotificationCenter } from './NotificationCenter'
 
 const links = [
   { to: '/', label: 'Genel Bakış', icon: LayoutDashboard, end: true },
@@ -53,7 +54,23 @@ export function AppShell({ children }: PropsWithChildren) {
       </aside>
       {open && <button className="sidebar-scrim" aria-label="Menüyü kapat" onClick={() => setOpen(false)} />}
       <div className="workspace">
-        <header className="topbar"><button className="menu-button" onClick={() => setOpen(true)} aria-label="Menüyü aç"><Menu /></button><div><small>TKG PDA / Admin Web</small><strong>{current?.label ?? 'Yönetim'}</strong></div><span className="topbar__scope"><ShieldCheck size={16} /> ADMIN_WEB</span></header>
+        <header className="topbar">
+          <div className="topbar__left">
+            <button className="menu-button" onClick={() => setOpen(true)} aria-label="Menüyü aç">
+              <Menu />
+            </button>
+            <div>
+              <small>TKG PDA / Admin Web</small>
+              <strong>{current?.label ?? 'Yönetim'}</strong>
+            </div>
+          </div>
+          <div className="topbar__right">
+            <NotificationCenter />
+            <span className="topbar__scope">
+              <ShieldCheck size={16} /> ADMIN_WEB
+            </span>
+          </div>
+        </header>
         <main>{children}</main>
       </div>
     </div>
