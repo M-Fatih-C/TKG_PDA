@@ -60,6 +60,7 @@ try {
         'db\migrations\010_finished_goods_store.sql',
         'db\migrations\011_warehouse_operator_roles.sql',
         'db\migrations\012_client_device_machine_binding.sql',
+        'db\migrations\013_user_sessions.sql',
         'db\seeds\generated\002a_customer_textual_master_data.sql',
         'db\seeds\generated\002b_customer_physical_layouts.sql',
         'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'

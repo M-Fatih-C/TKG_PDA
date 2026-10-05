@@ -39,6 +39,10 @@ class ApiProblem implements Exception {
       'Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.',
     'DEVICE_MACHINE_SCOPE_MISMATCH' =>
       'Bu terminal yalnızca tanımlı olduğu makine üzerinde işlem yapabilir.',
+    'ACTIVE_SESSION_EXISTS' =>
+      'Bu sicil başka bir cihazda aktif. Önce mevcut oturumdan çıkış yapın veya oturumun düşmesini bekleyin.',
+    'SESSION_NOT_ACTIVE' || 'SESSION_EXPIRED' =>
+      'Oturumunuz sona erdi. Lütfen yeniden giriş yapın.',
     _ => switch (status) {
       400 => 'Gönderilen bilgiler geçersiz.',
       401 => 'Oturumunuz sona erdi. Lütfen yeniden giriş yapın.',

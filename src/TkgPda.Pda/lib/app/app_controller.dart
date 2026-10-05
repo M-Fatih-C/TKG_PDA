@@ -93,6 +93,7 @@ class AppController extends ChangeNotifier {
     WarehouseNotificationCoordinator? warehouseNotificationCoordinator,
     bool enablePolling = true,
     bool enableProductionWorkflow = true,
+    bool? enableHeartbeat,
   }) {
     final notifications =
         warehouseNotificationCoordinator ?? WarehouseNotificationCoordinator();
@@ -104,6 +105,7 @@ class AppController extends ChangeNotifier {
       notifications: notifications,
       enablePolling: enablePolling,
       enableProductionWorkflow: enableProductionWorkflow,
+      enableHeartbeat: enableHeartbeat,
     );
   }
 
@@ -115,12 +117,14 @@ class AppController extends ChangeNotifier {
     SubmissionCoordinator? submissionCoordinator,
     bool enablePolling = true,
     bool enableProductionWorkflow = true,
+    bool? enableHeartbeat,
   }) : _repository = repository,
        _deviceCodeStore = deviceCodeStore,
        _session = session,
        _submission = submissionCoordinator ?? SubmissionCoordinator(),
        _enablePolling = enablePolling,
        _enableProductionWorkflow = enableProductionWorkflow,
+       _enableHeartbeat = enableHeartbeat ?? enablePolling,
        warehouseNotifications = notifications,
        production = ProductionCoordinator(repository),
        preparation = PreparationCoordinator(
@@ -141,6 +145,7 @@ class AppController extends ChangeNotifier {
   final SubmissionCoordinator _submission;
   final bool _enablePolling;
   final bool _enableProductionWorkflow;
+  final bool _enableHeartbeat;
   final WarehouseNotificationCoordinator warehouseNotifications;
   final ProductionCoordinator production;
   int _machineGeneration = 0;
@@ -452,6 +457,7 @@ class AppController extends ChangeNotifier {
     if (normalized.isEmpty || normalized.length > 120) {
       throw const FormatException('Geçerli bir cihaz kodu girin.');
     }
+    _stopHeartbeat();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -469,6 +475,7 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    _stopHeartbeat();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -561,6 +568,7 @@ class AppController extends ChangeNotifier {
         _stage = AppStage.machines;
       }
       _offline = false;
+      _startHeartbeat();
       return true;
     } on ApiProblem catch (problem) {
       _problem = problem;
@@ -580,16 +588,25 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    _session.clear();
-    _clearOperationalState();
-    _submission.clear();
-    _ambiguousCommand = null;
-    _stage = _deviceCode == null ? AppStage.deviceSetup : AppStage.login;
-    _clearFeedback();
-    notifyListeners();
+    _stopHeartbeat();
+    try {
+      await _repository.logout();
+    } catch (_) {
+      // Network timeout / offline: proceed with local logout.
+      // Server lease will expire after configured LeaseSeconds.
+    } finally {
+      _session.clear();
+      _clearOperationalState();
+      _submission.clear();
+      _ambiguousCommand = null;
+      _stage = _deviceCode == null ? AppStage.deviceSetup : AppStage.login;
+      _clearFeedback();
+      notifyListeners();
+    }
   }
 
   void handleUnauthorized() {
+    _stopHeartbeat();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -602,6 +619,48 @@ class AppController extends ChangeNotifier {
     );
     _stage = _deviceCode == null ? AppStage.deviceSetup : AppStage.login;
     notifyListeners();
+  }
+
+  Timer? _heartbeatTimer;
+
+  /// Whether the session heartbeat keepalive timer is currently running.
+  bool get isHeartbeatActive => _heartbeatTimer != null && _heartbeatTimer!.isActive;
+
+  /// Technical keepalive interval for field session lease.
+  /// Note: This is NOT a business timing; it is a session lease technical keepalive (Section 25).
+  static const Duration _heartbeatInterval = Duration(seconds: 30);
+
+  void _startHeartbeat() {
+    _stopHeartbeat();
+    if (!_enableHeartbeat) return;
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _onHeartbeat());
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  Future<void> _onHeartbeat() async {
+    if (!_session.isAuthenticated) {
+      _stopHeartbeat();
+      return;
+    }
+    try {
+      await _repository.heartbeatSession();
+    } on ApiProblem catch (problem) {
+      if (problem.isUnauthorized ||
+          problem.code == 'SESSION_NOT_ACTIVE' ||
+          problem.code == 'SESSION_EXPIRED') {
+        _stopHeartbeat();
+        handleUnauthorized();
+      }
+    } on ConnectivityException {
+      // Short-term network drop; do not log out locally.
+      // Server lease will naturally expire if keepalives stop completely.
+    } catch (_) {
+      // Transient error; server lease will expire if keepalives fail completely.
+    }
   }
 
   Future<void> reloadMachines() async {
@@ -2298,6 +2357,7 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _stopHeartbeat();
     _stopPolling();
     _stopQueuePolling();
     preparation.stop();

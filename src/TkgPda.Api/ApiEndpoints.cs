@@ -14,6 +14,12 @@ public static class ApiEndpoints
             .AllowAnonymous()
             .RequireRateLimiting("login");
 
+        endpoints.MapPost("/api/v1/auth/session/heartbeat", HeartbeatAsync)
+            .RequireAuthorization();
+
+        endpoints.MapPost("/api/v1/auth/logout", LogoutAsync)
+            .RequireAuthorization();
+
         endpoints.MapGet("/api/v1/auth/me", CurrentUserAsync)
             .RequireAuthorization();
 
@@ -122,6 +128,10 @@ public static class ApiEndpoints
         LoginRequest request,
         HttpContext context,
         IApiDataStore dataStore,
+        IFieldSessionStore sessionStore,
+        FieldSessionOptions sessionOptions,
+        TimeProvider timeProvider,
+        JwtOptions jwtOptions,
         Pbkdf2PasswordHasher passwordHasher,
         JwtTokenService tokenService,
         CancellationToken cancellationToken)
@@ -205,8 +215,60 @@ public static class ApiEndpoints
             throw new ApiException(StatusCodes.Status401Unauthorized, "INVALID_CREDENTIALS", "The username or password is invalid.");
         }
 
+        var now = timeProvider.GetUtcNow();
+        var tokenExpiresAt = now.AddMinutes(jwtOptions.ExpiryMinutes);
+        var sessionResult = await sessionStore.AcquireLoginSessionAsync(
+            user.Id,
+            device.Id,
+            now,
+            TimeSpan.FromSeconds(sessionOptions.LeaseSeconds),
+            tokenExpiresAt,
+            cancellationToken);
+
+        if (sessionResult.Status == AcquireSessionStatus.ActiveSessionExists)
+        {
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                user.Id,
+                device.Id,
+                "AUTH_LOGIN_BLOCKED_ACTIVE_SESSION",
+                "AUTH_SESSION",
+                sessionResult.ExistingSessionId?.ToString(),
+                new
+                {
+                    existingSessionId = sessionResult.ExistingSessionId,
+                    existingDeviceId = sessionResult.ExistingDeviceId,
+                    existingDeviceCode = sessionResult.ExistingDeviceCode,
+                    attemptedDevice = device.Code
+                },
+                cancellationToken);
+
+            throw new ApiException(
+                StatusCodes.Status409Conflict,
+                "ACTIVE_SESSION_EXISTS",
+                "Bu sicil başka bir cihazda aktif olarak kullanılıyor. Mevcut oturum kapandıktan sonra tekrar deneyin.");
+        }
+
+        var session = sessionResult.Session!;
+        await WriteAuditAsync(
+            dataStore,
+            context,
+            user.Id,
+            device.Id,
+            "AUTH_SESSION_CREATED",
+            "AUTH_SESSION",
+            session.Id.ToString(),
+            new
+            {
+                sessionId = session.Id,
+                leaseExpiresAt = session.LeaseExpiresAt,
+                tokenExpiresAt = session.TokenExpiresAt
+            },
+            cancellationToken);
+
         await dataStore.MarkLoginSucceededAsync(user.Id, cancellationToken);
-        var token = tokenService.Issue(user, device);
+        var token = tokenService.Issue(user, device, session.Id);
         await WriteAuditAsync(
             dataStore,
             context,
@@ -215,7 +277,7 @@ public static class ApiEndpoints
             "AUTH_LOGIN_SUCCEEDED",
             "AUTH_USER",
             user.Id.ToString(),
-            new { roles = user.Roles, device = device.Code },
+            new { roles = user.Roles, device = device.Code, sessionId = session.Id },
             cancellationToken);
         context.Response.Headers.CacheControl = "no-store";
 
@@ -225,6 +287,75 @@ public static class ApiEndpoints
             token.ExpiresAt,
             new AuthenticatedUserResponse(user.Id, user.Username, user.FullName, user.EmployeeNo, user.Roles),
             new DeviceResponse(device.Id, device.Code, device.Name, device.Type, device.MachineId)));
+    }
+
+    private static async Task<IResult> HeartbeatAsync(
+        HttpContext context,
+        IFieldSessionStore sessionStore,
+        FieldSessionOptions sessionOptions,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var session = context.Items.TryGetValue(ApiContextKeys.Session, out var sVal) && sVal is UserSessionRecord s
+            ? s
+            : null;
+        var sessionId = session?.Id
+            ?? (Guid.TryParse(context.User.FindFirstValue(ApiClaimNames.SessionId), out var sid) ? sid : Guid.Empty);
+
+        if (sessionId == Guid.Empty)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_NOT_ACTIVE", "The access token has no valid session identifier.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        var updated = await sessionStore.HeartbeatAsync(
+            sessionId,
+            now,
+            TimeSpan.FromSeconds(sessionOptions.LeaseSeconds),
+            cancellationToken);
+
+        if (updated is null)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_NOT_ACTIVE", "Oturum aktif değil veya yenilenemedi.");
+        }
+
+        return Results.Ok(new HeartbeatResponse(updated.Id, updated.LeaseExpiresAt, updated.TokenExpiresAt));
+    }
+
+    private static async Task<IResult> LogoutAsync(
+        HttpContext context,
+        IFieldSessionStore sessionStore,
+        IApiDataStore dataStore,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var principal = context.User;
+        if (principal.IsDeviceBound())
+        {
+            var sessionIdStr = principal.FindFirstValue(ApiClaimNames.SessionId);
+            if (Guid.TryParse(sessionIdStr, out var sessionId))
+            {
+                var userId = principal.UserId();
+                var device = context.Items.TryGetValue(ApiContextKeys.Device, out var devVal) && devVal is DeviceRecord d ? d : null;
+                var now = timeProvider.GetUtcNow();
+                var revoked = await sessionStore.RevokeSessionAsync(sessionId, userId, "USER_LOGOUT", now, cancellationToken);
+                if (revoked && device is not null)
+                {
+                    await WriteAuditAsync(
+                        dataStore,
+                        context,
+                        userId,
+                        device.Id,
+                        "AUTH_SESSION_LOGOUT",
+                        "AUTH_SESSION",
+                        sessionId.ToString(),
+                        new { reason = "USER_LOGOUT" },
+                        cancellationToken);
+                }
+            }
+        }
+
+        return Results.Ok(new { message = "Logged out successfully" });
     }
 
     private static IResult CurrentUserAsync(HttpContext context)

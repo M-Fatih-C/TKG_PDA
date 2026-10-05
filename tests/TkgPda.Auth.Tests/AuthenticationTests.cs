@@ -73,7 +73,19 @@ public sealed class JwtTokenTests
     }
 
     [Fact]
-    public void Admin_web_token_has_explicit_client_type_without_device_claims()
+    public void Token_contains_session_id_when_supplied()
+    {
+        var user = User();
+        var device = Device();
+        var sessionId = Guid.NewGuid();
+        var token = new JwtTokenService(Options, new FixedTimeProvider(Now)).Issue(user, device, sessionId);
+        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token.Token);
+
+        Assert.Equal(sessionId.ToString(), jwt.Claims.Single(claim => claim.Type == ApiClaimNames.SessionId).Value);
+    }
+
+    [Fact]
+    public void Admin_web_token_has_explicit_client_type_without_device_or_session_claims()
     {
         var token = new JwtTokenService(Options, new FixedTimeProvider(Now)).IssueAdmin(AdminUser());
         var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token.Token);
@@ -81,6 +93,7 @@ public sealed class JwtTokenTests
         Assert.Equal(ClientTypes.AdminWeb, jwt.Claims.Single(claim => claim.Type == ApiClaimNames.ClientType).Value);
         Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ApiClaimNames.DeviceId);
         Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ApiClaimNames.DeviceCode);
+        Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ApiClaimNames.SessionId);
         Assert.Contains(jwt.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == RoleCodes.Admin);
     }
 

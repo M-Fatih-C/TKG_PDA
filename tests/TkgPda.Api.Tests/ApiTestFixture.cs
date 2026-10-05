@@ -68,6 +68,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             DELETE FROM master.navigation_profiles WHERE code LIKE 'P08A-%';
             DELETE FROM master.task_templates
             WHERE config_json ->> 'testScope' = 'P07A';
+            DELETE FROM auth.user_sessions;
             DELETE FROM auth.user_machine_permissions;
             DELETE FROM auth.user_roles;
             DELETE FROM auth.users;
@@ -442,7 +443,17 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await using var command = new NpgsqlCommand(sql, connection);
         AddParameters(command, parameters);
         var value = await command.ExecuteScalarAsync();
-        return value is T typed ? typed : throw new InvalidOperationException($"Scalar query did not return {typeof(T).Name}.");
+        if (value is T typed)
+        {
+            return typed;
+        }
+
+        if (typeof(T) == typeof(DateTimeOffset) && value is DateTime dt)
+        {
+            return (T)(object)new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc));
+        }
+
+        throw new InvalidOperationException($"Scalar query did not return {typeof(T).Name}.");
     }
 
     private async Task<Guid[]> QueryGuidsAsync(string sql, params (string Name, object? Value)[] parameters)

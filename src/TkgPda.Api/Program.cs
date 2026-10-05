@@ -19,6 +19,10 @@ var jwtOptions = new JwtOptions(
     builder.Configuration.GetValue("Authentication:Jwt:ExpiryMinutes", 15),
     builder.Configuration.GetValue("Authentication:Jwt:ClockSkewSeconds", 30));
 jwtOptions.Validate();
+var fieldSessionOptions = new FieldSessionOptions(
+    builder.Configuration.GetValue("Authentication:FieldSession:LeaseSeconds", 120),
+    builder.Configuration.GetValue("Authentication:FieldSession:HeartbeatSeconds", 30));
+fieldSessionOptions.Validate();
 var rdsOptions = RdsOptions.FromConfiguration(builder.Configuration);
 var rdsCoreDiscoveryOptions = RdsCoreDiscoveryOptions.FromConfiguration(builder.Configuration);
 var rdsCoreExecutionOptions = RdsCoreExecutionOptions.FromConfiguration(builder.Configuration);
@@ -51,6 +55,7 @@ builder.Services.Configure<JsonOptions>(options =>
     options.SerializerOptions.WriteIndented = false;
 });
 builder.Services.AddSingleton(jwtOptions);
+builder.Services.AddSingleton(fieldSessionOptions);
 builder.Services.AddSingleton(rdsOptions);
 builder.Services.AddSingleton(rdsCoreDiscoveryOptions);
 builder.Services.AddSingleton(rdsCoreExecutionOptions);
@@ -59,6 +64,8 @@ builder.Services.AddSingleton<Pbkdf2PasswordHasher>();
 builder.Services.AddSingleton<IPasswordHashService>(services => services.GetRequiredService<Pbkdf2PasswordHasher>());
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton(NpgsqlDataSource.Create(connectionString));
+builder.Services.AddSingleton<PostgresFieldSessionStore>();
+builder.Services.AddSingleton<IFieldSessionStore>(services => services.GetRequiredService<PostgresFieldSessionStore>());
 builder.Services.AddSingleton<PostgresApiDataStore>();
 builder.Services.AddSingleton<IApiDataStore>(services => services.GetRequiredService<PostgresApiDataStore>());
 builder.Services.AddSingleton<IOperatorTransportQueueStore>(services => services.GetRequiredService<PostgresApiDataStore>());
@@ -274,6 +281,7 @@ app.UseCors("OperatorWeb");
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<DeviceContextMiddleware>();
+app.UseMiddleware<FieldSessionValidationMiddleware>();
 app.UseAuthorization();
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnonymous();

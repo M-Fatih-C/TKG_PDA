@@ -488,6 +488,23 @@ class FakePdaRepository implements PdaDataSource {
     );
   }
 
+  int heartbeatCount = 0;
+  int logoutCount = 0;
+  Object? heartbeatError;
+  Object? logoutError;
+
+  @override
+  Future<void> heartbeatSession() async {
+    heartbeatCount++;
+    if (heartbeatError case final error?) throw error;
+  }
+
+  @override
+  Future<void> logout() async {
+    logoutCount++;
+    if (logoutError case final error?) throw error;
+  }
+
   @override
   Future<AuthenticatedUser> me() async {
     meCount++;

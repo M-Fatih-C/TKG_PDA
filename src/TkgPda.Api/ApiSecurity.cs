@@ -65,12 +65,36 @@ public static class ApiClaimNames
     public const string DeviceCode = "device_code";
     public const string FullName = "full_name";
     public const string ClientType = "client_type";
+    public const string SessionId = "session_id";
 }
 
 public static class ClientTypes
 {
     public const string DeviceBound = "DEVICE_BOUND";
     public const string AdminWeb = "ADMIN_WEB";
+}
+
+public sealed record FieldSessionOptions(
+    int LeaseSeconds = 120,
+    int HeartbeatSeconds = 30)
+{
+    public void Validate()
+    {
+        if (LeaseSeconds is < 60 or > 86400)
+        {
+            throw new InvalidOperationException("FieldSession:LeaseSeconds must be between 60 and 86400 seconds.");
+        }
+
+        if (HeartbeatSeconds is < 10 or > 3600)
+        {
+            throw new InvalidOperationException("FieldSession:HeartbeatSeconds must be between 10 and 3600 seconds.");
+        }
+
+        if (HeartbeatSeconds >= LeaseSeconds)
+        {
+            throw new InvalidOperationException("FieldSession:HeartbeatSeconds must be strictly less than LeaseSeconds.");
+        }
+    }
 }
 
 public sealed record JwtOptions(
@@ -108,13 +132,16 @@ public sealed record AccessTokenResult(string Token, DateTimeOffset ExpiresAt);
 
 public sealed class JwtTokenService(JwtOptions options, TimeProvider timeProvider)
 {
+    public AccessTokenResult Issue(AuthUserRecord user, DeviceRecord device, Guid sessionId) =>
+        Issue(user, ClientTypes.DeviceBound, device, sessionId);
+
     public AccessTokenResult Issue(AuthUserRecord user, DeviceRecord device) =>
-        Issue(user, ClientTypes.DeviceBound, device);
+        Issue(user, ClientTypes.DeviceBound, device, Guid.NewGuid());
 
     public AccessTokenResult IssueAdmin(AuthUserRecord user) =>
-        Issue(user, ClientTypes.AdminWeb, device: null);
+        Issue(user, ClientTypes.AdminWeb, device: null, sessionId: null);
 
-    private AccessTokenResult Issue(AuthUserRecord user, string clientType, DeviceRecord? device)
+    private AccessTokenResult Issue(AuthUserRecord user, string clientType, DeviceRecord? device, Guid? sessionId)
     {
         var issuedAt = timeProvider.GetUtcNow();
         var expiresAt = issuedAt.AddMinutes(options.ExpiryMinutes);
@@ -130,6 +157,11 @@ public sealed class JwtTokenService(JwtOptions options, TimeProvider timeProvide
         {
             claims.Add(new Claim(ApiClaimNames.DeviceId, device.Id.ToString()));
             claims.Add(new Claim(ApiClaimNames.DeviceCode, device.Code));
+        }
+
+        if (sessionId.HasValue)
+        {
+            claims.Add(new Claim(ApiClaimNames.SessionId, sessionId.Value.ToString()));
         }
 
         claims.AddRange(user.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
@@ -506,6 +538,60 @@ public sealed class DeviceContextMiddleware(RequestDelegate next)
     }
 }
 
+public sealed class FieldSessionValidationMiddleware(RequestDelegate next)
+{
+    public async Task InvokeAsync(
+        HttpContext context,
+        IFieldSessionStore sessionStore,
+        TimeProvider timeProvider)
+    {
+        if (context.User.Identity?.IsAuthenticated != true)
+        {
+            await next(context);
+            return;
+        }
+
+        if (context.User.IsAdminWeb())
+        {
+            await next(context);
+            return;
+        }
+
+        if (!context.User.IsDeviceBound())
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "INVALID_CLIENT_CONTEXT", "The access token has no supported client context.");
+        }
+
+        var sessionIdStr = context.User.FindFirstValue(ApiClaimNames.SessionId);
+        if (string.IsNullOrWhiteSpace(sessionIdStr) || !Guid.TryParse(sessionIdStr, out var sessionId))
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_NOT_ACTIVE", "The access token has no valid session identifier.");
+        }
+
+        var device = context.Items.TryGetValue(ApiContextKeys.Device, out var devVal) && devVal is DeviceRecord d ? d : null;
+        if (device is null)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "DEVICE_CONTEXT_REQUIRED", "An authenticated request must include its token-bound device code.");
+        }
+
+        var userId = context.User.UserId();
+        var session = await sessionStore.FindActiveSessionAsync(sessionId, context.RequestAborted);
+        if (session is null || session.RevokedAt.HasValue || session.UserId != userId || session.DeviceId != device.Id)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_NOT_ACTIVE", "Oturum aktif değil veya sonlandırılmış.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        if (session.TokenExpiresAt <= now || session.LeaseExpiresAt <= now)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_EXPIRED", "Oturum süresi doldu.");
+        }
+
+        context.Items[ApiContextKeys.Session] = session;
+        await next(context);
+    }
+}
+
 public static class ApiHeaders
 {
     public const string DeviceCode = "X-Device-Code";
@@ -517,5 +603,6 @@ public static class ApiHeaders
 public static class ApiContextKeys
 {
     public const string Device = "tkg.device";
+    public const string Session = "tkg.session";
     public const string CorrelationId = "tkg.correlation-id";
 }

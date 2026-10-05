@@ -20,6 +20,8 @@ public sealed record AuthenticatedUserResponse(
 
 public sealed record DeviceResponse(Guid Id, string Code, string Name, string Type, Guid? MachineId = null);
 
+public sealed record HeartbeatResponse(Guid SessionId, DateTimeOffset LeaseExpiresAt, DateTimeOffset TokenExpiresAt);
+
 public sealed record CreateTransportHttpRequest(
     Guid MachineId,
     Guid VariantId,

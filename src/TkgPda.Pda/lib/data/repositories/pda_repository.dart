@@ -11,6 +11,8 @@ abstract interface class PdaDataSource {
   );
   Future<ProductionSession> endProduction(String machineId, String sessionId);
   Future<LoginSession> login(String employeeNumber);
+  Future<void> heartbeatSession();
+  Future<void> logout();
   Future<AuthenticatedUser> me();
   Future<List<MachineSummary>> machines();
   Future<OperationalContext> operationalContext(String machineId);
@@ -179,6 +181,16 @@ class PdaRepository implements PdaDataSource {
   Future<AuthenticatedUser> me() async {
     final response = await _api.get('/api/v1/auth/me');
     return AuthenticatedUser.fromJson(_json(response.body));
+  }
+
+  @override
+  Future<void> heartbeatSession() async {
+    await _api.post('/api/v1/auth/session/heartbeat');
+  }
+
+  @override
+  Future<void> logout() async {
+    await _api.post('/api/v1/auth/logout');
   }
 
   @override
