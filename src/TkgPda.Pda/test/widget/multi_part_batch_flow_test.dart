@@ -151,7 +151,8 @@ void main() {
   testWidgets('leaving machine clears the entire batch selection', (
     tester,
   ) async {
-    final harness = await _harness(tester);
+    final repo = FakePdaRepository()..loginUser = testSupervisor;
+    final harness = await _harness(tester, repository: repo);
     await _toggleBatchMode(tester);
 
     await _selectMainPart(tester, testMainPartOption.partId);

@@ -516,6 +516,7 @@ void main() {
       ),
     );
     final repository = FakePdaRepository()
+      ..loginUser = testSupervisor
       ..machineValues = [testMachine, secondMachine];
     final harness = await _harness(tester, repository: repository);
 

@@ -151,7 +151,7 @@ void main() {
   test(
     'late machine read does not restore production after leaving workspace',
     () async {
-      final repo = FakePdaRepository();
+      final repo = FakePdaRepository()..loginUser = testSupervisor;
       final c = await controller(repo);
       repo.productionReadCompleter = Completer<ProductionSession?>();
       final refresh = c.refreshContext();

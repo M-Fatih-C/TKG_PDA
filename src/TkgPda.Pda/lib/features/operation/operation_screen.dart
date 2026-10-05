@@ -18,12 +18,15 @@ class OperationScreen extends StatelessWidget {
     animation: controller,
     builder: (context, _) => Scaffold(
       appBar: AppBar(
-        leading: IconButton(
-          key: const Key('leave-machine'),
-          tooltip: 'Makine listesi',
-          onPressed: controller.busy ? null : controller.leaveMachine,
-          icon: const Icon(Icons.arrow_back),
-        ),
+        automaticallyImplyLeading: !controller.isBoundLineTerminalOperator,
+        leading: controller.isBoundLineTerminalOperator
+            ? null
+            : IconButton(
+                key: const Key('leave-machine'),
+                tooltip: 'Makine listesi',
+                onPressed: controller.busy ? null : controller.leaveMachine,
+                icon: const Icon(Icons.arrow_back),
+              ),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,

@@ -16,6 +16,14 @@ final testUser = AuthenticatedUser(
   roles: const ['LINE_OPERATOR'],
 );
 
+final testSupervisor = AuthenticatedUser(
+  id: '10000000-0000-0000-0000-000000000002',
+  username: 'supervisor-user',
+  fullName: 'Supervisor User',
+  employeeNo: null,
+  roles: const ['SUPERVISOR'],
+);
+
 final testDevice = PdaDevice(
   id: '20000000-0000-0000-0000-000000000001',
   code: testDeviceCode,

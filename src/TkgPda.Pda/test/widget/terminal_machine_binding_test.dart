@@ -35,7 +35,16 @@ void main() {
       // 3. Operation screen for SH-01-A is shown
       expect(find.textContaining('SH-01-A'), findsWidgets);
 
-      // 4. Operator cannot select a different machine
+      // 4. Test A: Bound line operator cannot see the leave-machine back button
+      expect(find.byKey(const Key('leave-machine')), findsNothing);
+
+      // 5. Test B: Direct controller.leaveMachine() call keeps stage on operation and machine intact
+      harness.controller.leaveMachine();
+      await tester.pumpAndSettle();
+      expect(harness.controller.stage, AppStage.operation);
+      expect(harness.controller.selectedMachine?.id, testMachine.id);
+
+      // 6. Operator cannot select a different machine
       final otherMachine = MachineSummary(
         id: '30000000-0000-0000-0000-000000000099',
         code: 'SH-02-B',
@@ -49,6 +58,93 @@ void main() {
         harness.controller.notice,
         'Bu terminal yalnızca tanımlı olduğu makine üzerinde işlem yapabilir.',
       );
+
+      harness.dispose();
+    },
+  );
+
+  testWidgets(
+    'Test C — Exact machine match: when device.machineId is not in /machines response, fail-closed without selecting first machine',
+    (tester) async {
+      final user = AuthenticatedUser(
+        id: testUser.id,
+        username: 'line-op-mismatch',
+        fullName: 'Hat Operatörü',
+        employeeNo: '1001',
+        roles: const ['LINE_OPERATOR'],
+      );
+      final boundToMachineA = PdaDevice(
+        id: '20000000-0000-0000-0000-000000000001',
+        code: 'PDA-TERM-01',
+        name: 'Terminal 01',
+        type: 'PDA',
+        machineId: '10000000-0000-0000-0000-000000000001', // MACHINE-A
+      );
+      final onlyMachineB = MachineSummary(
+        id: '10000000-0000-0000-0000-000000000002', // MACHINE-B
+        code: 'SH-01-B',
+        displayName: 'SH-01-B Hücresi',
+        displayOrder: 2,
+        permissions: testMachine.permissions,
+      );
+      final repo = FakePdaRepository()
+        ..loginUser = user
+        ..loginDevice = boundToMachineA
+        ..machineValues = [onlyMachineB]; // Only MACHINE-B returned from /machines!
+
+      final harness = await _harness(tester, repository: repo);
+
+      // 1. Stage remains login / fail-closed
+      expect(harness.controller.stage, AppStage.login);
+      expect(harness.controller.isAuthenticated, isFalse);
+
+      // 2. MACHINE-B is NOT selected, selectedMachine is null
+      expect(harness.controller.selectedMachine, isNull);
+
+      // 3. Problem banner explains binding could not be verified
+      expect(harness.controller.problem?.code, 'DEVICE_MACHINE_BINDING_REQUIRED');
+      expect(harness.controller.problem?.detail, 'Terminalin bağlı olduğu makine sistemde bulunamadı veya doğrulanamadı.');
+      expect(
+        find.text('Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.'),
+        findsOneWidget,
+      );
+
+      harness.dispose();
+    },
+  );
+
+  testWidgets(
+    'Test D — Supervisor can navigate to operation screen, sees leave-machine button, and leaveMachine returns to machines stage',
+    (tester) async {
+      final supervisorUser = AuthenticatedUser(
+        id: testUser.id,
+        username: 'supervisor',
+        fullName: 'Vardiya Amiri',
+        employeeNo: '2001',
+        roles: const ['SUPERVISOR'],
+      );
+      final repo = FakePdaRepository()
+        ..loginUser = supervisorUser
+        ..loginDevice = testDevice;
+
+      final harness = await _harness(tester, repository: repo);
+
+      // 1. Supervisor starts at machines stage
+      expect(harness.controller.stage, AppStage.machines);
+
+      // 2. Select machine to enter operation screen
+      await harness.controller.selectMachine(testMachine);
+      await tester.pumpAndSettle();
+      expect(harness.controller.stage, AppStage.operation);
+
+      // 3. Supervisor sees the leave-machine back button
+      expect(find.byKey(const Key('leave-machine')), findsOneWidget);
+
+      // 4. Clicking leave-machine returns supervisor to machines stage
+      await tester.tap(find.byKey(const Key('leave-machine')));
+      await tester.pumpAndSettle();
+      expect(harness.controller.stage, AppStage.machines);
+      expect(harness.controller.selectedMachine, isNull);
 
       harness.dispose();
     },

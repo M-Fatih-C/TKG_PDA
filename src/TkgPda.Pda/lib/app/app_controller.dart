@@ -281,6 +281,8 @@ class AppController extends ChangeNotifier {
       (user?.roles ?? const []).any((r) => r == 'ADMIN' || r == 'SUPERVISOR');
   bool get isLineOperator =>
       (user?.roles ?? const []).any((r) => r == 'LINE_OPERATOR' || r == 'OPERATOR');
+  bool get isBoundLineTerminalOperator =>
+      isLineOperator && !isAdminOrSupervisor && device?.machineId != null;
   List<MachineSummary> get machines => _machines;
   MachineSummary? get selectedMachine => _selectedMachine;
   OperationalContext? get context => _context;
@@ -519,7 +521,7 @@ class AppController extends ChangeNotifier {
         await _loadMachines();
         final boundMachine = _machines.cast<MachineSummary?>().firstWhere(
           (m) => m?.id == boundMachineId,
-          orElse: () => _machines.isNotEmpty ? _machines.first : null,
+          orElse: () => null,
         );
         if (boundMachine != null) {
           _setBusy(false);
@@ -532,7 +534,7 @@ class AppController extends ChangeNotifier {
             status: 403,
             code: 'DEVICE_MACHINE_BINDING_REQUIRED',
             detail:
-                'Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.',
+                'Terminalin bağlı olduğu makine sistemde bulunamadı veya doğrulanamadı.',
             correlationId: null,
           );
           _stage = AppStage.login;
@@ -648,6 +650,9 @@ class AppController extends ChangeNotifier {
   }
 
   void leaveMachine() {
+    if (isBoundLineTerminalOperator) {
+      return;
+    }
     if (isMutationInFlight || production.hasPending) {
       _notice = 'İşlem devam ederken sayfadan ayrılınamaz.';
       notifyListeners();
