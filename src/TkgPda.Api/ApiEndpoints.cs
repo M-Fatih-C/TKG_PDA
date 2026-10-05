@@ -124,7 +124,7 @@ public static class ApiEndpoints
         CancellationToken cancellationToken) =>
         service.GetRobotAlarmSummaryForOperatorAsync(CorrelationId(context), cancellationToken);
 
-    private static async Task<IResult> LoginAsync(
+    internal static async Task<IResult> LoginAsync(
         LoginRequest request,
         HttpContext context,
         IApiDataStore dataStore,
@@ -251,42 +251,58 @@ public static class ApiEndpoints
         }
 
         var session = sessionResult.Session!;
-        await WriteAuditAsync(
-            dataStore,
-            context,
-            user.Id,
-            device.Id,
-            "AUTH_SESSION_CREATED",
-            "AUTH_SESSION",
-            session.Id.ToString(),
-            new
+        try
+        {
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                user.Id,
+                device.Id,
+                "AUTH_SESSION_CREATED",
+                "AUTH_SESSION",
+                session.Id.ToString(),
+                new
+                {
+                    sessionId = session.Id,
+                    leaseExpiresAt = session.LeaseExpiresAt,
+                    tokenExpiresAt = session.TokenExpiresAt
+                },
+                cancellationToken);
+
+            await dataStore.MarkLoginSucceededAsync(user.Id, cancellationToken);
+            var token = tokenService.Issue(user, device, session.Id);
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                user.Id,
+                device.Id,
+                "AUTH_LOGIN_SUCCEEDED",
+                "AUTH_USER",
+                user.Id.ToString(),
+                new { roles = user.Roles, device = device.Code, sessionId = session.Id },
+                cancellationToken);
+            context.Response.Headers.CacheControl = "no-store";
+
+            return Results.Ok(new LoginResponse(
+                token.Token,
+                "Bearer",
+                token.ExpiresAt,
+                new AuthenticatedUserResponse(user.Id, user.Username, user.FullName, user.EmployeeNo, user.Roles),
+                new DeviceResponse(device.Id, device.Code, device.Name, device.Type, device.MachineId)));
+        }
+        catch
+        {
+            try
             {
-                sessionId = session.Id,
-                leaseExpiresAt = session.LeaseExpiresAt,
-                tokenExpiresAt = session.TokenExpiresAt
-            },
-            cancellationToken);
+                await sessionStore.RevokeSessionAsync(session.Id, user.Id, "LOGIN_FINALIZATION_FAILED", timeProvider.GetUtcNow(), CancellationToken.None);
+            }
+            catch
+            {
+                // Do not mask original exception
+            }
 
-        await dataStore.MarkLoginSucceededAsync(user.Id, cancellationToken);
-        var token = tokenService.Issue(user, device, session.Id);
-        await WriteAuditAsync(
-            dataStore,
-            context,
-            user.Id,
-            device.Id,
-            "AUTH_LOGIN_SUCCEEDED",
-            "AUTH_USER",
-            user.Id.ToString(),
-            new { roles = user.Roles, device = device.Code, sessionId = session.Id },
-            cancellationToken);
-        context.Response.Headers.CacheControl = "no-store";
-
-        return Results.Ok(new LoginResponse(
-            token.Token,
-            "Bearer",
-            token.ExpiresAt,
-            new AuthenticatedUserResponse(user.Id, user.Username, user.FullName, user.EmployeeNo, user.Roles),
-            new DeviceResponse(device.Id, device.Code, device.Name, device.Type, device.MachineId)));
+            throw;
+        }
     }
 
     private static async Task<IResult> HeartbeatAsync(

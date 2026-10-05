@@ -2,8 +2,13 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
+using Npgsql;
 using TkgPda.Api;
 using TkgPda.Application;
+using TkgPda.Domain;
+using TkgPda.Infrastructure.Postgres;
 using Xunit;
 
 namespace TkgPda.Api.Tests;
@@ -519,6 +524,81 @@ public sealed class SingleActiveSessionApiTests(ApiTestFixture fixture) : IClass
         var problem = await stolenResponse.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("DEVICE_CONTEXT_MISMATCH", problem.GetProperty("code").GetString());
     }
+
+    [Fact]
+    public async Task TestA_Login_finalization_failure_compensates_and_revokes_session()
+    {
+        await fixture.ResetAsync();
+
+        var identity = await fixture.SeedIdentityAsync(
+            role: RoleCodes.LineOperator,
+            machineCode: "SH-01-A",
+            bindDeviceToMachine: true);
+
+        var device = new DeviceRecord(
+            identity.DeviceId,
+            identity.DeviceCode,
+            "Terminal A",
+            "PDA",
+            true,
+            identity.MachineId);
+
+        var user = new AuthUserRecord(
+            identity.UserId,
+            identity.Username,
+            "dummy-hash",
+            "Test Operator",
+            identity.EmployeeNo,
+            true,
+            [RoleCodes.LineOperator]);
+
+        var failingDataStore = new FailingFinalizationDataStore(user, device);
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var sessionStore = new PostgresFieldSessionStore(dataSource);
+        var passwordHasher = new Pbkdf2PasswordHasher();
+        var jwtOptions = new JwtOptions(
+            "tkg-pda",
+            "tkg-pda-clients",
+            "01234567890123456789012345678901",
+            60,
+            5);
+        var fieldSessionOptions = new FieldSessionOptions
+        {
+            LeaseSeconds = 120,
+            HeartbeatSeconds = 30
+        };
+        var tokenService = new JwtTokenService(jwtOptions, TimeProvider.System);
+
+        var context = new DefaultHttpContext();
+        context.Request.Headers[ApiHeaders.DeviceCode] = identity.DeviceCode;
+
+        // When login finalization fails after session acquisition, it must compensate and rethrow
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => ApiEndpoints.LoginAsync(
+            new LoginRequest(null, null, identity.EmployeeNo),
+            context,
+            failingDataStore,
+            sessionStore,
+            fieldSessionOptions,
+            TimeProvider.System,
+            jwtOptions,
+            passwordHasher,
+            tokenService,
+            CancellationToken.None));
+
+        Assert.Equal("Simulated database failure during MarkLoginSucceeded", ex.Message);
+
+        // Verify active sessions count is 0 in DB
+        var activeSessionCount = await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM auth.user_sessions WHERE user_id = @user_id AND revoked_at IS NULL",
+            ("user_id", identity.UserId));
+        Assert.Equal(0, activeSessionCount);
+
+        // Verify the newly created row was revoked with LOGIN_FINALIZATION_FAILED
+        var revocationReason = await fixture.ScalarAsync<string>(
+            "SELECT revocation_reason FROM auth.user_sessions WHERE user_id = @user_id",
+            ("user_id", identity.UserId));
+        Assert.Equal("LOGIN_FINALIZATION_FAILED", revocationReason);
+    }
 }
 
 internal static class HttpClientTestExtensions
@@ -536,4 +616,32 @@ internal static class HttpClientTestExtensions
         configureHeaders(request.Headers);
         return await client.SendAsync(request);
     }
+}
+
+file sealed class FailingFinalizationDataStore(AuthUserRecord user, DeviceRecord device) : IApiDataStore
+{
+    public Task<DeviceRecord?> FindDeviceAsync(string deviceCode, CancellationToken cancellationToken = default) =>
+        Task.FromResult<DeviceRecord?>(device);
+
+    public Task<AuthUserRecord?> FindUserByEmployeeNumberAsync(string normalizedEmployeeNumber, CancellationToken cancellationToken = default) =>
+        Task.FromResult<AuthUserRecord?>(user);
+
+    public Task<AuthUserRecord?> FindUserByUsernameAsync(string username, CancellationToken cancellationToken = default) =>
+        Task.FromResult<AuthUserRecord?>(user);
+
+    public Task MarkLoginSucceededAsync(Guid userId, CancellationToken cancellationToken = default) =>
+        throw new InvalidOperationException("Simulated database failure during MarkLoginSucceeded");
+
+    public Task WriteAuditAsync(AuditEntry entry, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    public Task<MachinePermissionRecord?> FindMachinePermissionAsync(Guid userId, Guid machineId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<MachineSummaryRecord?> FindMachineSummaryAsync(Guid machineId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<IReadOnlyList<MachineSummaryRecord>> ListVisibleMachinesAsync(Guid userId, bool administrator, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<IReadOnlyList<CompatibleVariantRecord>> ListCompatibleVariantsAsync(Guid machineId, Guid mainPartId, Guid partId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<IReadOnlyList<MachineMainPartOptionRecord>> ListMachinePartOptionsAsync(Guid machineId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<OperationalContextDataRecord?> GetOperationalContextDataAsync(Guid userId, Guid machineId, bool administrator, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<TransportRequestSnapshot?> FindTransportRequestAsync(Guid requestId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<IReadOnlyList<WarehousePreparationRequestRecord>> ListWarehousePreparationRequestsAsync(Guid userId, bool administrator, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<bool> IsReadyAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 }

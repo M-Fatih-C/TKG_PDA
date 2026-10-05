@@ -512,8 +512,13 @@ class FakePdaRepository implements PdaDataSource {
     return testUser;
   }
 
+  Object? machinesError;
+
   @override
-  Future<List<MachineSummary>> machines() async => machineValues;
+  Future<List<MachineSummary>> machines() async {
+    if (machinesError case final error?) throw error;
+    return machineValues;
+  }
 
   @override
   Future<OperationalContext> operationalContext(String machineId) async {

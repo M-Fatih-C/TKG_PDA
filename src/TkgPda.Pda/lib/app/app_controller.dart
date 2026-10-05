@@ -458,6 +458,7 @@ class AppController extends ChangeNotifier {
       throw const FormatException('Geçerli bir cihaz kodu girin.');
     }
     _stopHeartbeat();
+    await _releaseServerSessionBestEffort();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -476,6 +477,7 @@ class AppController extends ChangeNotifier {
       return;
     }
     _stopHeartbeat();
+    await _releaseServerSessionBestEffort();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -493,9 +495,11 @@ class AppController extends ChangeNotifier {
     }
     _setBusy(true);
     _clearFeedback();
+    var serverSessionEstablished = false;
     try {
       final session = await _repository.login(employeeNumber.trim());
       _session.establish(session);
+      serverSessionEstablished = true;
       final roles = session.user.roles;
       final isAdminOrSupervisor =
           roles.contains('ADMIN') || roles.contains('SUPERVISOR');
@@ -510,6 +514,8 @@ class AppController extends ChangeNotifier {
       if (!isAdminOrSupervisor && isLineOperator) {
         final boundMachineId = session.device.machineId;
         if (boundMachineId == null || boundMachineId.isEmpty) {
+          await _releaseServerSessionBestEffort();
+          _stopHeartbeat();
           _session.clear();
           _clearOperationalState();
           _submission.clear();
@@ -534,6 +540,8 @@ class AppController extends ChangeNotifier {
           _setBusy(false);
           await selectMachine(boundMachine);
         } else {
+          await _releaseServerSessionBestEffort();
+          _stopHeartbeat();
           _session.clear();
           _clearOperationalState();
           _submission.clear();
@@ -571,14 +579,46 @@ class AppController extends ChangeNotifier {
       _startHeartbeat();
       return true;
     } on ApiProblem catch (problem) {
+      if (serverSessionEstablished) {
+        await _releaseServerSessionBestEffort();
+        _stopHeartbeat();
+        _session.clear();
+        _clearOperationalState();
+        _submission.clear();
+      }
       _problem = problem;
       return false;
     } on ConnectivityException {
+      if (serverSessionEstablished) {
+        await _releaseServerSessionBestEffort();
+        _stopHeartbeat();
+        _session.clear();
+        _clearOperationalState();
+        _submission.clear();
+      }
       _offline = true;
       _notice = 'Bağlantı yok — giriş yapılamadı.';
       return false;
+    } catch (e) {
+      if (serverSessionEstablished) {
+        await _releaseServerSessionBestEffort();
+        _stopHeartbeat();
+        _session.clear();
+        _clearOperationalState();
+        _submission.clear();
+      }
+      rethrow;
     } finally {
       _setBusy(false);
+    }
+  }
+
+  Future<void> _releaseServerSessionBestEffort() async {
+    if (!_session.isAuthenticated) return;
+    try {
+      await _repository.logout();
+    } catch (_) {
+      // Best-effort session release: ignore errors so caller can continue cleanup.
     }
   }
 

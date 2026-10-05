@@ -166,6 +166,167 @@ void main() {
       harness.dispose();
     },
   );
+
+  testWidgets(
+    'Test D: unbound terminal login failure performs best-effort server logout and cleans local state',
+    (tester) async {
+      final user = AuthenticatedUser(
+        id: testUser.id,
+        username: 'line-op',
+        fullName: 'Hat Operatörü',
+        employeeNo: '1001',
+        roles: const ['LINE_OPERATOR'],
+      );
+      final repo = FakePdaRepository()
+        ..loginUser = user
+        ..loginDevice = const PdaDevice(
+          id: 'dev-unbound',
+          code: 'TERM-UNBOUND',
+          name: 'Unbound Terminal',
+          type: 'PDA',
+          machineId: null,
+        );
+
+      final controller = AppController(
+        repository: repo,
+        deviceCodeStore: MemoryDeviceCodeStore(testDeviceCode),
+        session: SessionMemory(),
+        enablePolling: false,
+        enableProductionWorkflow: false,
+        enableHeartbeat: true,
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        TkgPdaApp(key: ValueKey(controller), controller: controller),
+      );
+      await tester.pumpAndSettle();
+
+      final success = await controller.login('1001');
+      await tester.pumpAndSettle();
+
+      expect(success, isFalse);
+      expect(repo.logoutCount, 1);
+      expect(controller.isAuthenticated, isFalse);
+      expect(controller.isHeartbeatActive, isFalse);
+      expect(controller.stage, AppStage.login);
+      expect(controller.problem?.code, 'DEVICE_MACHINE_BINDING_REQUIRED');
+
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'Test E: exact machine mismatch performs best-effort server logout and cleans local state',
+    (tester) async {
+      final user = AuthenticatedUser(
+        id: testUser.id,
+        username: 'line-op',
+        fullName: 'Hat Operatörü',
+        employeeNo: '1001',
+        roles: const ['LINE_OPERATOR'],
+      );
+      final repo = FakePdaRepository()
+        ..loginUser = user
+        ..loginDevice = const PdaDevice(
+          id: 'dev-1',
+          code: 'TERM-01',
+          name: 'Terminal 1',
+          type: 'PDA',
+          machineId: 'MACHINE-NON-EXISTENT',
+        )
+        ..machineValues = [testMachine];
+
+      final controller = AppController(
+        repository: repo,
+        deviceCodeStore: MemoryDeviceCodeStore(testDeviceCode),
+        session: SessionMemory(),
+        enablePolling: false,
+        enableProductionWorkflow: false,
+        enableHeartbeat: true,
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        TkgPdaApp(key: ValueKey(controller), controller: controller),
+      );
+      await tester.pumpAndSettle();
+
+      final success = await controller.login('1001');
+      await tester.pumpAndSettle();
+
+      expect(success, isFalse);
+      expect(repo.logoutCount, 1);
+      expect(controller.selectedMachine, isNull);
+      expect(controller.isAuthenticated, isFalse);
+      expect(controller.isHeartbeatActive, isFalse);
+      expect(controller.stage, AppStage.login);
+
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'Test F: post-login connectivity failure performs best-effort server logout and cleans local state',
+    (tester) async {
+      final user = AuthenticatedUser(
+        id: testUser.id,
+        username: 'line-op',
+        fullName: 'Hat Operatörü',
+        employeeNo: '1001',
+        roles: const ['LINE_OPERATOR'],
+      );
+      final repo = FakePdaRepository()
+        ..loginUser = user
+        ..loginDevice = testDevice
+        ..machinesError = const ConnectivityException('Connection failed');
+
+      final controller = AppController(
+        repository: repo,
+        deviceCodeStore: MemoryDeviceCodeStore(testDeviceCode),
+        session: SessionMemory(),
+        enablePolling: false,
+        enableProductionWorkflow: false,
+        enableHeartbeat: true,
+      );
+      await controller.initialize();
+      await tester.pumpWidget(
+        TkgPdaApp(key: ValueKey(controller), controller: controller),
+      );
+      await tester.pumpAndSettle();
+
+      final success = await controller.login('1001');
+      await tester.pumpAndSettle();
+
+      expect(success, isFalse);
+      expect(repo.logoutCount, 1);
+      expect(controller.isAuthenticated, isFalse);
+      expect(controller.isHeartbeatActive, isFalse);
+      expect(controller.offline, isTrue);
+
+      controller.dispose();
+    },
+  );
+
+  testWidgets(
+    'Test G: beginDeviceCodeChange on authenticated user stops heartbeat and performs best-effort logout',
+    (tester) async {
+      final repo = FakePdaRepository();
+      final harness = await _harness(tester, repository: repo);
+
+      expect(harness.controller.isAuthenticated, isTrue);
+      expect(harness.controller.isHeartbeatActive, isTrue);
+      expect(repo.logoutCount, 0);
+
+      await harness.controller.beginDeviceCodeChange();
+      await tester.pumpAndSettle();
+
+      expect(harness.controller.isHeartbeatActive, isFalse);
+      expect(repo.logoutCount, 1);
+      expect(harness.controller.isAuthenticated, isFalse);
+      expect(harness.controller.stage, AppStage.deviceSetup);
+
+      harness.dispose();
+    },
+  );
 }
 
 Future<_Harness> _harness(

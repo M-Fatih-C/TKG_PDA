@@ -135,9 +135,6 @@ public sealed class JwtTokenService(JwtOptions options, TimeProvider timeProvide
     public AccessTokenResult Issue(AuthUserRecord user, DeviceRecord device, Guid sessionId) =>
         Issue(user, ClientTypes.DeviceBound, device, sessionId);
 
-    public AccessTokenResult Issue(AuthUserRecord user, DeviceRecord device) =>
-        Issue(user, ClientTypes.DeviceBound, device, Guid.NewGuid());
-
     public AccessTokenResult IssueAdmin(AuthUserRecord user) =>
         Issue(user, ClientTypes.AdminWeb, device: null, sessionId: null);
 
