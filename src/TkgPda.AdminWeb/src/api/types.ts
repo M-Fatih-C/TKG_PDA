@@ -53,6 +53,7 @@ export interface Device {
   isActive: boolean
   metadata: Record<string, unknown>
   concurrencyToken: number
+  machineId?: string | null
 }
 
 export interface Machine {
@@ -214,6 +215,7 @@ export interface DeviceDraft {
   type: Device['type']
   isActive: boolean
   metadata: JsonObject
+  machineId?: string | null
 }
 
 export interface SlotDraft {

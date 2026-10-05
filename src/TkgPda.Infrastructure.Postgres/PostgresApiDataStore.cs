@@ -72,12 +72,46 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
         CancellationToken cancellationToken = default)
     {
         await using var command = dataSource.CreateCommand(
-            "SELECT id, device_code, name, device_type, is_active FROM audit.client_devices WHERE device_code = @device_code");
+            "SELECT id, device_code, name, device_type, is_active, machine_id FROM audit.client_devices WHERE device_code = @device_code");
         command.Parameters.AddWithValue("device_code", deviceCode);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken)
-            ? new DeviceRecord(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetBoolean(4))
+            ? new DeviceRecord(
+                reader.GetGuid(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetBoolean(4),
+                reader.IsDBNull(5) ? null : reader.GetGuid(5))
             : null;
+    }
+
+    public async Task<MachineSummaryRecord?> FindMachineSummaryAsync(
+        Guid machineId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var command = dataSource.CreateCommand(
+            """
+            SELECT m.id,
+                   m.code,
+                   m.display_name,
+                   m.display_order
+            FROM master.machines m
+            WHERE m.id = @machine_id AND m.is_active
+            """);
+        command.Parameters.AddWithValue("machine_id", machineId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new MachineSummaryRecord(
+            reader.GetGuid(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetInt32(3),
+            new MachinePermissionRecord(machineId, CanView: true, CanOperate: true, CanChangeVariant: false, CanManageSlots: false));
     }
 
     public async Task MarkLoginSucceededAsync(Guid userId, CancellationToken cancellationToken = default)

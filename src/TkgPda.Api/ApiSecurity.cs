@@ -266,30 +266,194 @@ public static class PrincipalExtensions
 
 public sealed class MachineAccessService(IApiDataStore dataStore)
 {
-    public async Task<MachinePermissionRecord> EnsureAsync(
-        ClaimsPrincipal principal,
+    public Task<MachinePermissionRecord> EnsureAsync(
+        HttpContext context,
         Guid machineId,
         MachineAccessKind access,
         CancellationToken cancellationToken)
     {
-        if (principal.IsAdministrator())
+        var device = context.Items.TryGetValue(ApiContextKeys.Device, out var value) && value is DeviceRecord d ? d : null;
+        return EnsureAsync(context.User, device, machineId, access, cancellationToken);
+    }
+
+    public Task<MachinePermissionRecord> EnsureAsync(
+        ClaimsPrincipal principal,
+        Guid machineId,
+        MachineAccessKind access,
+        CancellationToken cancellationToken) =>
+        EnsureAsync(principal, null, machineId, access, cancellationToken);
+
+    public async Task<MachinePermissionRecord> EnsureAsync(
+        ClaimsPrincipal principal,
+        DeviceRecord? device,
+        Guid machineId,
+        MachineAccessKind access,
+        CancellationToken cancellationToken)
+    {
+        // 1. Role Safety (WP-03 Section 18):
+        // Machine View/Operate business roles are strictly ADMIN, SUPERVISOR, LINE_OPERATOR.
+        // Warehouse operators cannot access machine operations even if the device is bound.
+        var isAdmin = principal.IsAdministrator();
+        var isSupervisor = principal.IsInRole(RoleCodes.Supervisor);
+        var isLineOperator = principal.IsInRole(RoleCodes.LineOperator);
+
+        if (!isAdmin && !isSupervisor && !isLineOperator)
+        {
+            throw new ApiException(
+                StatusCodes.Status403Forbidden,
+                "ROLE_NOT_AUTHORIZED",
+                "Kullanıcı bu makine işlemi için yetkili bir role sahip değil.");
+        }
+
+        // 2. Admin Web (device-independent):
+        if (principal.IsAdminWeb())
+        {
+            if (!isAdmin)
+            {
+                throw new ApiException(
+                    StatusCodes.Status403Forbidden,
+                    "ADMIN_WEB_ROLE_REQUIRED",
+                    "Admin Web tokens require the ADMIN role.");
+            }
+
+            return new MachinePermissionRecord(machineId, true, true, true, true);
+        }
+
+        // 3. Device-bound context:
+        if (principal.IsDeviceBound())
+        {
+            if (device is null)
+            {
+                throw new ApiException(
+                    StatusCodes.Status401Unauthorized,
+                    "DEVICE_CONTEXT_REQUIRED",
+                    "An authenticated request must include its token-bound device code.");
+            }
+
+            // A: LINE_OPERATOR (normal field operator)
+            if (isLineOperator && !isAdmin && !isSupervisor)
+            {
+                if (device.MachineId is null)
+                {
+                    // Section 16 & 30D: Unbound line terminal fails closed
+                    throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "DEVICE_MACHINE_BINDING_REQUIRED",
+                        "Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.");
+                }
+
+                if (device.MachineId.Value != machineId)
+                {
+                    // Section 15 & 30B: Cross-machine scope mismatch
+                    throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "DEVICE_MACHINE_SCOPE_MISMATCH",
+                        "Bu cihaz başka bir makineye atanmıştır.");
+                }
+
+                // Section 7 & 17:
+                // Normal field LINE_OPERATOR machine View/Operate scope is determined by Device Machine Binding.
+                // If a legacy user_machine_permissions row exists, respect its explicit restrictions.
+                // If no row exists, grant View and Operate for the bound machine.
+                var legacyPermission = await dataStore.FindMachinePermissionAsync(principal.UserId(), machineId, cancellationToken);
+                if (legacyPermission is not null)
+                {
+                    var allowed = access switch
+                    {
+                        MachineAccessKind.View => legacyPermission.CanView,
+                        MachineAccessKind.Operate => legacyPermission.CanOperate,
+                        MachineAccessKind.ChangeVariant => legacyPermission.CanChangeVariant,
+                        MachineAccessKind.ManageSlots => legacyPermission.CanManageSlots,
+                        _ => false
+                    };
+
+                    return allowed
+                        ? legacyPermission
+                        : throw new ApiException(
+                            StatusCodes.Status403Forbidden,
+                            "MACHINE_ACCESS_DENIED",
+                            "The user does not have the required permission for this machine.");
+                }
+
+                return access switch
+                {
+                    MachineAccessKind.View => new MachinePermissionRecord(machineId, true, true, false, false),
+                    MachineAccessKind.Operate => new MachinePermissionRecord(machineId, true, true, false, false),
+                    _ => throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "MACHINE_ACCESS_DENIED",
+                        "The user does not have the required permission for this machine.")
+                };
+            }
+
+            // B: SUPERVISOR
+            if (isSupervisor)
+            {
+                // Section 25: Device-bound saha uygulamasında ADMIN/SUPERVISOR kullanılıyorsa
+                // machine-specific operation server-side device scope dışına çıkmamalıdır.
+                if (device.MachineId.HasValue && device.MachineId.Value != machineId)
+                {
+                    throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "DEVICE_MACHINE_SCOPE_MISMATCH",
+                        "Bu cihaz başka bir makineye atanmıştır.");
+                }
+
+                var permission = await dataStore.FindMachinePermissionAsync(principal.UserId(), machineId, cancellationToken);
+                var allowed = permission is not null && access switch
+                {
+                    MachineAccessKind.View => permission.CanView,
+                    MachineAccessKind.Operate => permission.CanOperate,
+                    MachineAccessKind.ChangeVariant => permission.CanChangeVariant,
+                    MachineAccessKind.ManageSlots => permission.CanManageSlots,
+                    _ => false
+                };
+
+                return allowed
+                    ? permission!
+                    : throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "MACHINE_ACCESS_DENIED",
+                        "The user does not have the required permission for this machine.");
+            }
+
+            // C: ADMIN on device
+            if (isAdmin)
+            {
+                if (device.MachineId.HasValue && device.MachineId.Value != machineId)
+                {
+                    throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "DEVICE_MACHINE_SCOPE_MISMATCH",
+                        "Bu cihaz başka bir makineye atanmıştır.");
+                }
+
+                return new MachinePermissionRecord(machineId, true, true, true, true);
+            }
+        }
+
+        // Fallback for non-device-bound:
+        if (isAdmin)
         {
             return new MachinePermissionRecord(machineId, true, true, true, true);
         }
 
-        var permission = await dataStore.FindMachinePermissionAsync(principal.UserId(), machineId, cancellationToken);
-        var allowed = permission is not null && access switch
+        var fallbackPermission = await dataStore.FindMachinePermissionAsync(principal.UserId(), machineId, cancellationToken);
+        var fallbackAllowed = fallbackPermission is not null && access switch
         {
-            MachineAccessKind.View => permission.CanView,
-            MachineAccessKind.Operate => permission.CanOperate,
-            MachineAccessKind.ChangeVariant => permission.CanChangeVariant,
-            MachineAccessKind.ManageSlots => permission.CanManageSlots,
+            MachineAccessKind.View => fallbackPermission.CanView,
+            MachineAccessKind.Operate => fallbackPermission.CanOperate,
+            MachineAccessKind.ChangeVariant => fallbackPermission.CanChangeVariant,
+            MachineAccessKind.ManageSlots => fallbackPermission.CanManageSlots,
             _ => false
         };
 
-        return allowed
-            ? permission!
-            : throw new ApiException(StatusCodes.Status403Forbidden, "MACHINE_ACCESS_DENIED", "The user does not have the required permission for this machine.");
+        return fallbackAllowed
+            ? fallbackPermission!
+            : throw new ApiException(
+                StatusCodes.Status403Forbidden,
+                "MACHINE_ACCESS_DENIED",
+                "The user does not have the required permission for this machine.");
     }
 }
 

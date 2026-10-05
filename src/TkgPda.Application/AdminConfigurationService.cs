@@ -52,23 +52,35 @@ public sealed class AdminConfigurationService(IAdminConfigurationStore store, IP
     public Task<IReadOnlyList<AdminDeviceRecord>> ListDevicesAsync(CancellationToken cancellationToken = default) =>
         store.ListDevicesAsync(cancellationToken);
 
-    public Task<AdminDeviceRecord> CreateDeviceAsync(CreateDeviceCommand command, AdminMutationContext context, CancellationToken cancellationToken = default) =>
-        store.CreateDeviceAsync(command with
+    public Task<AdminDeviceRecord> CreateDeviceAsync(CreateDeviceCommand command, AdminMutationContext context, CancellationToken cancellationToken = default)
+    {
+        if (command.MachineId.HasValue && !string.Equals(command.Type, "PDA", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AdminRuleException("DEVICE_MACHINE_BINDING_INVALID", "Makine bağlantısı yalnızca PDA tipi cihazlar için geçerlidir.");
+        }
+        return store.CreateDeviceAsync(command with
         {
             Code = NormalizeCode(command.Code, 120, "code"),
             Name = Required(command.Name, 200, "name"),
             Type = Allowed(command.Type, DeviceTypes, "device type"),
             Metadata = ValidObject(command.Metadata, "metadata")
         }, context, cancellationToken);
+    }
 
-    public Task<AdminDeviceRecord> UpdateDeviceAsync(Guid deviceId, UpdateDeviceCommand command, AdminMutationContext context, CancellationToken cancellationToken = default) =>
-        store.UpdateDeviceAsync(RequiredId(deviceId), command with
+    public Task<AdminDeviceRecord> UpdateDeviceAsync(Guid deviceId, UpdateDeviceCommand command, AdminMutationContext context, CancellationToken cancellationToken = default)
+    {
+        if (command.MachineId.HasValue && !string.Equals(command.Type, "PDA", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new AdminRuleException("DEVICE_MACHINE_BINDING_INVALID", "Makine bağlantısı yalnızca PDA tipi cihazlar için geçerlidir.");
+        }
+        return store.UpdateDeviceAsync(RequiredId(deviceId), command with
         {
             Name = Required(command.Name, 200, "name"),
             Type = Allowed(command.Type, DeviceTypes, "device type"),
             Metadata = ValidObject(command.Metadata, "metadata"),
             ExpectedVersion = RequiredVersion(command.ExpectedVersion)
         }, context, cancellationToken);
+    }
 
     public Task<IReadOnlyList<AdminMachineRecord>> ListMachinesAsync(CancellationToken cancellationToken = default) =>
         store.ListMachinesAsync(cancellationToken);

@@ -53,7 +53,8 @@ public sealed record AdminDeviceRecord(
     string Type,
     bool IsActive,
     JsonElement Metadata,
-    long ConcurrencyToken);
+    long ConcurrencyToken,
+    Guid? MachineId = null);
 
 public sealed record AdminMachineRecord(
     Guid Id,
@@ -191,14 +192,16 @@ public sealed record CreateDeviceCommand(
     string Name,
     string Type,
     bool IsActive,
-    JsonElement Metadata);
+    JsonElement Metadata,
+    Guid? MachineId = null);
 
 public sealed record UpdateDeviceCommand(
     string Name,
     string Type,
     bool IsActive,
     JsonElement Metadata,
-    long ExpectedVersion);
+    long ExpectedVersion,
+    Guid? MachineId = null);
 
 public sealed record UpdateMachineCommand(
     string DisplayName,

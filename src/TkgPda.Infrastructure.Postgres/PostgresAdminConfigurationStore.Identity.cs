@@ -151,12 +151,22 @@ public sealed partial class PostgresAdminConfigurationStore
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        if (command.MachineId.HasValue)
+        {
+            await using var check = new NpgsqlCommand("SELECT 1 FROM master.machines WHERE id = @id AND is_active", connection, transaction);
+            check.Parameters.AddWithValue("id", command.MachineId.Value);
+            if (await check.ExecuteScalarAsync(cancellationToken) is null)
+            {
+                throw Rule("DEVICE_MACHINE_BINDING_INVALID", "Belirtilen makine bulunamadı veya aktif değil.");
+            }
+        }
+
         AdminDeviceRecord created;
         await using (var insert = new NpgsqlCommand(
                          """
-                         INSERT INTO audit.client_devices (device_code, name, device_type, is_active, metadata_json)
-                         VALUES (@code, @name, @type, @is_active, @metadata)
-                         RETURNING id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint
+                         INSERT INTO audit.client_devices (device_code, name, device_type, is_active, metadata_json, machine_id)
+                         VALUES (@code, @name, @type, @is_active, @metadata, @machine_id)
+                         RETURNING id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint, machine_id
                          """,
                          connection,
                          transaction))
@@ -166,6 +176,7 @@ public sealed partial class PostgresAdminConfigurationStore
             insert.Parameters.AddWithValue("type", command.Type);
             insert.Parameters.AddWithValue("is_active", command.IsActive);
             insert.Parameters.Add("metadata", NpgsqlDbType.Jsonb).Value = command.Metadata.GetRawText();
+            insert.Parameters.AddWithValue("machine_id", (object?)command.MachineId ?? DBNull.Value);
             await using var reader = await insert.ExecuteReaderAsync(cancellationToken);
             await reader.ReadAsync(cancellationToken);
             created = ReadDevice(reader);
@@ -184,15 +195,25 @@ public sealed partial class PostgresAdminConfigurationStore
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        if (command.MachineId.HasValue)
+        {
+            await using var check = new NpgsqlCommand("SELECT 1 FROM master.machines WHERE id = @id AND is_active", connection, transaction);
+            check.Parameters.AddWithValue("id", command.MachineId.Value);
+            if (await check.ExecuteScalarAsync(cancellationToken) is null)
+            {
+                throw Rule("DEVICE_MACHINE_BINDING_INVALID", "Belirtilen makine bulunamadı veya aktif değil.");
+            }
+        }
+
         var before = await ReadDeviceAsync(connection, transaction, deviceId, cancellationToken);
         AdminDeviceRecord after;
         await using (var update = new NpgsqlCommand(
                          """
                          UPDATE audit.client_devices
                          SET name = @name, device_type = @type, is_active = @is_active,
-                             metadata_json = @metadata, updated_at = now()
+                             metadata_json = @metadata, machine_id = @machine_id, updated_at = now()
                          WHERE id = @id AND (xmin::text)::bigint = @expected
-                         RETURNING id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint
+                         RETURNING id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint, machine_id
                          """,
                          connection,
                          transaction))
@@ -203,6 +224,7 @@ public sealed partial class PostgresAdminConfigurationStore
             update.Parameters.AddWithValue("is_active", command.IsActive);
             update.Parameters.Add("metadata", NpgsqlDbType.Jsonb).Value = command.Metadata.GetRawText();
             update.Parameters.AddWithValue("expected", command.ExpectedVersion);
+            update.Parameters.AddWithValue("machine_id", (object?)command.MachineId ?? DBNull.Value);
             await using var reader = await update.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
             {
@@ -376,7 +398,7 @@ public sealed partial class PostgresAdminConfigurationStore
     private static async Task<AdminDeviceRecord> ReadDeviceAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid id, CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
-            "SELECT id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint FROM audit.client_devices WHERE id = @id",
+            "SELECT id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint, machine_id FROM audit.client_devices WHERE id = @id",
             connection,
             transaction);
         command.Parameters.AddWithValue("id", id);

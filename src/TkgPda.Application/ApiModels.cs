@@ -16,7 +16,8 @@ public sealed record DeviceRecord(
     string Code,
     string Name,
     string Type,
-    bool IsActive);
+    bool IsActive,
+    Guid? MachineId = null);
 
 public sealed record MachinePermissionRecord(
     Guid MachineId,

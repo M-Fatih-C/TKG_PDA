@@ -133,7 +133,7 @@ void main() {
   );
 
   testWidgets(
-    'Line operator routes to machine list and has no warehouse capabilities',
+    'Bound line operator routes directly to operation screen and has no warehouse capabilities',
     (tester) async {
       final user = AuthenticatedUser(
         id: testUser.id,
@@ -145,14 +145,15 @@ void main() {
       final repo = FakePdaRepository()..loginUser = user;
       final harness = await _harness(tester, repository: repo);
 
-      // 1. Routes to machines
-      expect(harness.controller.stage, AppStage.machines);
+      // 1. Routes directly to operation screen (bound terminal)
+      expect(harness.controller.stage, AppStage.operation);
+      expect(harness.controller.selectedMachine?.id, testMachine.id);
       expect(harness.controller.canAccessSemiFinishedWarehouse, isFalse);
       expect(harness.controller.canAccessFinishedGoodsWarehouse, isFalse);
       expect(harness.controller.canAccessAnyWarehouse, isFalse);
 
-      // 2. Machine list is visible, no warehouse icons
-      expect(find.text('Makine Seçimi'), findsOneWidget);
+      // 2. Operation screen is visible, machine list picker is skipped, no warehouse icons
+      expect(find.text('Makine Seçimi'), findsNothing);
       expect(find.byKey(const Key('open-warehouse-home')), findsNothing);
       expect(find.byKey(const Key('open-warehouse-preparation')), findsNothing);
 

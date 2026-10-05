@@ -314,13 +314,13 @@ public static class AdminEndpoints
 
     private static async Task<IResult> CreateDeviceAsync(CreateAdminDeviceRequest request, HttpContext context, AdminConfigurationService service, CancellationToken ct)
     {
-        var created = await service.CreateDeviceAsync(new CreateDeviceCommand(request.Code, request.Name, request.Type, request.IsActive, request.Metadata), MutationContext(context), ct);
+        var created = await service.CreateDeviceAsync(new CreateDeviceCommand(request.Code, request.Name, request.Type, request.IsActive, request.Metadata, request.MachineId), MutationContext(context), ct);
         return Created(context, $"/api/v1/admin/devices/{created.Id}", created, created.ConcurrencyToken);
     }
 
     private static async Task<IResult> UpdateDeviceAsync(Guid deviceId, UpdateAdminDeviceRequest request, HttpContext context, AdminConfigurationService service, CancellationToken ct)
     {
-        var updated = await service.UpdateDeviceAsync(deviceId, new UpdateDeviceCommand(request.Name, request.Type, request.IsActive, request.Metadata, Version(context)), MutationContext(context), ct);
+        var updated = await service.UpdateDeviceAsync(deviceId, new UpdateDeviceCommand(request.Name, request.Type, request.IsActive, request.Metadata, Version(context), request.MachineId), MutationContext(context), ct);
         return Versioned(context, updated, updated.ConcurrencyToken);
     }
 

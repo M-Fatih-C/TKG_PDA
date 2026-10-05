@@ -70,12 +70,15 @@ class OperationScreen extends StatelessWidget {
               ),
             ),
           ),
-          IconButton(
-            key: const Key('open-operator-queue-from-machine'),
-            visualDensity: VisualDensity.compact,
-            tooltip: 'Görevler',
-            onPressed: controller.busy ? null : controller.enterTasks,
-            icon: const Icon(Icons.format_list_numbered),
+          KeyedSubtree(
+            key: const Key('open-operator-queue'),
+            child: IconButton(
+              key: const Key('open-operator-queue-from-machine'),
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Görevler',
+              onPressed: controller.busy ? null : controller.enterTasks,
+              icon: const Icon(Icons.format_list_numbered),
+            ),
           ),
           IconButton(
             visualDensity: VisualDensity.compact,

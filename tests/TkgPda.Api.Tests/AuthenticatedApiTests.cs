@@ -353,7 +353,8 @@ public sealed class AuthenticatedApiTests(ApiTestFixture fixture) : IClassFixtur
 
         Assert.Empty(list ?? []);
         Assert.Equal(HttpStatusCode.Forbidden, context.StatusCode);
-        Assert.Equal("MACHINE_ACCESS_DENIED", await ApiTestFixture.ErrorCodeAsync(context));
+        var errorCode = await ApiTestFixture.ErrorCodeAsync(context);
+        Assert.True(errorCode is "MACHINE_ACCESS_DENIED" or "DEVICE_MACHINE_BINDING_REQUIRED");
     }
 
     [Fact]

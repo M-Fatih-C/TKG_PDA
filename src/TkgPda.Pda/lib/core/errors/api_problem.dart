@@ -35,6 +35,10 @@ class ApiProblem implements Exception {
       'Makine bilgisi değişti. Durumu yenileyip tekrar deneyin.',
     'MACHINE_ACCESS_DENIED' || 'MACHINE_OPERATION_NOT_PERMITTED' =>
       'Bu makinede taşıma işlemi yetkiniz bulunmuyor.',
+    'DEVICE_MACHINE_BINDING_REQUIRED' =>
+      'Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.',
+    'DEVICE_MACHINE_SCOPE_MISMATCH' =>
+      'Bu terminal yalnızca tanımlı olduğu makine üzerinde işlem yapabilir.',
     _ => switch (status) {
       400 => 'Gönderilen bilgiler geçersiz.',
       401 => 'Oturumunuz sona erdi. Lütfen yeniden giriş yapın.',

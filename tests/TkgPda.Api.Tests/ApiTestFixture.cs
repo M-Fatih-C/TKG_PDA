@@ -103,7 +103,10 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         bool canOperate = true,
         bool canChangeVariant = false,
         string? machineCode = "SH-01-A",
-        string? employeeNo = null)
+        string? employeeNo = null,
+        bool bindDeviceToMachine = true,
+        string? deviceBoundMachineCode = null,
+        bool includeUserMachinePermissions = true)
     {
         var suffix = Guid.NewGuid().ToString("N")[..10];
         var username = $"user-{suffix}";
@@ -129,32 +132,53 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             """,
             ("user_id", userId),
             ("role", role));
-        var deviceId = await ScalarAsync<Guid>(
-            """
-            INSERT INTO audit.client_devices (device_code, name, device_type, is_active)
-            VALUES (@code, @name, 'PDA', @active)
-            RETURNING id
-            """,
-            ("code", deviceCode),
-            ("name", $"Test PDA {suffix}"),
-            ("active", deviceActive));
 
         Guid? machineId = null;
         if (machineCode is not null)
         {
             machineId = await ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = @code", ("code", machineCode));
-            await ExecuteAsync(
-                """
-                INSERT INTO auth.user_machine_permissions (
-                    user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
-                VALUES (@user_id, @machine_id, @can_view, @can_operate, @can_change_variant, false)
-                """,
-                ("user_id", userId),
-                ("machine_id", machineId),
-                ("can_view", canView),
-                ("can_operate", canOperate),
-                ("can_change_variant", canChangeVariant));
+            if (includeUserMachinePermissions)
+            {
+                await ExecuteAsync(
+                    """
+                    INSERT INTO auth.user_machine_permissions (
+                        user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
+                    VALUES (@user_id, @machine_id, @can_view, @can_operate, @can_change_variant, false)
+                    """,
+                    ("user_id", userId),
+                    ("machine_id", machineId),
+                    ("can_view", canView),
+                    ("can_operate", canOperate),
+                    ("can_change_variant", canChangeVariant));
+            }
         }
+
+        var isWarehouseRole = role is RoleCodes.WarehouseOperator
+            or RoleCodes.SemiFinishedWarehouseOperator
+            or RoleCodes.FinishedGoodsWarehouseOperator;
+
+        Guid? deviceBoundMachineId = null;
+        if (deviceBoundMachineCode is not null)
+        {
+            deviceBoundMachineId = await ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = @code", ("code", deviceBoundMachineCode));
+        }
+        else if (bindDeviceToMachine && !isWarehouseRole && machineCode is not null)
+        {
+            deviceBoundMachineId = machineId.HasValue
+                ? machineId
+                : await ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = @code", ("code", machineCode));
+        }
+
+        var deviceId = await ScalarAsync<Guid>(
+            """
+            INSERT INTO audit.client_devices (device_code, name, device_type, is_active, machine_id)
+            VALUES (@code, @name, 'PDA', @active, @machine_id)
+            RETURNING id
+            """,
+            ("code", deviceCode),
+            ("name", $"Test PDA {suffix}"),
+            ("active", deviceActive),
+            ("machine_id", (object?)deviceBoundMachineId ?? DBNull.Value));
 
         return new TestIdentity(userId, username, password, deviceId, deviceCode, machineId, employeeNumber);
     }

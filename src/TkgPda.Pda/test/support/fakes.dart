@@ -21,6 +21,7 @@ final testDevice = PdaDevice(
   code: testDeviceCode,
   name: 'Test PDA',
   type: 'PDA',
+  machineId: '30000000-0000-0000-0000-000000000001',
 );
 
 final testMachine = MachineSummary(
@@ -381,6 +382,7 @@ class FakePdaRepository implements PdaDataSource {
   }
 
   AuthenticatedUser loginUser = testUser;
+  PdaDevice loginDevice = testDevice;
   List<MachineSummary> machineValues = [testMachine];
   OperationalContext contextValue = testContext();
   ApiProblem? loginProblem;
@@ -474,7 +476,7 @@ class FakePdaRepository implements PdaDataSource {
       accessToken: 'runtime-only-test-token',
       expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 10)),
       user: loginUser,
-      device: testDevice,
+      device: loginDevice,
     );
   }
 

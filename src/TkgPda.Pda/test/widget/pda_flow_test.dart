@@ -11,6 +11,14 @@ import 'package:tkg_pda/data/models/pda_models.dart';
 
 import '../support/fakes.dart';
 
+final _testSupervisor = AuthenticatedUser(
+  id: testUser.id,
+  username: 'supervisor',
+  fullName: 'Test Vardiya Amiri',
+  employeeNo: '1099',
+  roles: const ['SUPERVISOR'],
+);
+
 void main() {
   testWidgets('first run opens Device Setup', (tester) async {
     final harness = await _harness(tester, deviceCode: null);
@@ -38,7 +46,8 @@ void main() {
   });
 
   testWidgets('valid login opens machine list', (tester) async {
-    final harness = await _harness(tester);
+    final repo = FakePdaRepository()..loginUser = _testSupervisor;
+    final harness = await _harness(tester, repository: repo);
 
     await _loginFromUi(tester);
 
@@ -127,7 +136,7 @@ void main() {
   testWidgets('machine list renders customer values without permission chips', (
     tester,
   ) async {
-    final repository = FakePdaRepository();
+    final repository = FakePdaRepository()..loginUser = _testSupervisor;
     final harness = await _loggedInHarness(tester, repository: repository);
 
     expect(find.byKey(Key('machine-${testMachine.id}')), findsOneWidget);
@@ -141,7 +150,9 @@ void main() {
   testWidgets('an operator with no assigned machines sees an empty state', (
     tester,
   ) async {
-    final repository = FakePdaRepository()..machineValues = [];
+    final repository = FakePdaRepository()
+      ..loginUser = _testSupervisor
+      ..machineValues = [];
     final harness = await _loggedInHarness(tester, repository: repository);
 
     expect(find.byKey(const Key('machine-list-empty')), findsOneWidget);
@@ -167,7 +178,9 @@ void main() {
         canManageSlots: false,
       ),
     );
-    final repository = FakePdaRepository()..machineValues = [viewOnly];
+    final repository = FakePdaRepository()
+      ..loginUser = _testSupervisor
+      ..machineValues = [viewOnly];
     final harness = await _loggedInHarness(tester, repository: repository);
 
     expect(
@@ -179,7 +192,8 @@ void main() {
   });
 
   testWidgets('machine selection loads operational context', (tester) async {
-    final harness = await _loggedInHarness(tester);
+    final repo = FakePdaRepository()..loginUser = _testSupervisor;
+    final harness = await _loggedInHarness(tester, repository: repo);
 
     await tester.tap(find.byKey(Key('machine-${testMachine.id}')));
     await tester.pumpAndSettle();

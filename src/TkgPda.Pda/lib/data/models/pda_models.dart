@@ -33,18 +33,21 @@ class PdaDevice {
     required this.code,
     required this.name,
     required this.type,
+    this.machineId,
   });
 
   final String id;
   final String code;
   final String name;
   final String type;
+  final String? machineId;
 
   factory PdaDevice.fromJson(JsonMap json) => PdaDevice(
     id: json['id'] as String,
     code: json['code'] as String? ?? '',
     name: json['name'] as String? ?? '',
     type: json['type'] as String? ?? '',
+    machineId: json['machineId'] as String?,
   );
 }
 

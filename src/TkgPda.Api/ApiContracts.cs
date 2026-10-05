@@ -18,7 +18,7 @@ public sealed record AuthenticatedUserResponse(
     string? EmployeeNo,
     IReadOnlyList<string> Roles);
 
-public sealed record DeviceResponse(Guid Id, string Code, string Name, string Type);
+public sealed record DeviceResponse(Guid Id, string Code, string Name, string Type, Guid? MachineId = null);
 
 public sealed record CreateTransportHttpRequest(
     Guid MachineId,

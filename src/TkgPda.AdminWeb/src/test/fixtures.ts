@@ -19,7 +19,7 @@ export const users: AdminUser[] = [
   { ...session.user, isActive: true, lastLoginAt: '2026-08-18T12:00:00Z', machinePermissions: [], concurrencyToken: 51 },
   { id: 'u-line', username: 'operator', fullName: 'Hat Operatörü', employeeNo: 'L-101', roles: ['LINE_OPERATOR'], isActive: true, lastLoginAt: null, machinePermissions: [{ machineId: 'm-1', canView: true, canOperate: true, canChangeVariant: false, canManageSlots: false }], concurrencyToken: 52 },
 ]
-export const devices: Device[] = [{ id: 'd-1', code: 'PDA-01', name: 'Saha PDA 01', type: 'PDA', isActive: true, metadata: { area: 'SH' }, concurrencyToken: 61 }]
+export const devices: Device[] = [{ id: 'd-1', code: 'PDA-01', name: 'Saha PDA 01', type: 'PDA', isActive: true, metadata: { area: 'SH' }, concurrencyToken: 61, machineId: 'm-1' }]
 export const variants: Variant[] = [{ id: 'v-1', machineId: 'm-1', code: 'V1', name: 'Varyant 1', displayOrder: 1, isActive: true, defaultLayoutId: 'l-1', concurrencyToken: 71 }]
 export const layouts: Layout[] = [{ id: 'l-1', machineId: 'm-1', code: 'SH01-LAYOUT', name: 'Müşteri Fiziksel Planı', version: 2, status: 'DRAFT', slotCount: 2, assignedVariantCount: 1, publishedAt: null, concurrencyToken: 81 }]
 export const containers: ContainerType[] = [{ id: 'c-1', code: '1284', name: 'Kasa 1284', category: 'BOX', lengthMm: null, widthMm: null, heightMm: null, capacityQuantity: null, isActive: true, concurrencyToken: 91 }]

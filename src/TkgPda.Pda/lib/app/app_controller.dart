@@ -274,8 +274,13 @@ class AppController extends ChangeNotifier {
 
   AppStage get stage => _stage;
   String? get deviceCode => _deviceCode;
+  PdaDevice? get device => _session.device;
   AuthenticatedUser? get user => _session.user;
   bool get isAuthenticated => _session.isAuthenticated;
+  bool get isAdminOrSupervisor =>
+      (user?.roles ?? const []).any((r) => r == 'ADMIN' || r == 'SUPERVISOR');
+  bool get isLineOperator =>
+      (user?.roles ?? const []).any((r) => r == 'LINE_OPERATOR' || r == 'OPERATOR');
   List<MachineSummary> get machines => _machines;
   MachineSummary? get selectedMachine => _selectedMachine;
   OperationalContext? get context => _context;
@@ -493,7 +498,48 @@ class AppController extends ChangeNotifier {
       final isLineOperator =
           roles.contains('LINE_OPERATOR') || roles.contains('OPERATOR');
 
-      if (isAdminOrSupervisor || isLineOperator) {
+      if (!isAdminOrSupervisor && isLineOperator) {
+        final boundMachineId = session.device.machineId;
+        if (boundMachineId == null || boundMachineId.isEmpty) {
+          _session.clear();
+          _clearOperationalState();
+          _submission.clear();
+          _problem = const ApiProblem(
+            status: 403,
+            code: 'DEVICE_MACHINE_BINDING_REQUIRED',
+            detail:
+                'Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.',
+            correlationId: null,
+          );
+          _stage = AppStage.login;
+          notifyListeners();
+          return false;
+        }
+
+        await _loadMachines();
+        final boundMachine = _machines.cast<MachineSummary?>().firstWhere(
+          (m) => m?.id == boundMachineId,
+          orElse: () => _machines.isNotEmpty ? _machines.first : null,
+        );
+        if (boundMachine != null) {
+          _setBusy(false);
+          await selectMachine(boundMachine);
+        } else {
+          _session.clear();
+          _clearOperationalState();
+          _submission.clear();
+          _problem = const ApiProblem(
+            status: 403,
+            code: 'DEVICE_MACHINE_BINDING_REQUIRED',
+            detail:
+                'Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.',
+            correlationId: null,
+          );
+          _stage = AppStage.login;
+          notifyListeners();
+          return false;
+        }
+      } else if (isAdminOrSupervisor) {
         await _loadMachines();
         _stage = AppStage.machines;
       } else if (isLegacyWarehouse || (isSemiFinished && isFinishedGoods)) {
@@ -578,6 +624,14 @@ class AppController extends ChangeNotifier {
   Future<void> selectMachine(MachineSummary machine) async {
     if (isMutationInFlight || production.hasPending) {
       _notice = 'İşlem devam ederken makine değiştirilemez.';
+      notifyListeners();
+      return;
+    }
+    if (!isAdminOrSupervisor &&
+        device?.machineId != null &&
+        machine.id != device!.machineId) {
+      _notice =
+          'Bu terminal yalnızca tanımlı olduğu makine üzerinde işlem yapabilir.';
       notifyListeners();
       return;
     }

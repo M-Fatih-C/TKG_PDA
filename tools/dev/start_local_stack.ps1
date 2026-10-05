@@ -257,18 +257,21 @@ Write-Host 'Applying migration 008 (008_warehouse_preparation_areas.sql)...' -Fo
 Write-Host 'Applying migration 009 (009_preparation_placement_key.sql)...' -ForegroundColor Cyan
 Write-Host 'Applying migration 010 (010_finished_goods_store.sql)...' -ForegroundColor Cyan
 Write-Host 'Applying migration 011 (011_warehouse_operator_roles.sql)...' -ForegroundColor Cyan
+Write-Host 'Applying migration 012 (012_client_device_machine_binding.sql)...' -ForegroundColor Cyan
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\006_production_sessions.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\007_bring_full_task_type.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\008_warehouse_preparation_areas.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\009_preparation_placement_key.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\010_finished_goods_store.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\011_warehouse_operator_roles.sql') | Out-Null
+& $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\012_client_device_machine_binding.sql') | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Applying 006_production_sessions.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 007_bring_full_task_type.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 008_warehouse_preparation_areas.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 009_preparation_placement_key.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 010_finished_goods_store.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 011_warehouse_operator_roles.sql failed with exit code $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw "Applying 012_client_device_machine_binding.sql failed with exit code $LASTEXITCODE" }
 
 Write-Host 'Applying customer master seeds (002a, 002b, 002c)...' -ForegroundColor Cyan
 $seedFiles = @(

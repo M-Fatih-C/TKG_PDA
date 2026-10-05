@@ -49,7 +49,7 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
     {
         var result = new List<AdminDeviceRecord>();
         await using var command = dataSource.CreateCommand(
-            "SELECT id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint FROM audit.client_devices ORDER BY device_code");
+            "SELECT id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint, machine_id FROM audit.client_devices ORDER BY device_code");
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -388,7 +388,8 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
     }
 
     private static AdminDeviceRecord ReadDevice(NpgsqlDataReader reader) => new(
-        reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetBoolean(4), ParseJson(reader.GetString(5)), reader.GetInt64(6));
+        reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetBoolean(4), ParseJson(reader.GetString(5)), reader.GetInt64(6),
+        reader.IsDBNull(7) ? null : reader.GetGuid(7));
 
     private static AdminMachineRecord ReadMachine(NpgsqlDataReader reader) => new(
         reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetBoolean(4), reader.GetInt64(5));
@@ -447,6 +448,7 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
 
     private static AdminRuleException NotFound(string code, string message) => new(code, message);
     private static AdminRuleException Conflict(string code, string message) => new(code, message);
+    private static AdminRuleException Rule(string code, string message) => new(code, message);
 
     private static JsonElement ParseJson(string json) => JsonDocument.Parse(json).RootElement.Clone();
     private static JsonElement? NullableJson(NpgsqlDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : ParseJson(reader.GetString(ordinal));
