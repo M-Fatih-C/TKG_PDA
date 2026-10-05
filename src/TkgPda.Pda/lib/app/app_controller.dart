@@ -27,11 +27,17 @@ enum AppStage {
   finishedGoodsStore,
 }
 
-/// Roles allowed to see and use the warehouse preparation console — the same
-/// set the backend's WarehousePreparation authorization policy grants.
-const _warehousePreparationRoles = {
+const _semiFinishedWarehouseRoles = {
   'ADMIN',
   'SUPERVISOR',
+  'SEMI_FINISHED_WAREHOUSE_OPERATOR',
+  'WAREHOUSE_OPERATOR',
+};
+
+const _finishedGoodsWarehouseRoles = {
+  'ADMIN',
+  'SUPERVISOR',
+  'FINISHED_GOODS_WAREHOUSE_OPERATOR',
   'WAREHOUSE_OPERATOR',
 };
 
@@ -401,9 +407,14 @@ class AppController extends ChangeNotifier {
         .whereType<String>(),
   );
 
-  // Customer UI — Warehouse Preparation Console.
-  bool get canAccessWarehousePreparation =>
-      (user?.roles ?? const []).any(_warehousePreparationRoles.contains);
+  // Customer UI — Warehouse Capabilities.
+  bool get canAccessSemiFinishedWarehouse =>
+      (user?.roles ?? const []).any(_semiFinishedWarehouseRoles.contains);
+  bool get canAccessFinishedGoodsWarehouse =>
+      (user?.roles ?? const []).any(_finishedGoodsWarehouseRoles.contains);
+  bool get canAccessAnyWarehouse =>
+      canAccessSemiFinishedWarehouse || canAccessFinishedGoodsWarehouse;
+  bool get canAccessWarehousePreparation => canAccessSemiFinishedWarehouse;
   List<WarehousePreparationRequest> get warehousePreparationRequests =>
       _warehouseRequests;
   bool get warehousePreparationLoading => _warehouseLoading;
@@ -471,8 +482,36 @@ class AppController extends ChangeNotifier {
     try {
       final session = await _repository.login(employeeNumber.trim());
       _session.establish(session);
-      await _loadMachines();
-      _stage = AppStage.machines;
+      final roles = session.user.roles;
+      final isAdminOrSupervisor =
+          roles.contains('ADMIN') || roles.contains('SUPERVISOR');
+      final isLegacyWarehouse = roles.contains('WAREHOUSE_OPERATOR');
+      final isSemiFinished =
+          roles.contains('SEMI_FINISHED_WAREHOUSE_OPERATOR');
+      final isFinishedGoods =
+          roles.contains('FINISHED_GOODS_WAREHOUSE_OPERATOR');
+      final isLineOperator =
+          roles.contains('LINE_OPERATOR') || roles.contains('OPERATOR');
+
+      if (isAdminOrSupervisor || isLineOperator) {
+        await _loadMachines();
+        _stage = AppStage.machines;
+      } else if (isLegacyWarehouse || (isSemiFinished && isFinishedGoods)) {
+        _stage = AppStage.warehouseHome;
+      } else if (isSemiFinished && !isFinishedGoods) {
+        _stage = AppStage.preparationAreas;
+        if (_enablePolling) {
+          preparation.start();
+        }
+      } else if (isFinishedGoods && !isSemiFinished) {
+        _stage = AppStage.finishedGoodsStore;
+        if (_enablePolling) {
+          store.start();
+        }
+      } else {
+        await _loadMachines();
+        _stage = AppStage.machines;
+      }
       _offline = false;
       return true;
     } on ApiProblem catch (problem) {
@@ -983,20 +1022,16 @@ class AppController extends ChangeNotifier {
   /// machine selection or part-first state.
   final PreparationCoordinator preparation;
 
-  /// The warehouse tablet home. Same roles as the preparation console: the
-  /// backend's WarehousePreparation policy is the authority, this only decides
-  /// what to draw.
+  /// The warehouse tablet home.
   void enterWarehouseHome() {
-    if (!canAccessWarehousePreparation || isMutationInFlight) return;
+    if (!canAccessAnyWarehouse || isMutationInFlight) return;
     _stage = AppStage.warehouseHome;
     _clearFeedback();
     notifyListeners();
-    preparation.start();
-    store.start();
   }
 
   void enterPreparationAreas() {
-    if (!canAccessWarehousePreparation || isMutationInFlight) return;
+    if (!canAccessSemiFinishedWarehouse || isMutationInFlight) return;
     _stage = AppStage.preparationAreas;
     _clearFeedback();
     notifyListeners();
@@ -1005,7 +1040,11 @@ class AppController extends ChangeNotifier {
 
   void leavePreparationAreas() {
     if (preparation.inFlight) return;
-    _stage = AppStage.warehouseHome;
+    if (canAccessAnyWarehouse) {
+      _stage = AppStage.warehouseHome;
+    } else {
+      _stage = AppStage.machines;
+    }
     _clearFeedback();
     notifyListeners();
   }
@@ -1015,7 +1054,7 @@ class AppController extends ChangeNotifier {
   final StoreCoordinator store;
 
   void enterFinishedGoodsStore() {
-    if (!canAccessWarehousePreparation || isMutationInFlight) return;
+    if (!canAccessFinishedGoodsWarehouse || isMutationInFlight) return;
     _stage = AppStage.finishedGoodsStore;
     _clearFeedback();
     notifyListeners();
@@ -1024,7 +1063,11 @@ class AppController extends ChangeNotifier {
 
   void leaveFinishedGoodsStore() {
     if (store.inFlight) return;
-    _stage = AppStage.warehouseHome;
+    if (canAccessAnyWarehouse) {
+      _stage = AppStage.warehouseHome;
+    } else {
+      _stage = AppStage.machines;
+    }
     _clearFeedback();
     notifyListeners();
   }
@@ -1043,7 +1086,7 @@ class AppController extends ChangeNotifier {
   /// Kept separate from the line-operator part-selection flow: this stage
   /// never touches machine selection or part-first state, and vice versa.
   Future<void> enterWarehousePreparation() async {
-    if (!canAccessWarehousePreparation || isMutationInFlight) return;
+    if (!canAccessSemiFinishedWarehouse || isMutationInFlight) return;
     _stage = AppStage.warehousePreparation;
     _clearFeedback();
     notifyListeners();
@@ -1052,7 +1095,7 @@ class AppController extends ChangeNotifier {
 
   void leaveWarehousePreparation() {
     if (isMutationInFlight) return;
-    _stage = AppStage.machines;
+    _stage = canAccessAnyWarehouse ? AppStage.warehouseHome : AppStage.machines;
     _warehouseRequests = const [];
     _warehouseError = null;
     _clearFeedback();
@@ -2198,6 +2241,10 @@ class AppController extends ChangeNotifier {
   void dispose() {
     _stopPolling();
     _stopQueuePolling();
+    preparation.stop();
+    preparation.dispose();
+    store.stop();
+    store.dispose();
     production.removeListener(notifyListeners);
     production.dispose();
     warehouseNotifications.removeListener(notifyListeners);

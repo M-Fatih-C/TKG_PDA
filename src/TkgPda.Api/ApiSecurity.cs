@@ -14,14 +14,38 @@ public static class RoleCodes
     public const string Supervisor = KnownRoleCodes.Supervisor;
     public const string LineOperator = KnownRoleCodes.LineOperator;
     public const string WarehouseOperator = KnownRoleCodes.WarehouseOperator;
+    public const string SemiFinishedWarehouseOperator = KnownRoleCodes.SemiFinishedWarehouseOperator;
+    public const string FinishedGoodsWarehouseOperator = KnownRoleCodes.FinishedGoodsWarehouseOperator;
 
-    public static readonly string[] OperatorRoles = [Admin, Supervisor, LineOperator, WarehouseOperator];
+    public static readonly string[] OperatorRoles =
+    [
+        Admin,
+        Supervisor,
+        LineOperator,
+        WarehouseOperator,
+        SemiFinishedWarehouseOperator,
+        FinishedGoodsWarehouseOperator
+    ];
     public static readonly string[] VariantManagerRoles = [Admin, Supervisor];
 
-    // WP-05A: marking a request READY is a warehouse preparation action, not
-    // an ordinary line-operator transport action. LineOperator is deliberately
-    // excluded here.
-    public static readonly string[] WarehousePreparationRoles = [Admin, Supervisor, WarehouseOperator];
+    public static readonly string[] SemiFinishedWarehouseRoles =
+    [
+        Admin,
+        Supervisor,
+        SemiFinishedWarehouseOperator,
+        WarehouseOperator
+    ];
+
+    public static readonly string[] FinishedGoodsWarehouseRoles =
+    [
+        Admin,
+        Supervisor,
+        FinishedGoodsWarehouseOperator,
+        WarehouseOperator
+    ];
+
+    // Kept for backward compatibility
+    public static readonly string[] WarehousePreparationRoles = SemiFinishedWarehouseRoles;
 }
 
 public static class PolicyNames
@@ -30,6 +54,8 @@ public static class PolicyNames
     public const string VariantManager = "variant-manager";
     public const string Administrator = "administrator";
     public const string WarehousePreparation = "warehouse-preparation";
+    public const string SemiFinishedWarehouse = "semi-finished-warehouse";
+    public const string FinishedGoodsWarehouse = "finished-goods-warehouse";
     public const string ProductionOperator = "production-operator";
 }
 

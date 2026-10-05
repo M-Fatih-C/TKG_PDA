@@ -81,7 +81,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
+        await ValidateFinishedGoodsActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
 
         Guid locationId;
         Guid? partId;
@@ -151,7 +151,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
+        await ValidateFinishedGoodsActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
 
         await using (var exists = new NpgsqlCommand(
             "SELECT 1 FROM ops.store_locations WHERE id = @id", connection, transaction))
@@ -283,5 +283,25 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         AddNullableUuid(command, "device", deviceId);
         command.Parameters.Add("data", NpgsqlDbType.Jsonb).Value = JsonSerializer.Serialize(data);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task ValidateFinishedGoodsActorAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        Guid actorId, Guid deviceId, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT 1 FROM auth.users u
+            WHERE u.id = @actor AND u.is_active
+              AND EXISTS (SELECT 1 FROM audit.client_devices d WHERE d.id = @device AND d.is_active)
+              AND EXISTS (SELECT 1 FROM auth.user_roles ur JOIN auth.roles r ON r.id = ur.role_id
+                          WHERE ur.user_id = u.id AND r.code IN ('ADMIN','SUPERVISOR','WAREHOUSE_OPERATOR','FINISHED_GOODS_WAREHOUSE_OPERATOR'))
+            """, connection, transaction);
+        command.Parameters.AddWithValue("actor", actorId);
+        command.Parameters.AddWithValue("device", deviceId);
+        if (await command.ExecuteScalarAsync(cancellationToken) is null)
+        {
+            throw new WorkflowRuleException(
+                "STORE_ACCESS_DENIED", "Kullanıcı veya cihaz bitmiş ürün deposu işlemi yapmaya yetkili değil.");
+        }
     }
 }

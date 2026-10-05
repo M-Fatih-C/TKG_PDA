@@ -10,6 +10,8 @@ export const roles: Role[] = [
   { id: 'r-supervisor', code: 'SUPERVISOR', name: 'Supervisor', isSystem: true, isActive: true },
   { id: 'r-line', code: 'LINE_OPERATOR', name: 'Line Operator', isSystem: true, isActive: true },
   { id: 'r-warehouse', code: 'WAREHOUSE_OPERATOR', name: 'Warehouse Operator', isSystem: true, isActive: true },
+  { id: 'r-semi-finished', code: 'SEMI_FINISHED_WAREHOUSE_OPERATOR', name: 'Yarı Mamul Depo Operatörü', isSystem: true, isActive: true },
+  { id: 'r-finished-goods', code: 'FINISHED_GOODS_WAREHOUSE_OPERATOR', name: 'Bitmiş Ürün Depo Operatörü', isSystem: true, isActive: true },
 ]
 
 export const machines: Machine[] = [{ id: 'm-1', code: 'SH-01-A', displayName: 'Şase Hattı 01 A', displayOrder: 1, isActive: true, concurrencyToken: 41 }]

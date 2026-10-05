@@ -23,7 +23,7 @@ public static class WarehousePreparationEndpoints
     public static IEndpointRouteBuilder MapWarehousePreparation(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/v1/warehouse/preparation")
-            .RequireAuthorization(PolicyNames.WarehousePreparation);
+            .RequireAuthorization(PolicyNames.SemiFinishedWarehouse);
 
         // Both reads are polled by the tablet every few seconds.
         group.MapGet("/areas", AreasAsync);

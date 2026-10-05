@@ -484,7 +484,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             WHERE u.id = @actor AND u.is_active
               AND EXISTS (SELECT 1 FROM audit.client_devices d WHERE d.id = @device AND d.is_active)
               AND EXISTS (SELECT 1 FROM auth.user_roles ur JOIN auth.roles r ON r.id = ur.role_id
-                          WHERE ur.user_id = u.id AND r.code IN ('ADMIN','SUPERVISOR','WAREHOUSE_OPERATOR'))
+                          WHERE ur.user_id = u.id AND r.code IN ('ADMIN','SUPERVISOR','WAREHOUSE_OPERATOR','SEMI_FINISHED_WAREHOUSE_OPERATOR'))
             """, connection, transaction);
         command.Parameters.AddWithValue("actor", actorId);
         command.Parameters.AddWithValue("device", deviceId);

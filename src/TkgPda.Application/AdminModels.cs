@@ -8,8 +8,18 @@ public static class KnownRoleCodes
     public const string Supervisor = "SUPERVISOR";
     public const string LineOperator = "LINE_OPERATOR";
     public const string WarehouseOperator = "WAREHOUSE_OPERATOR";
+    public const string SemiFinishedWarehouseOperator = "SEMI_FINISHED_WAREHOUSE_OPERATOR";
+    public const string FinishedGoodsWarehouseOperator = "FINISHED_GOODS_WAREHOUSE_OPERATOR";
 
-    public static readonly string[] All = [Admin, Supervisor, LineOperator, WarehouseOperator];
+    public static readonly string[] All =
+    [
+        Admin,
+        Supervisor,
+        LineOperator,
+        WarehouseOperator,
+        SemiFinishedWarehouseOperator,
+        FinishedGoodsWarehouseOperator
+    ];
 }
 
 public sealed record AdminMutationContext(

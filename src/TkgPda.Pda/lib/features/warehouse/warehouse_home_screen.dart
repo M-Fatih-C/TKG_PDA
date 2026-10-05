@@ -42,13 +42,24 @@ class WarehouseHomeScreen extends StatelessWidget {
           WarehouseNotificationBell(
             coordinator: controller.warehouseNotifications,
             onNavigate: (stage) {
-              if (stage == AppStage.preparationAreas) {
+              if (stage == AppStage.preparationAreas &&
+                  controller.canAccessSemiFinishedWarehouse) {
                 controller.enterPreparationAreas();
-              } else if (stage == AppStage.finishedGoodsStore) {
+              } else if (stage == AppStage.finishedGoodsStore &&
+                  controller.canAccessFinishedGoodsWarehouse) {
                 controller.enterFinishedGoodsStore();
               }
             },
           ),
+          if (controller.canAccessSemiFinishedWarehouse)
+            IconButton(
+              key: const Key('open-warehouse-preparation'),
+              tooltip: 'Depo Hazırlık Konsolu',
+              onPressed: controller.busy
+                  ? null
+                  : controller.enterWarehousePreparation,
+              icon: const Icon(Icons.inventory_2_outlined),
+            ),
           IconButton(
             key: const Key('logout-button'),
             tooltip: 'Çıkış',
@@ -64,9 +75,11 @@ class WarehouseHomeScreen extends StatelessWidget {
             WarehouseNotificationBanner(
               coordinator: controller.warehouseNotifications,
               onNavigate: (stage) {
-                if (stage == AppStage.preparationAreas) {
+                if (stage == AppStage.preparationAreas &&
+                    controller.canAccessSemiFinishedWarehouse) {
                   controller.enterPreparationAreas();
-                } else if (stage == AppStage.finishedGoodsStore) {
+                } else if (stage == AppStage.finishedGoodsStore &&
+                    controller.canAccessFinishedGoodsWarehouse) {
                   controller.enterFinishedGoodsStore();
                 }
               },
@@ -74,33 +87,53 @@ class WarehouseHomeScreen extends StatelessWidget {
             Expanded(
               child: Padding(
                 padding: EdgeInsets.all(PdaScale.gutter(context)),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-              Expanded(
-                child: _HomeTile(
-                  actionKey: const Key('open-preparation-areas'),
-                  icon: Icons.inventory_2_outlined,
-                  title: 'Yarı Mamul Hazırlık',
-                  description:
-                      'Makinelerden gelen talepleri dört hazırlık alanında hazırlayın.',
-                  color: PdaStatusColors.running,
-                  onPressed: controller.enterPreparationAreas,
-                ),
-              ),
-              SizedBox(height: PdaScale.gutter(context)),
-              Expanded(
-                child: _HomeTile(
-                  actionKey: const Key('open-finished-goods'),
-                  icon: Icons.warehouse_outlined,
-                  title: 'Bitmiş Ürün Deposu',
-                  description:
-                      'Robotun getirdiği bitmiş ürünleri görün ve aldığınız alanları bildirin.',
-                  color: PdaStatusColors.done,
-                  onPressed: controller.enterFinishedGoodsStore,
-                ),
-              ),
-                  ],
+                child: Builder(
+                  builder: (context) {
+                    final canSemi = controller.canAccessSemiFinishedWarehouse;
+                    final canStore = controller.canAccessFinishedGoodsWarehouse;
+                    final tiles = <Widget>[
+                      if (canSemi)
+                        Expanded(
+                          child: _HomeTile(
+                            actionKey: const Key('open-preparation-areas'),
+                            icon: Icons.inventory_2_outlined,
+                            title: 'Yarı Mamul Hazırlık',
+                            description:
+                                'Makinelerden gelen talepleri dört hazırlık alanında hazırlayın.',
+                            color: PdaStatusColors.running,
+                            onPressed: controller.enterPreparationAreas,
+                          ),
+                        ),
+                      if (canSemi && canStore)
+                        SizedBox(height: PdaScale.gutter(context)),
+                      if (canStore)
+                        Expanded(
+                          child: _HomeTile(
+                            actionKey: const Key('open-finished-goods'),
+                            icon: Icons.warehouse_outlined,
+                            title: 'Bitmiş Ürün Deposu',
+                            description:
+                                'Robotun getirdiği bitmiş ürünleri görün ve aldığınız alanları bildirin.',
+                            color: PdaStatusColors.done,
+                            onPressed: controller.enterFinishedGoodsStore,
+                          ),
+                        ),
+                    ];
+
+                    if (tiles.isEmpty) {
+                      return const Center(
+                        child: Text(
+                          'Bu ekran için görüntüleme yetkiniz bulunmuyor.',
+                          key: Key('warehouse-no-permission'),
+                        ),
+                      );
+                    }
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: tiles,
+                    );
+                  },
                 ),
               ),
             ),

@@ -1,4 +1,10 @@
-export type RoleCode = 'ADMIN' | 'SUPERVISOR' | 'LINE_OPERATOR' | 'WAREHOUSE_OPERATOR'
+export type RoleCode =
+  | 'ADMIN'
+  | 'SUPERVISOR'
+  | 'LINE_OPERATOR'
+  | 'WAREHOUSE_OPERATOR'
+  | 'SEMI_FINISHED_WAREHOUSE_OPERATOR'
+  | 'FINISHED_GOODS_WAREHOUSE_OPERATOR'
 
 export interface AuthenticatedUser {
   id: string

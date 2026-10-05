@@ -208,6 +208,12 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy(PolicyNames.WarehousePreparation, policy => policy
         .RequireRole(RoleCodes.WarehousePreparationRoles)
         .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
+    options.AddPolicy(PolicyNames.SemiFinishedWarehouse, policy => policy
+        .RequireRole(RoleCodes.SemiFinishedWarehouseRoles)
+        .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
+    options.AddPolicy(PolicyNames.FinishedGoodsWarehouse, policy => policy
+        .RequireRole(RoleCodes.FinishedGoodsWarehouseRoles)
+        .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
     options.AddPolicy(PolicyNames.ProductionOperator, policy => policy
         .RequireRole(RoleCodes.Admin, RoleCodes.Supervisor, RoleCodes.LineOperator)
         .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));

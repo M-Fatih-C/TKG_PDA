@@ -60,10 +60,10 @@ public static class ApiEndpoints
             .RequireAuthorization(PolicyNames.Operator);
 
         endpoints.MapPost("/api/v1/transport-requests/{requestId:guid}/ready", MarkTransportReadyAsync)
-            .RequireAuthorization(PolicyNames.WarehousePreparation);
+            .RequireAuthorization(PolicyNames.SemiFinishedWarehouse);
 
         endpoints.MapGet("/api/v1/warehouse/preparation-requests", ListWarehousePreparationRequestsAsync)
-            .RequireAuthorization(PolicyNames.WarehousePreparation);
+            .RequireAuthorization(PolicyNames.SemiFinishedWarehouse);
 
         endpoints.MapPut("/api/v1/machines/{machineId:guid}/slots/{slotId:guid}/load-state", UpdateLoadStateAsync)
             .RequireAuthorization(PolicyNames.Operator);

@@ -16,7 +16,25 @@ GoRouter buildRouter(AppController controller) => GoRouter(
   initialLocation: '/starting',
   refreshListenable: controller,
   redirect: (context, state) {
-    final target = switch (controller.stage) {
+    final stage = controller.stage;
+    if (stage == AppStage.preparationAreas &&
+        !controller.canAccessSemiFinishedWarehouse) {
+      return controller.canAccessAnyWarehouse ? '/warehouse' : '/machines';
+    }
+    if (stage == AppStage.warehousePreparation &&
+        !controller.canAccessSemiFinishedWarehouse) {
+      return controller.canAccessAnyWarehouse ? '/warehouse' : '/machines';
+    }
+    if (stage == AppStage.finishedGoodsStore &&
+        !controller.canAccessFinishedGoodsWarehouse) {
+      return controller.canAccessAnyWarehouse ? '/warehouse' : '/machines';
+    }
+    if (stage == AppStage.warehouseHome &&
+        !controller.canAccessAnyWarehouse) {
+      return '/machines';
+    }
+
+    final target = switch (stage) {
       AppStage.starting => '/starting',
       AppStage.deviceSetup => '/device-setup',
       AppStage.login => '/login',
@@ -74,7 +92,8 @@ GoRouter buildRouter(AppController controller) => GoRouter(
         coordinator: controller.store,
         onBack: controller.leaveFinishedGoodsStore,
         onNavigate: (stage) {
-          if (stage == AppStage.preparationAreas) {
+          if (stage == AppStage.preparationAreas &&
+              controller.canAccessSemiFinishedWarehouse) {
             controller.enterPreparationAreas();
           }
         },
@@ -86,7 +105,8 @@ GoRouter buildRouter(AppController controller) => GoRouter(
         coordinator: controller.preparation,
         onBack: controller.leavePreparationAreas,
         onNavigate: (stage) {
-          if (stage == AppStage.finishedGoodsStore) {
+          if (stage == AppStage.finishedGoodsStore &&
+              controller.canAccessFinishedGoodsWarehouse) {
             controller.enterFinishedGoodsStore();
           }
         },

@@ -17,7 +17,7 @@ public static class FinishedGoodsStoreEndpoints
     public static IEndpointRouteBuilder MapFinishedGoodsStore(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/v1/warehouse/store")
-            .RequireAuthorization(PolicyNames.WarehousePreparation);
+            .RequireAuthorization(PolicyNames.FinishedGoodsWarehouse);
 
         // Polled by the tablet every few seconds.
         group.MapGet("/locations", LocationsAsync);
