@@ -1,7 +1,7 @@
 param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\18\bin',
     [int]$Port = 55439,
-    [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests'
+    [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests|FullyQualifiedName~GlobalTaskVisibilityAndCancellationScopeApiTests'
 )
 
 $ErrorActionPreference = 'Stop'

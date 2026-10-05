@@ -406,6 +406,8 @@ class FakePdaRepository implements PdaDataSource {
   Object? batchCreateError;
   Completer<TransportBatchResult>? batchCreateCompleter;
   int cancelCount = 0;
+  String? lastCancelMachineId;
+  String? lastCancelRequestId;
   List<WarehousePreparationRequest> warehouseRequestsValue = const [];
   Object? warehouseRequestsError;
   int warehouseRequestsCount = 0;
@@ -785,8 +787,13 @@ class FakePdaRepository implements PdaDataSource {
       );
 
   @override
-  Future<TransportResult> cancel(String requestId) async {
+  Future<TransportResult> cancel({
+    required String machineId,
+    required String requestId,
+  }) async {
     cancelCount++;
+    lastCancelMachineId = machineId;
+    lastCancelRequestId = requestId;
     contextValue = testContext();
     return const TransportResult(
       id: '90000000-0000-0000-0000-000000000001',

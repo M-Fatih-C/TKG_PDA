@@ -62,8 +62,8 @@ public static class ApiEndpoints
         endpoints.MapGet("/api/v1/transport-requests/{requestId:guid}", GetTransportAsync)
             .RequireAuthorization();
 
-        endpoints.MapPost("/api/v1/transport-requests/{requestId:guid}/cancel", CancelTransportAsync)
-            .RequireAuthorization(PolicyNames.Operator);
+        endpoints.MapPost("/api/v1/machines/{machineId:guid}/transport-requests/{requestId:guid}/cancel", CancelTransportAsync)
+            .RequireAuthorization(PolicyNames.ProductionOperator);
 
         endpoints.MapPost("/api/v1/transport-requests/{requestId:guid}/ready", MarkTransportReadyAsync)
             .RequireAuthorization(PolicyNames.SemiFinishedWarehouse);
@@ -847,6 +847,7 @@ public static class ApiEndpoints
     }
 
     private static async Task<IResult> CancelTransportAsync(
+        Guid machineId,
         Guid requestId,
         HttpContext context,
         IApiDataStore dataStore,
@@ -856,8 +857,16 @@ public static class ApiEndpoints
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
-        _ = await access.EnsureAsync(context, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
-        EnsureCancellationAllowed(context.User, existing);
+
+        if (existing.MachineId != machineId)
+        {
+            throw new ApiException(
+                StatusCodes.Status403Forbidden,
+                "REQUEST_MACHINE_MISMATCH",
+                "The transport request does not belong to the specified machine.");
+        }
+
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
         var result = await rdsExecution.CancelAsync(
             requestId,
             context.User.UserId(),
@@ -1087,20 +1096,6 @@ public static class ApiEndpoints
             : key;
     }
 
-    private static void EnsureCancellationAllowed(ClaimsPrincipal principal, TransportRequestSnapshot request)
-    {
-        var warehouseOnly = principal.IsInRole(RoleCodes.WarehouseOperator)
-            && !principal.IsInRole(RoleCodes.Admin)
-            && !principal.IsInRole(RoleCodes.Supervisor)
-            && !principal.IsInRole(RoleCodes.LineOperator);
-        if (warehouseOnly && (!TransportRules.DeliversToMachine(request.TaskType) || request.RequestedBy != principal.UserId()))
-        {
-            throw new ApiException(
-                StatusCodes.Status403Forbidden,
-                "CANCELLATION_NOT_ALLOWED_FOR_ROLE",
-                "WAREHOUSE_OPERATOR may cancel only delivery requests created by the same user.");
-        }
-    }
 
     private static TransportHttpResponse ToResponse(TransportRequestSnapshot request, bool replay, bool cancellationPending = false) => new(
         request.Id,

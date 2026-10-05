@@ -92,12 +92,13 @@ void main() {
         expect(find.byKey(const Key('operator-user-banner')), findsOneWidget);
         expect(find.textContaining('Ali Yılmaz (Sicil: 10423)'), findsOneWidget);
 
-        // Navigate back to machines (leaveTasks directly returns to machines stage)
+        // Navigate back to origin screen (operation per WP-05 origin-aware navigation)
         await tester.tap(find.byKey(const Key('leave-operator-queue')));
         await tester.pumpAndSettle();
+        expect(harness.controller.stage, AppStage.operation);
 
         // Screen 4: WarehousePreparationScreen
-        await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
+        await harness.controller.enterWarehousePreparation();
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('operator-user-banner')), findsOneWidget);
         expect(find.textContaining('Ali Yılmaz (Sicil: 10423)'), findsOneWidget);

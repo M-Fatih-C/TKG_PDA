@@ -152,7 +152,6 @@ void main() {
           etaSeconds: 120,
           etaState: 'AVAILABLE',
           requestId: 'req-1',
-          canCancel: true,
         ),
         OperatorQueueItem(
           queuePosition: 2,
@@ -165,7 +164,6 @@ void main() {
           etaSeconds: 480,
           etaState: 'AVAILABLE',
           requestId: 'req-2',
-          canCancel: true,
         ),
       ],
     );

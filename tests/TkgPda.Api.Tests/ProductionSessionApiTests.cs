@@ -135,7 +135,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var session = (await ReadAsync(await StartAsync(client, setup, "session"))).Session;
         (await BringAsync(client, setup, "bring")).EnsureSuccessStatusCode();
         var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests WHERE idempotency_key = 'bring'");
-        (await client.PostAsync($"/api/v1/transport-requests/{requestId}/cancel", null)).EnsureSuccessStatusCode();
+        (await client.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{requestId}/cancel", null)).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.OK, (await EndAsync(client, setup, session.Id)).StatusCode);
         Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests"));
     }
@@ -445,7 +445,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var session = (await ReadAsync(await StartAsync(client, setup, "start"))).Session;
         (await BringAsync(client, setup, "bring", session.Id)).EnsureSuccessStatusCode();
         var id = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
-        (await client.PostAsync($"/api/v1/transport-requests/{id}/cancel", null)).EnsureSuccessStatusCode();
+        (await client.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{id}/cancel", null)).EnsureSuccessStatusCode();
         (await EndAsync(client, setup, session.Id)).EnsureSuccessStatusCode();
         (await BringAsync(client, setup, "bring", session.Id)).EnsureSuccessStatusCode();
         var wrong = await BringAsync(client, setup, "bring", Guid.NewGuid());

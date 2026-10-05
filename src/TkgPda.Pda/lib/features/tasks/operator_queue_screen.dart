@@ -363,10 +363,6 @@ class _QueueCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final canCancel =
-        !controller.operatorQueueTerminal &&
-        item.requestId != null &&
-        item.canCancel;
     final stateColor = PdaStatusColors.of(item.state);
     final stateBg = PdaStatusColors.surfaceOf(item.state);
 
@@ -484,57 +480,10 @@ class _QueueCard extends StatelessWidget {
                 ),
               ),
             ),
-            if (canCancel) ...[
-              const SizedBox(width: 4),
-              IconButton(
-                key: Key('cancel-queue-${item.requestId}'),
-                icon: const Icon(
-                  Icons.cancel_outlined,
-                  color: Colors.redAccent,
-                  size: 24,
-                ),
-                tooltip: 'Görevi İptal Et',
-                onPressed: controller.mutationGate.canMutate
-                    ? () => _confirmCancel(context)
-                    : null,
-              ),
-            ],
           ],
         ),
       ),
     );
-  }
-
-  Future<void> _confirmCancel(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Taşıma İptali'),
-        content: Text(
-          '${item.machine} hücresine ait ${item.part} taşıma talebini iptal etmek istediğinize emin misiniz?',
-        ),
-        actions: [
-          TextButton(
-            key: const Key('dismiss-cancel-queue'),
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Vazgeç'),
-          ),
-          ElevatedButton(
-            key: const Key('confirm-cancel-queue'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('İptal Et'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true && item.requestId != null) {
-      await controller.cancelQueueItem(item.requestId!);
-    }
   }
 }
 

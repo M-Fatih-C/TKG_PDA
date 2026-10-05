@@ -79,7 +79,10 @@ abstract interface class PdaDataSource {
     int limit = 50,
   });
   Future<TransportResult> transport(String requestId);
-  Future<TransportResult> cancel(String requestId);
+  Future<TransportResult> cancel({
+    required String machineId,
+    required String requestId,
+  });
 
   /// Customer UI — Warehouse Preparation Console.
   Future<List<WarehousePreparationRequest>> warehousePreparationRequests();
@@ -411,9 +414,12 @@ class PdaRepository implements PdaDataSource {
   }
 
   @override
-  Future<TransportResult> cancel(String requestId) async {
+  Future<TransportResult> cancel({
+    required String machineId,
+    required String requestId,
+  }) async {
     final response = await _api.post(
-      '/api/v1/transport-requests/$requestId/cancel',
+      '/api/v1/machines/$machineId/transport-requests/$requestId/cancel',
     );
     return TransportResult.fromJson(_json(response.body));
   }

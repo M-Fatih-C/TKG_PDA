@@ -92,7 +92,9 @@ GoRouter buildRouter(AppController controller) => GoRouter(
         coordinator: controller.store,
         onBack: controller.leaveFinishedGoodsStore,
         onNavigate: (stage) {
-          if (stage == AppStage.preparationAreas &&
+          if (stage == AppStage.tasks) {
+            controller.enterTasks();
+          } else if (stage == AppStage.preparationAreas &&
               controller.canAccessSemiFinishedWarehouse) {
             controller.enterPreparationAreas();
           }
@@ -105,7 +107,9 @@ GoRouter buildRouter(AppController controller) => GoRouter(
         coordinator: controller.preparation,
         onBack: controller.leavePreparationAreas,
         onNavigate: (stage) {
-          if (stage == AppStage.finishedGoodsStore &&
+          if (stage == AppStage.tasks) {
+            controller.enterTasks();
+          } else if (stage == AppStage.finishedGoodsStore &&
               controller.canAccessFinishedGoodsWarehouse) {
             controller.enterFinishedGoodsStore();
           }

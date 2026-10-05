@@ -79,6 +79,14 @@ class StoreScreen extends StatelessWidget {
               ),
             ),
           IconButton(
+            key: const Key('open-global-tasks'),
+            tooltip: 'Görevler',
+            onPressed: coordinator.loading
+                ? null
+                : () => onNavigate?.call(AppStage.tasks),
+            icon: const Icon(Icons.assignment_outlined),
+          ),
+          IconButton(
             key: const Key('refresh-store'),
             tooltip: 'Yenile',
             onPressed: coordinator.loading ? null : () => coordinator.refresh(),

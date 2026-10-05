@@ -271,6 +271,7 @@ class AppController extends ChangeNotifier {
   bool _operatorQueueLoading = false;
   String? _operatorQueueError;
   bool _operatorQueueTerminal = false;
+  AppStage? _taskReturnStage;
 
   String? _containerBatchKey;
   String? _containerBatchProductionId;
@@ -1734,6 +1735,9 @@ class AppController extends ChangeNotifier {
 
   Future<void> enterTasks() async {
     if (!_session.isAuthenticated || isMutationInFlight) return;
+    if (_stage != AppStage.tasks) {
+      _taskReturnStage = _stage;
+    }
     _stage = AppStage.tasks;
     _operatorQueueTerminal = false;
     _clearFeedback();
@@ -1744,10 +1748,16 @@ class AppController extends ChangeNotifier {
   void leaveTasks() {
     if (isMutationInFlight) return;
     _stopQueuePolling();
-    _stage = AppStage.machines;
+    final returnStage = _taskReturnStage ??
+        (isBoundLineTerminalOperator ? AppStage.operation : AppStage.machines);
+    _taskReturnStage = null;
+    _stage = returnStage;
     _operatorQueue = null;
     _operatorQueueError = null;
     notifyListeners();
+    if (_stage == AppStage.operation && _selectedMachine != null) {
+      unawaited(refreshContext());
+    }
   }
 
   Future<void> setOperatorQueueTerminal(bool value) async {
@@ -1809,37 +1819,7 @@ class AppController extends ChangeNotifier {
     _queuePollTimer = null;
   }
 
-  Future<void> cancelQueueItem(String requestId) async {
-    if (!mutationGate.canMutate) {
-      return;
-    }
-    _setBusy(true);
-    _clearFeedback();
-    try {
-      final result = await _repository.cancel(requestId);
-      _notice = result.status == 'CANCELLED'
-          ? 'Görev iptal edildi.'
-          : 'İptal durumu sunucudan güncellendi.';
-      await loadOperatorQueue(
-        offset: _operatorQueue?.offset ?? 0,
-        silent: true,
-      );
-    } on AmbiguousMutationException {
-      _offline = true;
-      _notice =
-          'İptal sonucunun fiziksel olarak tamamlandığı doğrulanamadı. Durumu yenileyin.';
-    } on ApiProblem catch (problem) {
-      _problem = problem;
-      if (problem.shouldRefetch) {
-        await loadOperatorQueue(
-          offset: _operatorQueue?.offset ?? 0,
-          silent: true,
-        );
-      }
-    } finally {
-      _setBusy(false);
-    }
-  }
+
 
   Future<void> refreshRobots() async {
     if (!_session.isAuthenticated) return;
@@ -2259,13 +2239,19 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> cancelTransport(ActiveTransportRequest request) async {
-    if (!request.canCancel || !mutationGate.canMutate) {
+    if (_stage != AppStage.operation ||
+        _selectedMachine == null ||
+        !request.canCancel ||
+        !mutationGate.canMutate) {
       return;
     }
     _setBusy(true);
     _clearFeedback();
     try {
-      final result = await _repository.cancel(request.requestId);
+      final result = await _repository.cancel(
+        machineId: _selectedMachine!.id,
+        requestId: request.requestId,
+      );
       _notice = result.status == 'CANCELLED'
           ? 'Talep iptal edildi.'
           : 'İptal durumu sunucudan güncellendi.';
@@ -2379,6 +2365,7 @@ class AppController extends ChangeNotifier {
     _operatorQueueError = null;
     _operatorQueueLoading = false;
     _operatorQueueTerminal = false;
+    _taskReturnStage = null;
     _containerBatchKey = null;
     _containerBatchAmbiguous = false;
     _activePendingOperation = null;

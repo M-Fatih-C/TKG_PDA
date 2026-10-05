@@ -154,7 +154,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('active operator queue item can be cancelled with confirmation', (
+  testWidgets('active operator queue item is read-only and has no cancel button', (
     tester,
   ) async {
     const testRequestId = 'req-12345';
@@ -176,7 +176,6 @@ void main() {
             etaSeconds: 90,
             etaState: 'AVAILABLE',
             requestId: testRequestId,
-            canCancel: true,
           ),
         ],
       );
@@ -190,23 +189,13 @@ void main() {
     expect(find.text('Yaklaşık 2 dakika'), findsOneWidget);
 
     final cancelButton = find.byKey(const Key('cancel-queue-req-12345'));
-    expect(cancelButton, findsOneWidget);
-
-    await tester.tap(cancelButton);
-    await tester.pumpAndSettle();
-
-    expect(find.text('Taşıma İptali'), findsOneWidget);
-    expect(find.byKey(const Key('confirm-cancel-queue')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('confirm-cancel-queue')));
-    await tester.pumpAndSettle();
-
-    expect(repository.cancelCount, 1);
+    expect(cancelButton, findsNothing);
+    expect(repository.cancelCount, 0);
     harness.dispose();
   });
 
   testWidgets(
-      'waiting preparation queue item displays Hazırlık Bekleniyor badge and can be cancelled',
+      'waiting preparation queue item displays Hazırlık Bekleniyor badge and has no cancel button',
       (tester) async {
     const testRequestId = 'req-prep-123';
     final repository = FakePdaRepository()
@@ -227,7 +216,6 @@ void main() {
             etaSeconds: null,
             etaState: 'UNAVAILABLE',
             requestId: testRequestId,
-            canCancel: true,
           ),
         ],
       );
@@ -241,16 +229,8 @@ void main() {
     expect(find.text('Süre bilgisi yok'), findsOneWidget);
 
     final cancelButton = find.byKey(const Key('cancel-queue-req-prep-123'));
-    expect(cancelButton, findsOneWidget);
-
-    await tester.tap(cancelButton);
-    await tester.pumpAndSettle();
-
-    expect(find.text('Taşıma İptali'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('confirm-cancel-queue')));
-    await tester.pumpAndSettle();
-
-    expect(repository.cancelCount, 1);
+    expect(cancelButton, findsNothing);
+    expect(repository.cancelCount, 0);
     harness.dispose();
   });
 

@@ -246,7 +246,7 @@ void main() {
         await controller.markPreparationReady('req-prep-1');
         expect(repo.markReadyCount, 0);
 
-        await controller.cancelQueueItem('req-queue-1');
+        await controller.cancelTransport(testActiveRequest);
         expect(repo.cancelCount, 0);
       },
     );
@@ -303,38 +303,28 @@ void main() {
     );
 
     test(
-      'G. queue cancel button driven by backend canCancel',
+      'G. active transport cancel driven by backend canCancel',
       () {
-        final cancelableItem = OperatorQueueItem.fromJson({
+        final cancelableItem = ActiveTransportRequest.fromJson({
           'requestId': 'req-01',
           'requestNo': 1,
-          'machineId': 'm1',
-          'machineCode': 'SH-01',
-          'variantCode': 'V1',
-          'partCode': 'PART-01',
-          'positionNumber': 1,
           'operation': 'BRING_EMPTY',
-          'state': 'QUEUED',
-          'queuedAt': '2026-09-09T10:00:00Z',
-          'startedAt': null,
-          'completedAt': null,
+          'status': 'QUEUED',
+          'priority': 0,
+          'createdAt': '2026-09-09T10:00:00Z',
           'canCancel': true,
+          'execution': {'stage': 'QUEUED'},
         });
 
-        final nonCancelableItem = OperatorQueueItem.fromJson({
+        final nonCancelableItem = ActiveTransportRequest.fromJson({
           'requestId': 'req-02',
           'requestNo': 2,
-          'machineId': 'm1',
-          'machineCode': 'SH-01',
-          'variantCode': 'V1',
-          'partCode': 'PART-01',
-          'positionNumber': 2,
           'operation': 'REMOVE_FULL',
-          'state': 'ACTIVE',
-          'queuedAt': '2026-09-09T10:00:00Z',
-          'startedAt': '2026-09-09T10:05:00Z',
-          'completedAt': null,
+          'status': 'ACTIVE',
+          'priority': 0,
+          'createdAt': '2026-09-09T10:00:00Z',
           'canCancel': false,
+          'execution': {'stage': 'ACTIVE'},
         });
 
         expect(cancelableItem.canCancel, isTrue);

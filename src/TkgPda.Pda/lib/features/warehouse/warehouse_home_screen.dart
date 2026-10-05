@@ -51,6 +51,12 @@ class WarehouseHomeScreen extends StatelessWidget {
               }
             },
           ),
+          IconButton(
+            key: const Key('open-global-tasks'),
+            tooltip: 'Görevler',
+            onPressed: controller.busy ? null : controller.enterTasks,
+            icon: const Icon(Icons.assignment_outlined),
+          ),
           if (controller.canAccessSemiFinishedWarehouse)
             IconButton(
               key: const Key('open-warehouse-preparation'),

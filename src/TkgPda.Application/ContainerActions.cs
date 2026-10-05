@@ -294,12 +294,7 @@ public sealed record OperatorQueueItemRecord(
     string State,
     int? EtaSeconds,
     string EtaState,
-    // RequestId is a TKG identity the Operator legitimately needs in order to cancel
-    // its own transport. The raw RDS AGV identifier was previously carried here and
-    // has been removed: the Operator queue is a business view, and hiding the value
-    // in the widget layer did not stop the API from serializing it.
-    Guid? RequestId = null,
-    bool CanCancel = false);
+    Guid? RequestId = null);
 
 public sealed record OperatorQueuePageRecord(
     bool Terminal,

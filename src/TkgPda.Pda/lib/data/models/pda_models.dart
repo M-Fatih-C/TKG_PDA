@@ -362,7 +362,6 @@ class OperatorQueueItem {
     required this.etaSeconds,
     required this.etaState,
     this.requestId,
-    this.canCancel = false,
   });
 
   final int queuePosition;
@@ -375,7 +374,6 @@ class OperatorQueueItem {
   final int? etaSeconds;
   final String etaState;
   final String? requestId;
-  final bool canCancel;
   // No agvId: the Operator queue is a business view and the API no longer
   // serializes the raw RDS AGV identifier.
 
@@ -391,7 +389,6 @@ class OperatorQueueItem {
     etaSeconds: _nullableInteger(json['etaSeconds']),
     etaState: json['etaState'] as String? ?? 'UNAVAILABLE',
     requestId: json['requestId'] as String?,
-    canCancel: json['canCancel'] as bool? ?? false,
   );
 }
 

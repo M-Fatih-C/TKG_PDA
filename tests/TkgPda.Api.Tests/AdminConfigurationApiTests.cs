@@ -339,7 +339,12 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
             "p05-warehouse-bring");
         Assert.Equal(HttpStatusCode.Created, bring.StatusCode);
         var created = await bring.Content.ReadFromJsonAsync<TransportHttpResponse>();
-        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/v1/transport-requests/{created!.Id}/cancel", null)).StatusCode);
+        var warehouseCancel = await client.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{created!.Id}/cancel", null);
+        Assert.Equal(HttpStatusCode.Forbidden, warehouseCancel.StatusCode);
+
+        var supervisor = await fixture.SeedIdentityAsync(RoleCodes.Supervisor);
+        using var supervisorClient = await fixture.LoginClientAsync(supervisor);
+        Assert.Equal(HttpStatusCode.OK, (await supervisorClient.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{created.Id}/cancel", null)).StatusCode);
     }
 
     [Fact]
