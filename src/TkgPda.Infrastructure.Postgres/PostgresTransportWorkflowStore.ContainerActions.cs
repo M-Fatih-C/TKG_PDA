@@ -20,6 +20,9 @@ public sealed partial class PostgresTransportWorkflowStore
         var rows = await ReadPartPositionsAsync(connection, transaction: null, query, cancellationToken);
         var result = new List<ContainerPositionRecord>(rows.Count);
         var eta = new TransportEtaService();
+        // WP-08: Kasa Doldu is only offered while its finished-goods destination is configured.
+        var finishedGoodsConfigured = await IsFinishedGoodsDestinationConfiguredAsync(
+            connection, query.LayoutId, query.VariantId, query.ProductGroupId, cancellationToken);
         foreach (var row in rows)
         {
             var transportState = row.ActiveRequest is null ? "READY" : ProjectExecutionState(row.ActiveRequest);
@@ -28,13 +31,15 @@ public sealed partial class PostgresTransportWorkflowStore
                 row,
                 actor,
                 canOperate,
-                transportState);
+                transportState,
+                finishedGoodsConfigured);
             var empty = Availability(
                 OperatorContainerAction.Empty,
                 row,
                 actor,
                 canOperate,
-                transportState);
+                transportState,
+                finishedGoodsConfigured);
             var etaProjection = row.ActiveRequest is null
                 ? eta.Unavailable()
                 : eta.Project(
@@ -274,7 +279,8 @@ public sealed partial class PostgresTransportWorkflowStore
                 operation.Value,
                 machineSlotSource,
                 machineSlotDestination,
-                command.Priority));
+                command.Priority,
+                RequiresFinishedGoodsDestination: operation.Value == TransportTaskType.RemoveFull));
         }
 
         if (issues.Count > 0)
@@ -379,7 +385,8 @@ public sealed partial class PostgresTransportWorkflowStore
                 : TransportTaskType.BringEmpty,
             entry.Item.Action == OperatorContainerAction.Full ? entry.SlotId : null,
             entry.Item.Action == OperatorContainerAction.Empty ? entry.SlotId : null,
-            command.Priority)).ToArray();
+            command.Priority,
+            RequiresFinishedGoodsDestination: entry.Item.Action == OperatorContainerAction.Full)).ToArray();
 
         if (existing is not null)
         {
@@ -452,7 +459,8 @@ public sealed partial class PostgresTransportWorkflowStore
                     resolution.Operation == TransportTaskType.BringEmpty ? null : entry.SlotId,
                     resolution.Operation == TransportTaskType.BringEmpty ? entry.SlotId : null,
                     command.Priority,
-                    RequiresPreparation: resolution.RequiresPreparation),
+                    RequiresPreparation: resolution.RequiresPreparation,
+                    RequiresFinishedGoodsDestination: resolution.Operation == TransportTaskType.RemoveFull),
                 resolution.MarkFullBeforeCreate,
                 entry.Item.PositionNumber));
         }
@@ -538,7 +546,8 @@ public sealed partial class PostgresTransportWorkflowStore
             operation == TransportTaskType.BringEmpty ? null : machineSlotId,
             operation == TransportTaskType.BringEmpty ? machineSlotId : null,
             command.Priority,
-            requiresPreparation);
+            requiresPreparation,
+            RequiresFinishedGoodsDestination: operation == TransportTaskType.RemoveFull);
 
     private static async Task<IReadOnlyList<PositionRow>> ReadPartPositionsAsync(
         NpgsqlConnection connection,
@@ -777,7 +786,8 @@ public sealed partial class PostgresTransportWorkflowStore
         PositionRow row,
         PdaActorContext actor,
         bool canOperate,
-        string transportState)
+        string transportState,
+        bool finishedGoodsConfigured)
     {
         if (row.ActiveRequest is not null)
         {
@@ -802,7 +812,12 @@ public sealed partial class PostgresTransportWorkflowStore
 
         try
         {
-            _ = ContainerActionResolutionPolicy.ResolveSingle(action, row.Occupancy, row.Load);
+            var resolution = ContainerActionResolutionPolicy.ResolveSingle(action, row.Occupancy, row.Load);
+            if (resolution.Operation == TransportTaskType.RemoveFull && !finishedGoodsConfigured)
+            {
+                return new(false, "READY", "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", FinishedGoodsDestinationNotConfiguredMessage);
+            }
+
             return new(true, "READY", null, null);
         }
         catch (WorkflowRuleException error)

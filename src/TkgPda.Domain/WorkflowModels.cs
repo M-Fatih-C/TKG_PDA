@@ -48,8 +48,20 @@ public sealed record CreateTransportRequest(
     Guid? SourceSlotId,
     Guid? DestinationSlotId,
     int Priority = 100,
-    bool RequiresPreparation = false)
+    bool RequiresPreparation = false,
+    bool RequiresFinishedGoodsDestination = false)
 {
+    /// <summary>
+    /// WP-08: a REMOVE_FULL created by the machine-side container flow (Kasa
+    /// Doldu / remove-all) is only valid when its server-resolved destination
+    /// is linked to an enabled finished-goods store location. The store never
+    /// learns about a delivery the transport cannot attribute, so the request
+    /// is refused before anything is reserved, persisted or dispatched.
+    /// Ignored for every other operation.
+    /// </summary>
+    public bool EnforcesFinishedGoodsDestination =>
+        RequiresFinishedGoodsDestination && TaskType == TransportTaskType.RemoveFull;
+
     /// <summary>
     /// WP-05A: the BUSINESS readiness a new request starts at.
     /// RequiresPreparation=false (the default) preserves every existing

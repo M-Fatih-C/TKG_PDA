@@ -20,8 +20,14 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     /// <summary>
     /// Called from the completion transition while it holds the request lock.
     /// Silently does nothing when the transport did not deliver into the store,
-    /// which is every operation except a full container leaving a machine, and
-    /// every DROP position the customer has not linked to a store location yet.
+    /// which is every operation except a full container leaving a machine.
+    ///
+    /// REMOVE_FULL requests created by the machine-side container flow can never
+    /// reach the "unlinked destination" silent exit: WP-08 refuses to create them
+    /// unless their destination is already linked to an enabled store location
+    /// (ResolveFinishedGoodsDestinationAsync). The exit remains only for REMOVE_FULL
+    /// requests that bypass that flow (explicit-slot callers and legacy rows).
+    /// Only a genuine COMPLETED transition calls this, inside its own transaction.
     /// </summary>
     private static async Task RecordStoreDeliveryAsync(
         NpgsqlConnection connection,
@@ -67,6 +73,121 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         await InsertStoreEventAsync(connection, transaction, locationId, unitId, "UNIT_DELIVERED",
             request.PartId, request.ContainerTypeId, request.Id,
             actorUserId: null, deviceId: null, new { source = "TRANSPORT_COMPLETED" }, cancellationToken);
+    }
+
+    private const string FinishedGoodsDestinationNotConfiguredMessage =
+        "Bitmiş ürün teslim alanı henüz yapılandırılmamış. Sistem yöneticisine başvurun.";
+
+    /// <summary>
+    /// WP-08. Resolves, server-side only, the physical slot a Kasa Doldu
+    /// REMOVE_FULL will be delivered to, and proves it is linked to an enabled
+    /// finished-goods store location — so a completed delivery can never leave
+    /// the warehouse unaware of it.
+    ///
+    /// Resolution mirrors the dispatch resolver exactly (PostgresRdsExecutionStore
+    /// destination lookup) so the stored destination is the one dispatch would
+    /// have chosen anyway: the configured task template's destination slot
+    /// group by priority, otherwise the layout's enabled DROP position. No
+    /// slot, WorkSite or location is invented; a missing or disabled link
+    /// fails closed with FINISHED_GOODS_DESTINATION_NOT_CONFIGURED. The mapping
+    /// and location rows are locked FOR SHARE so a concurrent disable or unlink
+    /// cannot slip between this check and the commit.
+    /// </summary>
+    private static async Task<Guid> ResolveFinishedGoodsDestinationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction? transaction,
+        CreateTransportRequest request,
+        CancellationToken cancellationToken)
+    {
+        var destinationSlotId = request.DestinationSlotId
+            ?? await ResolveFinishedGoodsDestinationSlotAsync(
+                connection, transaction, request.LayoutId, request.VariantId, request.ProductGroupId, cancellationToken);
+        if (destinationSlotId is not { } slotId
+            || !await IsFinishedGoodsDeliverySlotMappedAsync(connection, transaction, slotId, lockRows: transaction is not null, cancellationToken))
+        {
+            throw new WorkflowRuleException("FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", FinishedGoodsDestinationNotConfiguredMessage);
+        }
+
+        return slotId;
+    }
+
+    private static async Task<Guid?> ResolveFinishedGoodsDestinationSlotAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction? transaction,
+        Guid layoutId,
+        Guid variantId,
+        Guid? productGroupId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            WITH template AS (
+                SELECT t.destination_slot_group_id
+                FROM master.task_templates t
+                JOIN master.task_types tt ON tt.id = t.task_type_id AND tt.code = 'REMOVE_FULL'
+                WHERE t.variant_id = @variant_id
+                  AND t.is_active
+                  AND (t.product_group_id = @product_group_id OR t.product_group_id IS NULL)
+                ORDER BY (t.product_group_id = @product_group_id) DESC, t.id
+                LIMIT 1
+            )
+            SELECT ls.id
+            FROM master.layout_slots ls
+            LEFT JOIN master.slot_group_members sgm ON sgm.layout_slot_id = ls.id
+            LEFT JOIN template ON true
+            WHERE ls.layout_id = @layout_id
+              AND ls.is_enabled
+              AND ls.slot_role <> 'MACHINE'
+              AND ((template.destination_slot_group_id IS NOT NULL
+                    AND sgm.slot_group_id = template.destination_slot_group_id)
+                   OR (template.destination_slot_group_id IS NULL AND ls.slot_role = 'DROP'))
+            ORDER BY sgm.priority, ls.display_order, ls.id
+            LIMIT 1
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("layout_id", layoutId);
+        command.Parameters.AddWithValue("variant_id", variantId);
+        AddNullableUuid(command, "product_group_id", productGroupId);
+        return await command.ExecuteScalarAsync(cancellationToken) is Guid id ? id : null;
+    }
+
+    private static async Task<bool> IsFinishedGoodsDeliverySlotMappedAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction? transaction,
+        Guid layoutSlotId,
+        bool lockRows,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            $"""
+             SELECT 1
+             FROM ops.store_location_delivery_slots d
+             JOIN ops.store_locations sl ON sl.id = d.store_location_id
+             WHERE d.layout_slot_id = @slot_id AND sl.is_enabled
+             {(lockRows ? "FOR SHARE OF d, sl" : string.Empty)}
+             """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("slot_id", layoutSlotId);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    /// <summary>
+    /// Read-only form for the PDA projection: whether a Kasa Doldu for this
+    /// product group could currently resolve a mapped finished-goods destination.
+    /// </summary>
+    private static async Task<bool> IsFinishedGoodsDestinationConfiguredAsync(
+        NpgsqlConnection connection,
+        Guid layoutId,
+        Guid variantId,
+        Guid productGroupId,
+        CancellationToken cancellationToken)
+    {
+        var slotId = await ResolveFinishedGoodsDestinationSlotAsync(
+            connection, null, layoutId, variantId, productGroupId, cancellationToken);
+        return slotId is { } id
+            && await IsFinishedGoodsDeliverySlotMappedAsync(connection, null, id, lockRows: false, cancellationToken);
     }
 
     public async Task<IReadOnlyList<StoreLocationRecord>> ListLocationsAsync(

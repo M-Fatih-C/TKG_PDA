@@ -470,6 +470,7 @@ class FakePdaRepository implements PdaDataSource {
   ];
   int containerActionCount = 0;
   int containerActionBatchCount = 0;
+  ActiveTransportRequest? containerActionActiveRequest;
   int removeAllCount = 0;
   Object? removeAllError;
   Completer<RemoveAllResult>? removeAllCompleter;
@@ -687,7 +688,9 @@ class FakePdaRepository implements PdaDataSource {
         etaState: 'UNAVAILABLE',
       ),
     ];
-    contextValue = testContext(activeRequests: [testActiveRequest]);
+    contextValue = testContext(
+      activeRequests: [containerActionActiveRequest ?? testActiveRequest],
+    );
     return ContainerActionResult(
       positionNumber: positionNumber,
       action: action,

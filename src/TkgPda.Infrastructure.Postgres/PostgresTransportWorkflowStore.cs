@@ -161,6 +161,19 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             TransportRules.ValidateBufferSlot(request, slots[bufferSlotId.Value]);
         }
 
+        // WP-08: Kasa Doldu / remove-all. The destination the robot will use is
+        // resolved here, validated against the finished-goods mapping and stored
+        // on the request, so dispatch and completion use exactly what was
+        // validated. It is deliberately not part of the slot reservation above:
+        // many machines and positions share one drop position.
+        if (request.EnforcesFinishedGoodsDestination)
+        {
+            request = request with
+            {
+                DestinationSlotId = await ResolveFinishedGoodsDestinationAsync(connection, transaction, request, cancellationToken)
+            };
+        }
+
         var created = await InsertRequestAsync(connection, transaction, request, taskTypeId, batchId, cancellationToken);
         await InsertEventAsync(
             connection,
@@ -1420,6 +1433,10 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             && request.SourceSlotId is null;
         var defersMachineDestination = TransportRules.DeliversToMachine(request.TaskType)
             && request.DestinationSlotId is null;
+        // WP-08: the finished-goods destination is resolved server-side on the
+        // first attempt; a retry that omits it is the same logical request.
+        var defersFinishedGoodsDestination = request.EnforcesFinishedGoodsDestination
+            && request.DestinationSlotId is null;
 
         var equivalent = existing.Origin == request.Origin
             && existing.RequestedBy == request.RequestedBy
@@ -1432,7 +1449,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             && existing.ContainerTypeId == request.ContainerTypeId
             && existing.TaskType == request.TaskType
             && (defersBufferSource || defersMachineSource || existing.SourceSlotId == request.SourceSlotId)
-            && (defersBufferDestination || defersMachineDestination || existing.DestinationSlotId == request.DestinationSlotId)
+            && (defersBufferDestination || defersMachineDestination || defersFinishedGoodsDestination || existing.DestinationSlotId == request.DestinationSlotId)
             && existing.Priority == request.Priority;
 
         if (!equivalent)

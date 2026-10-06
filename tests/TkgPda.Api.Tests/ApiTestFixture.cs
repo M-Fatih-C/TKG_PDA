@@ -44,6 +44,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteAsync(
             """
             TRUNCATE
+                ops.store_events,
+                ops.store_units,
                 integration.rds_tasks,
                 ops.transport_request_events,
                 ops.transport_requests,
@@ -234,8 +236,64 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             ("variant_id", context.VariantId),
             ("layout_id", context.LayoutId));
         await EnsureDefaultBufferSlotsAsync(context.LayoutId);
+        await EnsureDefaultFinishedGoodsDestinationAsync(context.LayoutId);
         return context;
     }
+
+    public const string FinishedGoodsTestDropCode = "FG-TEST-DROP";
+    public const string FinishedGoodsTestLocationCode = "TEST-FG-API";
+
+    /// <summary>
+    /// WP-08: Kasa Doldu is refused unless the DROP the server would actually
+    /// resolve is linked to an enabled store location. Customer layouts in the
+    /// API suite have no DROP role (simulation DROP-001 is seed 002d, not
+    /// loaded here), so a test-only DROP is inserted when the layout has none.
+    /// The mapping then follows the same first-enabled-DROP rule as dispatch.
+    /// Customer names, the 19 FG areas and capacity are not modelled.
+    /// </summary>
+    private async Task EnsureDefaultFinishedGoodsDestinationAsync(Guid layoutId)
+    {
+        await ExecuteAsync(
+            """
+            UPDATE master.layout_slots SET is_enabled = true
+            WHERE layout_id = @layout_id AND slot_role = 'DROP';
+            INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
+            SELECT @layout_id, @code, 'Test Finished Goods Drop', 'DROP', 9001
+            WHERE NOT EXISTS (
+                SELECT 1 FROM master.layout_slots
+                WHERE layout_id = @layout_id AND slot_role = 'DROP');
+            INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+            SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
+            WHERE layout_id = @layout_id AND slot_role = 'DROP'
+            ON CONFLICT (layout_slot_id) DO NOTHING;
+            INSERT INTO ops.store_locations (code, display_name, capacity)
+            VALUES (@location_code, 'Test Finished Goods Location', NULL)
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true;
+            INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
+            SELECT drop_slot.id, sl.id
+            FROM (
+                SELECT id FROM master.layout_slots
+                WHERE layout_id = @layout_id AND slot_role = 'DROP' AND is_enabled
+                ORDER BY display_order, id
+                LIMIT 1
+            ) drop_slot
+            CROSS JOIN ops.store_locations sl
+            WHERE sl.code = @location_code
+            ON CONFLICT (layout_slot_id) DO UPDATE SET store_location_id = EXCLUDED.store_location_id;
+            """,
+            ("layout_id", layoutId),
+            ("code", FinishedGoodsTestDropCode),
+            ("location_code", FinishedGoodsTestLocationCode));
+    }
+
+    public Task<Guid> FinishedGoodsDropSlotAsync(Guid layoutId) => ScalarAsync<Guid>(
+        """
+        SELECT id FROM master.layout_slots
+        WHERE layout_id = @layout AND slot_role = 'DROP' AND is_enabled
+        ORDER BY display_order, id
+        LIMIT 1
+        """,
+        ("layout", layoutId));
 
     /// <summary>
     /// Customer Workflow — Empty Container Buffer: every BRING_EMPTY/
