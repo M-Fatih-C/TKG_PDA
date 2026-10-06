@@ -114,28 +114,18 @@ void main() {
     },
   );
 
-  testWidgets('main and related containers form a batch under one production', (
+  testWidgets('active production requests an alt part without retargeting mamul', (
     tester,
   ) async {
     final repo = FakePdaRepository()..productionValue = activeRecord();
     final c = await harness(tester, repo);
-    await tap(tester, const Key('enter-batch-selection'));
-    await c.submitContainerAction(c.containerPositions.first, 'EMPTY');
-    await tester.pumpAndSettle();
-    expect(c.batchCart, hasLength(1));
-    expect(c.canEndProduction, isFalse);
-    await tap(tester, const Key('related-part-$testRelatedPartId'));
-    expect(c.selectedEffectivePart!.partId, testRelatedPartId);
-    await c.submitContainerAction(c.containerPositions.first, 'FULL');
-    await tester.pumpAndSettle();
-    expect(c.batchCart, hasLength(2));
-    expect(c.batchCart.map((i) => i.variantId).toSet(), {testVariantV1Id});
-    expect(repo.createCount, 0);
-    await c.submitBatch();
-    await tester.pumpAndSettle();
-    expect(repo.containerActionBatchCount, 1);
-    expect(repo.lastProductionSessionId, 'production-1');
-    expect(c.production.active!.id, 'production-1');
+    expect(c.selectedEffectivePart!.partId, testMainPartId);
+    expect(find.byKey(const Key('related-part-$testRelatedPartId')), findsNothing);
+    await tap(tester, const Key('alt-part-$testAltPartId'));
+    expect(c.selectedEffectivePart!.partId, testMainPartId);
+    expect(repo.partDemandCount, 1);
+    expect(repo.containerActionCount, 0);
+    expect(find.textContaining('Kasam Doldu'), findsWidgets);
   });
 
   testWidgets('remote end clears unsent cart instead of offering stale parts', (
@@ -171,7 +161,7 @@ void main() {
       await reveal(tester, const Key('production-end'));
       expect(find.byKey(const Key('production-panel')), findsOneWidget);
       expect(tester.takeException(), isNull);
-      await reveal(tester, const Key('related-part-$testRelatedPartId'));
+      await reveal(tester, const Key('alt-part-$testAltPartId'));
       expect(tester.takeException(), isNull);
     });
   }

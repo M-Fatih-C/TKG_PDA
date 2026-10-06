@@ -229,11 +229,20 @@ class _PositionCard extends StatelessWidget {
 
     return Card(
       margin: EdgeInsets.zero,
-      child: Padding(
-        padding: EdgeInsets.all(pad),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final actionHeight = math.max(
+            48.0,
+            constraints.maxHeight - pad * 2 - 52,
+          );
+          return SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Padding(
+                padding: EdgeInsets.all(pad),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
             Row(
               children: [
                 // The logical container number leads: it is what the operator
@@ -278,9 +287,13 @@ class _PositionCard extends StatelessWidget {
               ],
             ),
             SizedBox(height: pad * 0.5),
-            Expanded(child: _actions(context)),
-          ],
-        ),
+            SizedBox(height: actionHeight, child: _actions(context)),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -461,7 +474,7 @@ class _BusinessActionButton extends StatelessWidget {
                             Flexible(
                               child: Text(
                                 label,
-                                maxLines: 2,
+                                maxLines: 1,
                                 textAlign: TextAlign.center,
                                 overflow: TextOverflow.ellipsis,
                               ),

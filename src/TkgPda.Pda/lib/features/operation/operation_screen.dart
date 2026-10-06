@@ -261,12 +261,16 @@ class _PartFirstWithBatchSkip extends StatelessWidget {
             );
       final requests =
           controller.context?.activeTransportRequests ?? const [];
+      final available = constraints.maxHeight;
+      final transportHeight = requests.isEmpty
+          ? 0.0
+          : (available * 0.28).clamp(0.0, available * 0.34).clamp(0.0, 260.0);
       return Column(
         children: [
           Expanded(child: workspace),
-          if (requests.isNotEmpty)
+          if (requests.isNotEmpty && transportHeight >= 72)
             SizedBox(
-              height: (constraints.maxHeight * 0.34).clamp(180.0, 320.0),
+              height: transportHeight,
               child: SingleChildScrollView(
                 child: OperatorActiveTransportList(
                   requests: requests,

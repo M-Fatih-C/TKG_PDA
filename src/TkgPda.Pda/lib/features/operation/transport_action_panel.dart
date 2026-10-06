@@ -86,6 +86,22 @@ class _TransportCard extends StatelessWidget {
                   ),
                 ),
                 Chip(label: Text(executionStateLabel(execution.state))),
+                if (request.canCancel) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    key: Key('cancel-${request.requestId}'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Theme.of(context).colorScheme.error,
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    onPressed: controller.mutationEnabled
+                        ? () => _confirmCancel(context)
+                        : null,
+                    icon: const Icon(Icons.cancel_outlined, size: 18),
+                    label: const Text('Talebi İptal Et'),
+                  ),
+                ],
               ],
             ),
             const SizedBox(height: 6),
@@ -99,19 +115,7 @@ class _TransportCard extends StatelessWidget {
                 key: const Key('operator-failure-message'),
                 style: const TextStyle(fontWeight: FontWeight.w800),
               ),
-            if (request.canCancel)
-              OutlinedButton.icon(
-                key: Key('cancel-${request.requestId}'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Theme.of(context).colorScheme.error,
-                ),
-                onPressed: controller.mutationEnabled
-                    ? () => _confirmCancel(context)
-                    : null,
-                icon: const Icon(Icons.cancel_outlined),
-                label: const Text('Talebi İptal Et'),
-              )
-            else if (request.cancelDisabledMessage != null)
+            if (!request.canCancel && request.cancelDisabledMessage != null)
               Text(request.cancelDisabledMessage!),
           ],
         ),
