@@ -104,6 +104,23 @@ public sealed record CreateContainerActionBatchHttpRequest(
     int Priority = 100,
     Guid? ProductionSessionId = null);
 
+public sealed record PartDemandHttpRequest(Guid PartId);
+
+public sealed record PartDemandBatchHttpRequest(IReadOnlyList<Guid> PartIds);
+
+public sealed record PartDemandHttpResponse(
+    long RequestNo,
+    string TaskType,
+    string Status,
+    string Readiness,
+    long? PredecessorRequestNo,
+    string? PredecessorTaskType,
+    bool IdempotentReplay);
+
+public sealed record PartDemandBatchHttpResponse(
+    bool IdempotentReplay,
+    IReadOnlyList<PartDemandHttpResponse> Items);
+
 public sealed record ContainerActionHttpResponse(
     int PositionNumber,
     string Action,

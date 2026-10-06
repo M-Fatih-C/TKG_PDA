@@ -47,6 +47,12 @@ public static class ApiEndpoints
         endpoints.MapGet("/api/v1/machines/{machineId:guid}/container-positions", ContainerPositionsAsync)
             .RequireAuthorization(PolicyNames.Operator);
 
+        endpoints.MapPost("/api/v1/machines/{machineId:guid}/part-demands", CreatePartDemandAsync)
+            .RequireAuthorization(PolicyNames.Operator);
+
+        endpoints.MapPost("/api/v1/machines/{machineId:guid}/part-demands/batch", CreatePartDemandBatchAsync)
+            .RequireAuthorization(PolicyNames.Operator);
+
         endpoints.MapPost("/api/v1/machines/{machineId:guid}/container-actions", CreateContainerActionAsync)
             .RequireAuthorization(PolicyNames.Operator);
 
@@ -608,6 +614,101 @@ public static class ApiEndpoints
             cancellationToken);
         return Results.Ok(positions);
     }
+
+    private static async Task<IResult> CreatePartDemandAsync(
+        Guid machineId,
+        PartDemandHttpRequest request,
+        HttpContext context,
+        MachineAccessService access,
+        PartDemandService service,
+        IApiDataStore dataStore,
+        CancellationToken cancellationToken)
+    {
+        EnsurePartDemandAllowed(context.User);
+        _ = Device(context);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
+        var result = await service.CreateAsync(
+            new PartDemandCommand(
+                RequiredIdempotencyKey(context),
+                context.User.UserId(),
+                machineId,
+                request.PartId,
+                OperationalContext(context)),
+            cancellationToken);
+        context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
+        await WriteAuditAsync(
+            dataStore,
+            context,
+            context.User.UserId(),
+            Device(context).Id,
+            result.WasIdempotentReplay ? "PART_DEMAND_REPLAYED" : "PART_DEMAND_CREATED",
+            "TRANSPORT_REQUEST",
+            result.Request.Id.ToString(),
+            new { result.Request.RequestNo, partId = request.PartId, predecessor = result.Predecessor?.RequestNo },
+            cancellationToken);
+        return Results.Json(ToPartDemandResponse(result), statusCode: result.WasIdempotentReplay ? StatusCodes.Status200OK : StatusCodes.Status201Created);
+    }
+
+    private static async Task<IResult> CreatePartDemandBatchAsync(
+        Guid machineId,
+        PartDemandBatchHttpRequest request,
+        HttpContext context,
+        MachineAccessService access,
+        PartDemandService service,
+        IApiDataStore dataStore,
+        CancellationToken cancellationToken)
+    {
+        EnsurePartDemandAllowed(context.User);
+        _ = Device(context);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
+        var results = await service.CreateBatchAsync(
+            new PartDemandBatchCommand(
+                RequiredIdempotencyKey(context),
+                context.User.UserId(),
+                machineId,
+                request.PartIds ?? [],
+                OperationalContext(context)),
+            cancellationToken);
+        var replay = results.Count > 0 && results.All(item => item.WasIdempotentReplay);
+        context.Response.Headers[ApiHeaders.IdempotencyReplayed] = replay ? "true" : "false";
+        await WriteAuditAsync(
+            dataStore,
+            context,
+            context.User.UserId(),
+            Device(context).Id,
+            replay ? "PART_DEMAND_BATCH_REPLAYED" : "PART_DEMAND_BATCH_CREATED",
+            "TRANSPORT_BATCH",
+            machineId.ToString(),
+            new { itemCount = results.Count },
+            cancellationToken);
+        return Results.Json(
+            new PartDemandBatchHttpResponse(replay, results.Select(ToPartDemandResponse).ToArray()),
+            statusCode: replay ? StatusCodes.Status200OK : StatusCodes.Status201Created);
+    }
+
+    private static void EnsurePartDemandAllowed(ClaimsPrincipal principal)
+    {
+        if (principal.IsInRole(RoleCodes.Admin)
+            || principal.IsInRole(RoleCodes.Supervisor)
+            || principal.IsInRole(RoleCodes.LineOperator))
+        {
+            return;
+        }
+
+        throw new ApiException(
+            StatusCodes.Status403Forbidden,
+            "OPERATION_NOT_ALLOWED_FOR_ROLE",
+            "Alt parça talebi yalnızca hat operatörü tarafından oluşturulabilir.");
+    }
+
+    private static PartDemandHttpResponse ToPartDemandResponse(PartDemandResult result) => new(
+        result.Request.RequestNo,
+        result.Request.TaskType.ToDatabase(),
+        result.Request.Status.ToDatabase(),
+        result.Request.ReadinessState.ToDatabase(),
+        result.Predecessor?.RequestNo,
+        result.Predecessor?.TaskType.ToDatabase(),
+        result.WasIdempotentReplay);
 
     private static async Task<IResult> CreateContainerActionAsync(
         Guid machineId,

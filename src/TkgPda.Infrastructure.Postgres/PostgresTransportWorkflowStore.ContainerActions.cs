@@ -119,7 +119,7 @@ public sealed partial class PostgresTransportWorkflowStore
 
         var slot = lockedSlots[position.SlotId];
 
-        await EnsureSlotsAreAvailableAsync(connection, transaction, [slot.Id], cancellationToken);
+        await EnsureSlotsAreAvailableAsync(connection, transaction, [slot.Id], exceptRequestId: null, cancellationToken);
         var resolution = ContainerActionResolutionPolicy.ResolveSingle(command.Action, slot.State.Occupancy, slot.State.Load);
         if (resolution.MarkFullBeforeCreate)
         {
@@ -433,6 +433,7 @@ public sealed partial class PostgresTransportWorkflowStore
             connection,
             transaction,
             resolved.Select(item => item.SlotId).Order().ToArray(),
+            exceptRequestId: null,
             cancellationToken);
 
         var requests = new List<(CreateTransportRequest Request, bool MarkFull, int PositionNumber)>();

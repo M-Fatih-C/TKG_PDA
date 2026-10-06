@@ -53,7 +53,8 @@ public sealed record WarehouseDemandRecord(
     string RequestedLoad,
     DateTimeOffset RequestedAt,
     Guid? ClaimedByAreaId,
-    int? ClaimedByAreaNumber);
+    int? ClaimedByAreaNumber,
+    string? PartDescription = null);
 
 /// <summary>
 /// TransportRequestId is null only for empty stock staged ahead of demand.

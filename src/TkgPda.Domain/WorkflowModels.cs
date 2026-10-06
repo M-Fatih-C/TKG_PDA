@@ -63,6 +63,13 @@ public sealed record CreateTransportRequest(
         RequiresFinishedGoodsDestination && TaskType == TransportTaskType.RemoveFull;
 
     /// <summary>
+    /// A repeated alt-part demand creates BRING_FULL while the machine area
+    /// is still occupied by the pallet the predecessor will remove. The
+    /// successor is not execution-eligible until that predecessor completes.
+    /// </summary>
+    public bool AllowsDependentMachineOccupancy { get; init; }
+
+    /// <summary>
     /// WP-05A: the BUSINESS readiness a new request starts at.
     /// RequiresPreparation=false (the default) preserves every existing
     /// workflow exactly: NotRequired is already execution-eligible under

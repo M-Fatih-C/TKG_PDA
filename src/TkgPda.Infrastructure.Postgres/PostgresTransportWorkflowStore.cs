@@ -7,7 +7,7 @@ using TkgPda.Domain;
 
 namespace TkgPda.Infrastructure.Postgres;
 
-public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowStore, IContainerActionStore, IAsyncDisposable
+public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowStore, IContainerActionStore, IPartDemandStore, IAsyncDisposable
 {
     private const string ActiveStatusesSql = "'CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING'";
     private readonly NpgsqlDataSource _dataSource;
@@ -73,7 +73,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         var children = new List<TransportRequestSnapshot>(request.Items.Count);
         foreach (var item in request.Items)
         {
-            var childResult = await CreateAndQueueWithinTransactionAsync(connection, transaction, item, batchId, eventContext, cancellationToken);
+            var childResult = await CreateAndQueueWithinTransactionAsync(connection, transaction, item, batchId, eventContext, cancellationToken, reservationOwnedByRequestId: null);
             children.Add(childResult.Request);
         }
 
@@ -87,7 +87,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         CreateTransportRequest request,
         Guid? batchId,
         OperationalEventContext? eventContext,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? reservationOwnedByRequestId = null)
     {
         await LockIdempotencyKeyAsync(connection, transaction, request.IdempotencyKey, cancellationToken);
         var existing = await FindByIdempotencyKeyAsync(connection, transaction, request.IdempotencyKey, cancellationToken);
@@ -152,7 +153,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             slots.Add(slotId, slot);
         }
 
-        await EnsureSlotsAreAvailableAsync(connection, transaction, suppliedSlotIds, cancellationToken);
+        await EnsureSlotsAreAvailableAsync(connection, transaction, suppliedSlotIds, reservationOwnedByRequestId, cancellationToken);
         TransportRules.ValidateReservation(request, slots[request.ReservedSlotId]);
 
         var bufferSlotId = TransportRules.BufferSlotId(request.TaskType, request.SourceSlotId, request.DestinationSlotId);
@@ -287,6 +288,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             },
             cancellationToken,
             eventContext);
+        await CancelWaitingSuccessorsAsync(connection, transaction, request.Id, cancellationToken, eventContext);
 
         await transaction.CommitAsync(cancellationToken);
         return new CancelTransportResult(request, WasAlreadyCancelled: false);
@@ -558,6 +560,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 eventContext);
         }
 
+        await CancelWaitingSuccessorsAsync(connection, transaction, request.Id, cancellationToken, eventContext);
         await transaction.CommitAsync(cancellationToken);
         return request;
     }
@@ -1175,6 +1178,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid[] slotIds,
+        Guid? exceptRequestId,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
@@ -1183,11 +1187,13 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
              FROM ops.transport_requests
              WHERE status IN ({ActiveStatusesSql})
                AND (source_slot_id = ANY(@slot_ids) OR destination_slot_id = ANY(@slot_ids))
+               AND (@except::uuid IS NULL OR id <> @except)
              LIMIT 1
              """,
             connection,
             transaction);
         command.Parameters.AddWithValue("slot_ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid, slotIds);
+        command.Parameters.AddWithValue("except", (object?)exceptRequestId ?? DBNull.Value);
         if (await command.ExecuteScalarAsync(cancellationToken) is not null)
         {
             throw new WorkflowRuleException("SLOT_ALREADY_RESERVED", "A supplied slot already has an active transport reservation.");
@@ -1608,6 +1614,53 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         command.Parameters.AddWithValue("message", message);
         command.Parameters.Add("data_json", NpgsqlDbType.Jsonb).Value = JsonSerializer.Serialize(data ?? new { });
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task CancelWaitingSuccessorsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid predecessorId,
+        CancellationToken cancellationToken,
+        OperationalEventContext? eventContext)
+    {
+        var successors = new List<Guid>();
+        await using (var command = new NpgsqlCommand(
+            """
+            SELECT successor_request_id
+            FROM ops.transport_request_dependencies
+            WHERE predecessor_request_id = @id
+            """,
+            connection,
+            transaction))
+        {
+            command.Parameters.AddWithValue("id", predecessorId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken)) successors.Add(reader.GetGuid(0));
+        }
+
+        foreach (var successorId in successors)
+        {
+            var successor = await LockRequestAsync(connection, transaction, successorId, cancellationToken);
+            if (successor.Status is not (TransportRequestStatus.Created or TransportRequestStatus.Validating or TransportRequestStatus.Queued))
+            {
+                continue;
+            }
+
+            var previous = successor.Status;
+            successor = await UpdateRequestStatusAsync(connection, transaction, successor, TransportRequestStatus.Cancelled, cancellationToken);
+            await InsertEventAsync(
+                connection,
+                transaction,
+                successor.Id,
+                eventContext?.ActorUserId,
+                TransportEventTypes.RequestCancelled,
+                previous,
+                TransportRequestStatus.Cancelled,
+                "Bağımlı talep, önceki palet kaldırma tamamlanmadığı için iptal edildi.",
+                new { predecessor_request_id = predecessorId },
+                cancellationToken,
+                eventContext);
+        }
     }
 
     private static Guid ReservedSlotId(TransportRequestSnapshot request) => TransportRules.DeliversToMachine(request.TaskType)

@@ -70,7 +70,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await using var command = new NpgsqlCommand($"""
             SELECT r.id, r.request_no, r.machine_id, m.code, r.part_id, part.part_code,
                    r.container_type_id, ct.code, tt.code, r.created_at,
-                   claimed.preparation_area_id, claimed_area.area_number
+                   claimed.preparation_area_id, claimed_area.area_number, part.description
             FROM ops.transport_requests r
             JOIN master.machines m ON m.id = r.machine_id
             JOIN master.task_types tt ON tt.id = r.task_type_id
@@ -104,7 +104,8 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                 RequestedLoad: requestedLoad.ToDatabase(),
                 RequestedAt: reader.GetFieldValue<DateTimeOffset>(9),
                 ClaimedByAreaId: reader.IsDBNull(10) ? null : reader.GetGuid(10),
-                ClaimedByAreaNumber: reader.IsDBNull(11) ? null : reader.GetInt32(11)));
+                ClaimedByAreaNumber: reader.IsDBNull(11) ? null : reader.GetInt32(11),
+                PartDescription: reader.IsDBNull(12) ? null : reader.GetString(12)));
         }
 
         return demands;

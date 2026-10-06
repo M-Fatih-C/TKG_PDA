@@ -690,7 +690,25 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                    GREATEST(0, floor(extract(epoch FROM (clock_timestamp() - r.created_at))))::bigint AS age_seconds,
                    CASE WHEN rt.started_at IS NULL THEN NULL
                         ELSE GREATEST(0, floor(extract(epoch FROM (COALESCE(rt.ended_at, clock_timestamp()) - rt.started_at))))::bigint
-                   END AS execution_elapsed_seconds
+                   END AS execution_elapsed_seconds,
+                   CASE
+                       WHEN EXISTS (
+                           SELECT 1
+                           FROM ops.transport_request_dependencies d
+                           JOIN ops.transport_requests pred ON pred.id = d.predecessor_request_id
+                           WHERE d.successor_request_id = r.id
+                             AND pred.status <> 'COMPLETED') THEN 'WAITING_PREDECESSOR'
+                       WHEN EXISTS (
+                           SELECT 1
+                           FROM ops.transport_request_dependencies d
+                           WHERE d.predecessor_request_id = r.id) THEN 'REMOVING_EXISTING'
+                       WHEN r.readiness_state = 'WAITING_PREPARATION'
+                            AND EXISTS (
+                                SELECT 1 FROM ops.transport_request_dependencies d
+                                WHERE d.successor_request_id = r.id) THEN 'PREPARING_SUCCESSOR'
+                       WHEN r.readiness_state = 'WAITING_PREPARATION' THEN 'PREPARING'
+                       ELSE NULL
+                   END AS chain_state
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
             JOIN ranked ON ranked.id = r.id
@@ -748,7 +766,8 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 reader.GetString(30),
                 reader.IsDBNull(31) ? null : reader.GetInt32(31),
                 reader.GetInt64(32),
-                reader.IsDBNull(33) ? null : reader.GetInt64(33)));
+                reader.IsDBNull(33) ? null : reader.GetInt64(33),
+                NullableString(reader, 34)));
         }
 
         return result;

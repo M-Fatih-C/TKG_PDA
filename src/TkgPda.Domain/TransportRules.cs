@@ -31,6 +31,11 @@ public static class TransportRules
                 "EMPTY_STORAGE is reserved for backend buffer allocation and cannot be used as the machine-side transport slot.");
         }
 
+        if (request.AllowsDependentMachineOccupancy && request.TaskType == TransportTaskType.BringFull)
+        {
+            return;
+        }
+
         var expected = request.TaskType switch
         {
             // Both inbound operations need the machine position already clear:

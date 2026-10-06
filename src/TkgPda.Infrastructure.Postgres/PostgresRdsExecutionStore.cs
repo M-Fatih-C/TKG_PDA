@@ -39,6 +39,12 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
             FROM ops.transport_requests
             WHERE status = 'QUEUED'
               AND readiness_state <> 'WAITING_PREPARATION'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM ops.transport_request_dependencies d
+                  JOIN ops.transport_requests pred ON pred.id = d.predecessor_request_id
+                  WHERE d.successor_request_id = ops.transport_requests.id
+                    AND pred.status <> 'COMPLETED')
             ORDER BY priority, queued_at, id
             LIMIT @limit
             """,

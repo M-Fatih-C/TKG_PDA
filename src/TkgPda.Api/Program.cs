@@ -139,6 +139,8 @@ builder.Services.AddSingleton(services =>
     new PostgresTransportWorkflowStore(services.GetRequiredService<NpgsqlDataSource>()));
 builder.Services.AddSingleton<ITransportWorkflowStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<IContainerActionStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
+builder.Services.AddSingleton<IPartDemandStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
+builder.Services.AddSingleton<PartDemandService>();
 builder.Services.AddSingleton<TransportWorkflowService>();
 builder.Services.AddSingleton<IProductionSessionStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<ProductionSessionService>();
