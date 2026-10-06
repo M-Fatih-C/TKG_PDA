@@ -319,6 +319,43 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
+    public async Task Single_part_key_replays_only_for_the_same_actor_machine_and_part()
+    {
+        var setup = await SetupAsync();
+        var second = await AddAltPartAsync(setup, "P05-ALT-OWNER");
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var created = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "single-owner"));
+        var replay = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "single-owner"));
+        Assert.Equal(created.RequestNo, replay.RequestNo);
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+
+        var otherOperator = await fixture.SeedIdentityAsync(role: RoleCodes.LineOperator, machineCode: "SH-01-A");
+        using var otherClient = await fixture.LoginClientAsync(otherOperator);
+        var otherActor = await DemandAsync(otherClient, setup, setup.AltPart, "single-owner");
+        Assert.Equal(HttpStatusCode.Conflict, otherActor.StatusCode);
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", await ApiTestFixture.ErrorCodeAsync(otherActor));
+
+        var otherPart = await DemandAsync(client, setup, second, "single-owner");
+        Assert.Equal(HttpStatusCode.Conflict, otherPart.StatusCode);
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", await ApiTestFixture.ErrorCodeAsync(otherPart));
+
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        var otherMachine = await Assert.ThrowsAsync<WorkflowRuleException>(() => store.CreateAsync(
+            new PartDemandCommand("single-owner", setup.Operator.UserId, Guid.NewGuid(), setup.AltPart, null)));
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", otherMachine.Code);
+
+        await fixture.ExecuteAsync(
+            "UPDATE ops.transport_requests SET request_origin = 'PLC' WHERE idempotency_key = 'single-owner'");
+        var otherOrigin = await Assert.ThrowsAsync<WorkflowRuleException>(() => store.CreateAsync(
+            new PartDemandCommand("single-owner", setup.Operator.UserId, setup.Context.MachineId, setup.AltPart, null)));
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", otherOrigin.Code);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
     public async Task Batch_key_replays_the_same_part_set_and_rejects_a_different_one()
     {
         var setup = await SetupAsync();

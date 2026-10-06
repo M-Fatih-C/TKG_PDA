@@ -168,9 +168,14 @@ public sealed partial class PostgresTransportWorkflowStore
         var existing = await FindByIdempotencyKeyAsync(connection, transaction, command.IdempotencyKey.Trim(), cancellationToken);
         if (existing is not null)
         {
-            if (existing.MachineId != command.MachineId || existing.PartId != command.PartId)
+            if (existing.Origin != RequestOrigin.Api
+                || existing.RequestedBy != command.ActorUserId
+                || existing.MachineId != command.MachineId
+                || existing.PartId != command.PartId)
             {
-                throw new WorkflowRuleException("IDEMPOTENCY_KEY_REUSED", "The idempotency key belongs to a different part demand.");
+                throw new WorkflowRuleException(
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "The idempotency key belongs to a different part demand.");
             }
 
             return new PartDemandResult(existing, await FindPredecessorSnapshotAsync(connection, transaction, existing.Id, cancellationToken), WasIdempotentReplay: true);

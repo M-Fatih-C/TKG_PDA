@@ -473,7 +473,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await ReadAlarmSnapshotAsync(correlationId, cancellationToken);
+        var result = await ObserveCurrentAlarmsAsync(correlationId, cancellationToken);
         var robotsById = result.Data.Robots.ToDictionary(robot => robot.RobotId, StringComparer.Ordinal);
         return result.Data.Alarms
             .Select(alarm =>
@@ -497,7 +497,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await ReadAlarmSnapshotAsync(correlationId, cancellationToken);
+        var result = await ObserveCurrentAlarmsAsync(correlationId, cancellationToken);
         var alarmsByRobot = result.Data.Alarms
             .GroupBy(a => a.RobotId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, CountBySeverity, StringComparer.Ordinal);
@@ -531,7 +531,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await ReadAlarmSnapshotAsync(correlationId, cancellationToken);
+        var result = await ObserveCurrentAlarmsAsync(correlationId, cancellationToken);
         var alarmsByRobot = result.Data.Alarms
             .GroupBy(a => a.RobotId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, CountBySeverity, StringComparer.Ordinal);
@@ -553,7 +553,13 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
             .ToList();
     }
 
-    private async Task<RdsReadResult<RdsRobotAlarmReport>> ReadAlarmSnapshotAsync(
+    /// <summary>
+    /// The only alarm observation path. Admin, operator, and the background
+    /// worker all read GET /api/agv-report/core through this method. A successful
+    /// complete snapshot is stored. A failed read is recorded and rethrown, and
+    /// it does not clear open observations.
+    /// </summary>
+    public async Task<RdsReadResult<RdsRobotAlarmReport>> ObserveCurrentAlarmsAsync(
         Guid correlationId,
         CancellationToken cancellationToken)
     {
@@ -743,7 +749,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await ReadAlarmSnapshotAsync(correlationId, cancellationToken);
+        var result = await ObserveCurrentAlarmsAsync(correlationId, cancellationToken);
         var alarms = result.Data.Alarms;
         var highestSeverity = alarms.Count == 0
             ? null

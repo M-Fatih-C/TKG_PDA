@@ -13,6 +13,21 @@ public sealed partial class PostgresRdsIntegrationStore
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var gate = new NpgsqlCommand(
+            "SELECT pg_advisory_xact_lock(hashtextextended('tkg-robot-alarm-observation', 0))",
+            connection,
+            transaction))
+        {
+            await gate.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (await LatestObservationAtAsync(connection, transaction, cancellationToken) is { } latest && latest > observedAt)
+        {
+            // A newer successful snapshot already won. An older overlapping read must not
+            // clear or reopen what that snapshot proved.
+            return;
+        }
+
         var open = await ListOpenAsync(connection, transaction, cancellationToken);
         var plan = RobotAlarmObservationRules.Reconcile(open, alarms, observedAt, correlationId);
         foreach (var item in plan.Upserts)
@@ -29,6 +44,7 @@ public sealed partial class PostgresRdsIntegrationStore
                 SET occurrence_count = EXCLUDED.occurrence_count,
                     last_seen_at = EXCLUDED.last_seen_at,
                     last_correlation_id = EXCLUDED.last_correlation_id
+                WHERE robot_alarm_observations.last_seen_at <= EXCLUDED.last_seen_at
                 """,
                 connection,
                 transaction);
@@ -52,7 +68,7 @@ public sealed partial class PostgresRdsIntegrationStore
                 """
                 UPDATE integration.robot_alarm_observations
                 SET cleared_at = @seen
-                WHERE id = ANY(@ids) AND cleared_at IS NULL
+                WHERE id = ANY(@ids) AND cleared_at IS NULL AND last_seen_at <= @seen
                 """,
                 connection,
                 transaction);
@@ -105,6 +121,30 @@ public sealed partial class PostgresRdsIntegrationStore
         }
 
         return rows;
+    }
+
+    private static async Task<DateTimeOffset?> LatestObservationAtAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT max(ts)
+            FROM (
+                SELECT last_seen_at AS ts FROM integration.robot_alarm_observations
+                UNION ALL
+                SELECT cleared_at FROM integration.robot_alarm_observations WHERE cleared_at IS NOT NULL
+            ) marks
+            """,
+            connection,
+            transaction);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is DateTimeOffset offset
+            ? offset
+            : value is DateTime date
+                ? new DateTimeOffset(DateTime.SpecifyKind(date, DateTimeKind.Utc))
+                : null;
     }
 
     private static async Task<IReadOnlyList<RobotAlarmObservationRecord>> ListOpenAsync(

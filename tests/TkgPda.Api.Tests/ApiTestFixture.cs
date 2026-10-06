@@ -45,6 +45,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteAsync(
             """
             TRUNCATE
+                integration.robot_alarm_read_failures,
+                integration.robot_alarm_observations,
                 integration.notification_outbox,
                 integration.device_notification_registrations,
                 ops.store_events,

@@ -162,6 +162,7 @@ builder.Services.AddSingleton(new RdsExecutionSettings(
     rdsOptions.FullContentValue));
 builder.Services.AddSingleton<RdsExecutionCoordinator>();
 builder.Services.AddHostedService<RdsExecutionWorker>();
+builder.Services.AddHostedService<RdsAlarmObservationWorker>();
 builder.Services.AddCors(options => options.AddPolicy("OperatorWeb", policy =>
 {
     if (operatorWebOrigins.Length > 0)

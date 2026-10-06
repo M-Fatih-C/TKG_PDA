@@ -56,4 +56,32 @@ public sealed class RobotAlarmObservationApiTests(ApiTestFixture fixture) : ICla
         using var denied = await fixture.LoginClientAsync(line);
         Assert.Equal(HttpStatusCode.Forbidden, (await denied.GetAsync("/api/v1/admin/rds/alarm-history")).StatusCode);
     }
+
+    [Fact]
+    public async Task Concurrent_snapshots_keep_one_open_fingerprint_and_ignore_a_stale_clear()
+    {
+        await fixture.ResetAsync();
+        var before = await fixture.ScalarAsync<string>(
+            "SELECT COALESCE(string_agg(occupancy_state || '/' || load_state || '/' || COALESCE(current_part_id::text, ''), ',' ORDER BY layout_slot_id::text), '') FROM ops.slot_runtime_state");
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+        var seen = DateTimeOffset.Parse("2026-10-06T09:00:00Z");
+        var alarm = new RdsRobotAlarmSnapshot("robot-2", "fatal", "54002", "estop", "2026-10-06T09:00:00Z", 1);
+
+        await Task.WhenAll(
+            store.ObserveAlarmSnapshotAsync([alarm], Guid.NewGuid(), seen),
+            store.ObserveAlarmSnapshotAsync([alarm], Guid.NewGuid(), seen));
+
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM integration.robot_alarm_observations WHERE cleared_at IS NULL"));
+
+        await Task.WhenAll(
+            store.ObserveAlarmSnapshotAsync([alarm with { OccurrenceCount = 2 }], Guid.NewGuid(), seen.AddMinutes(1)),
+            store.ObserveAlarmSnapshotAsync([], Guid.NewGuid(), seen.AddSeconds(-30)));
+
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM integration.robot_alarm_observations WHERE cleared_at IS NULL"));
+        Assert.Equal(before, await fixture.ScalarAsync<string>(
+            "SELECT COALESCE(string_agg(occupancy_state || '/' || load_state || '/' || COALESCE(current_part_id::text, ''), ',' ORDER BY layout_slot_id::text), '') FROM ops.slot_runtime_state"));
+    }
 }
