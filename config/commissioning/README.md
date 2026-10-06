@@ -25,7 +25,7 @@ Names are intended to remain stable during commissioning.
 
 Some customer variants share the same physical `master.layout`, while the commissioning contract requires a different RDS map/navigation profile per variant.
 
-The current `integration.layout_slot_rds_mapping` is keyed only by `layout_slot_id`, so it cannot represent:
+`integration.layout_slot_rds_mapping` remains the legacy one-row mapping. Live variant binding uses `integration.layout_slot_rds_profile_mapping`, keyed by layout slot and navigation profile. A WorkSite can be bound only when it belongs to that same profile.
 
 ```
 same layout_slot
@@ -33,7 +33,7 @@ same layout_slot
 + V02 navigation profile -> V02 WorkSite
 ```
 
-Before live variant-specific WorkSite binding is enabled, mapping must become navigation/profile scoped (or an equivalent canonical model must be implemented). The legacy mapping must not be silently overwritten.
+Reserved names live in `integration.rds_worksite_plans`. They are not rows in `integration.rds_worksites` until a real RDS WorkSite is imported. Commissioning profiles stay `DRAFT` until field installation is confirmed.
 
 ## Source
 

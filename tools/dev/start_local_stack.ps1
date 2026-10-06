@@ -267,7 +267,8 @@ foreach ($migration in @(
     '018_production_end_priorities.sql',
     '019_robot_alarm_observations.sql',
     '020_robot_alarm_observation_state.sql',
-    '021_production_end_cleanup.sql'
+    '021_production_end_cleanup.sql',
+    '022_variant_scoped_rds_worksite_commissioning.sql'
 )) {
     Write-Host "Applying migration $migration..." -ForegroundColor Cyan
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot "db\migrations\$migration") | Out-Null
@@ -278,7 +279,8 @@ Write-Host 'Applying customer master seeds (002a, 002b, 002c)...' -ForegroundCol
 $seedFiles = @(
     (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql'),
     (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql'),
-    (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')
+    (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'),
+    (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql')
 )
 foreach ($sf in $seedFiles) {
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null

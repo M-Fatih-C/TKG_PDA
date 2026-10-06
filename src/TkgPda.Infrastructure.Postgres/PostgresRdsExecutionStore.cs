@@ -216,8 +216,8 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
                 FROM master.layout_slots ls
                 LEFT JOIN master.slot_group_members sgm ON sgm.layout_slot_id = ls.id
                 LEFT JOIN master.slot_groups sg ON sg.id = sgm.slot_group_id
-                LEFT JOIN integration.layout_slot_rds_mapping map ON map.layout_slot_id = ls.id
-                LEFT JOIN integration.rds_worksites rw ON rw.id = map.rds_worksite_id
+                LEFT JOIN integration.rds_worksites rw
+                    ON rw.id = integration.resolve_slot_worksite(ls.id, r.navigation_id)
                 WHERE (r.source_slot_id IS NOT NULL AND ls.id = r.source_slot_id)
                    OR (r.source_slot_id IS NULL AND template.source_slot_group_id IS NOT NULL
                        AND sgm.slot_group_id = template.source_slot_group_id AND ls.layout_id = r.layout_id)
@@ -252,8 +252,8 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
                 FROM master.layout_slots ls
                 LEFT JOIN master.slot_group_members sgm ON sgm.layout_slot_id = ls.id
                 LEFT JOIN master.slot_groups sg ON sg.id = sgm.slot_group_id
-                LEFT JOIN integration.layout_slot_rds_mapping map ON map.layout_slot_id = ls.id
-                LEFT JOIN integration.rds_worksites rw ON rw.id = map.rds_worksite_id
+                LEFT JOIN integration.rds_worksites rw
+                    ON rw.id = integration.resolve_slot_worksite(ls.id, r.navigation_id)
                 WHERE (r.destination_slot_id IS NOT NULL AND ls.id = r.destination_slot_id)
                    OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NOT NULL
                        AND sgm.slot_group_id = template.destination_slot_group_id AND ls.layout_id = r.layout_id)

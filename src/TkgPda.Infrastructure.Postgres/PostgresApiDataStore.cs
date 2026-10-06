@@ -491,13 +491,14 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 LEFT JOIN ops.slot_runtime_state rs ON rs.layout_slot_id = s.id
                 LEFT JOIN master.parts p ON p.id = rs.current_part_id
                 LEFT JOIN master.container_types cct ON cct.id = rs.current_container_type_id
-                LEFT JOIN integration.layout_slot_rds_mapping rmap ON rmap.layout_slot_id = s.id
-                LEFT JOIN integration.rds_worksites rw ON rw.id = rmap.rds_worksite_id
+                LEFT JOIN integration.rds_worksites rw
+                    ON rw.id = integration.resolve_slot_worksite(s.id, @navigation_id)
                 WHERE s.layout_id = @layout_id
                 ORDER BY s.display_order, s.code
                 """,
                 connection);
             command.Parameters.AddWithValue("layout_id", activeLayoutId.Value);
+            AddNullableUuid(command, "navigation_id", activeNavigationId);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {

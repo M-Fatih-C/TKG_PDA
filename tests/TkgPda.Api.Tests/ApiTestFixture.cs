@@ -41,6 +41,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     public async Task ResetAsync()
     {
         await ExecuteScriptAsync(MigrationFile("021_production_end_cleanup.sql"));
+        await ExecuteScriptAsync(MigrationFile("022_variant_scoped_rds_worksite_commissioning.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -76,6 +77,13 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             WHERE rds_worksite_id IN (
                 SELECT id FROM integration.rds_worksites WHERE area = 'OPTIMAK_SIM_2026');
             DELETE FROM integration.rds_worksites WHERE area = 'OPTIMAK_SIM_2026';
+            DELETE FROM integration.layout_slot_rds_profile_mapping
+            WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-SCOPE-%');
+            DELETE FROM integration.layout_slot_rds_mapping
+            WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-SCOPE-%');
+            DELETE FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-SCOPE-%';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'DEV-RDS-SIM-%';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'P08A-%';
             DELETE FROM master.task_templates
