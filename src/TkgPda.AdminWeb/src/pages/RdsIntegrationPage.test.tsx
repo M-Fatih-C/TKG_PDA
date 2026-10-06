@@ -30,7 +30,14 @@ const mockRdsApi = (options?: { alarms?: unknown; alarmsResponse?: Response; rob
 describe('RDS integration page', () => {
   it('labels RDS data as external read evidence and does not mutate during load', async () => {
     const fetchMock = mockRdsApi()
-    expect(await screen.findByText('RDS değerleri dış sistem kanıtıdır.')).toBeVisible()
+    expect(await screen.findAllByText('RDS Entegrasyonu')).not.toHaveLength(0)
+    expect(screen.getByText('Robot yürütme, canlı durum, alarm ve WorkSite eşleşmeleri.')).toBeVisible()
+    expect(screen.getByText('RDS Bağlantısı')).toBeVisible()
+    expect(screen.getByText('Eşleme Durumu')).toBeVisible()
+    expect(screen.getByText('Aktif Robot Alarmları')).toBeVisible()
+    expect(screen.getByText('WorkSite Senkronizasyonu')).toBeVisible()
+    expect(screen.queryByText('Salt okunur dış entegrasyon')).not.toBeInTheDocument()
+    expect(screen.getByText('RDS değerleri dış sistem kanıtıdır.')).toBeVisible()
     expect(await screen.findByText('SITE-01')).toBeVisible()
     expect(screen.getByText('http://rds.test:8080')).toBeVisible()
     expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true)
@@ -39,7 +46,7 @@ describe('RDS integration page', () => {
   it('requires an explicit scene confirmation before read-only synchronization', async () => {
     const fetchMock = mockRdsApi()
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    await userEvent.click(await screen.findByRole('button', { name: /Salt okunur senkronize et/ }))
+    await userEvent.click(await screen.findByRole('button', { name: /Senkronize et/ }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/rds/worksites/sync') && init?.method === 'POST')).toBe(true))
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('şu anda RDS'))
   })

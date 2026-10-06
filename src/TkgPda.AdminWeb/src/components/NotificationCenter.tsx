@@ -98,7 +98,6 @@ export function NotificationCenter() {
         title: `Veri Kalite Uyarısı: ${issue.code}`,
         message: issue.message,
         severity: 'danger',
-        link: '/data-quality',
         source: 'Master Data',
       })
     })

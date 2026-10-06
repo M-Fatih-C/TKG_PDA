@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowUpRight, Bot, Boxes, CheckCircle2, Map, PackageOpen, RadioTower, RefreshCw, Smartphone, Users } from 'lucide-react'
+import { AlertTriangle, ArrowUpRight, Bot, Boxes, PackageOpen, RadioTower, RefreshCw, Smartphone, Users } from 'lucide-react'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAdminApi } from '../api/ApiContext'
@@ -13,15 +13,13 @@ export function DashboardPage() {
   const users = useQuery({ queryKey: ['users'], queryFn: ({ signal }) => api.users(signal) })
   const devices = useQuery({ queryKey: ['devices'], queryFn: ({ signal }) => api.devices(signal) })
   const machines = useQuery({ queryKey: ['machines'], queryFn: ({ signal }) => api.machines(signal) })
-  const layouts = useQuery({ queryKey: ['layouts'], queryFn: ({ signal }) => api.layouts(undefined, signal) })
-  const parts = useQuery({ queryKey: ['parts'], queryFn: ({ signal }) => api.parts(signal) })
   const containers = useQuery({ queryKey: ['containers'], queryFn: ({ signal }) => api.containers(signal) })
-  const issues = useQuery({ queryKey: ['data-issues'], queryFn: ({ signal }) => api.dataIssues(signal) })
   const audit = useQuery({ queryKey: ['audit', 6], queryFn: ({ signal }) => api.audit({ limit: 6 }, signal) })
   const rdsStatus = useQuery({ queryKey: ['rds-status'], queryFn: ({ signal }) => api.rdsStatus(signal), refetchOnWindowFocus: false })
   const robots = useQuery({ queryKey: ['rds-robots'], queryFn: ({ signal }) => api.rdsRobots(signal), refetchOnWindowFocus: false })
+  const alarms = useQuery({ queryKey: ['rds-alarms'], queryFn: ({ signal }) => api.rdsRobotAlarms(signal), refetchOnWindowFocus: false })
 
-  const all = [users, devices, machines, layouts, parts, containers, issues, audit, rdsStatus, robots]
+  const all = [users, devices, machines, containers, audit, rdsStatus, robots, alarms]
 
   const refreshAll = async () => {
     setRefreshing(true)
@@ -30,13 +28,11 @@ export function DashboardPage() {
         client.invalidateQueries({ queryKey: ['users'] }),
         client.invalidateQueries({ queryKey: ['devices'] }),
         client.invalidateQueries({ queryKey: ['machines'] }),
-        client.invalidateQueries({ queryKey: ['layouts'] }),
-        client.invalidateQueries({ queryKey: ['parts'] }),
         client.invalidateQueries({ queryKey: ['containers'] }),
-        client.invalidateQueries({ queryKey: ['data-issues'] }),
         client.invalidateQueries({ queryKey: ['audit'] }),
         client.invalidateQueries({ queryKey: ['rds-status'] }),
         client.invalidateQueries({ queryKey: ['rds-robots'] }),
+        client.invalidateQueries({ queryKey: ['rds-alarms'] }),
       ])
     } finally {
       setRefreshing(false)
@@ -47,20 +43,18 @@ export function DashboardPage() {
     users.dataUpdatedAt || 0,
     devices.dataUpdatedAt || 0,
     machines.dataUpdatedAt || 0,
-    layouts.dataUpdatedAt || 0,
-    parts.dataUpdatedAt || 0,
     containers.dataUpdatedAt || 0,
-    issues.dataUpdatedAt || 0,
     audit.dataUpdatedAt || 0,
     rdsStatus.dataUpdatedAt || 0,
     robots.dataUpdatedAt || 0,
+    alarms.dataUpdatedAt || 0,
   )
 
   if (all.some((query) => query.isLoading && !query.data)) return <LoadingState label="Yönetim özeti hazırlanıyor…" />
   const failure = all.find((query) => query.error)?.error
   if (failure) return <ErrorState error={failure} onRetry={refreshAll} />
 
-  const highIssues = issues.data?.filter((issue) => issue.severity === 'HIGH').length ?? 0
+  const criticalAlarms = alarms.data?.filter((alarm) => alarm.severity === 'fatal' || alarm.severity === 'error').length ?? 0
   const onlineRobots = robots.data?.filter((r) => r.connectivity === 'ONLINE').length ?? 0
   const activeRobots = robots.data?.filter((r) => r.execution === 'RUNNING' || r.motion === 'MOVING').length ?? 0
   const totalRobots = robots.data?.length ?? 0
@@ -75,11 +69,11 @@ export function DashboardPage() {
       tone: 'normal',
     },
     {
-      label: 'Yayındaki Layout',
-      value: layouts.data?.filter((item) => item.status === 'PUBLISHED').length ?? 0,
-      meta: `${layouts.data?.filter((item) => item.status === 'DRAFT').length ?? 0} draft sürüm`,
-      icon: Map,
-      to: '/layouts',
+      label: 'Aktif PDA',
+      value: devices.data?.filter((item) => item.type === 'PDA' && item.isActive).length ?? 0,
+      meta: `${devices.data?.length ?? 0} kayıtlı cihaz`,
+      icon: Smartphone,
+      to: '/devices',
       tone: 'normal',
     },
     {
@@ -91,12 +85,12 @@ export function DashboardPage() {
       tone: totalRobots > 0 && onlineRobots < totalRobots ? 'warning' : 'normal',
     },
     {
-      label: 'Veri Kalite Konusu',
-      value: issues.data?.length ?? 0,
-      meta: `${highIssues} yüksek öncelikli`,
+      label: 'Kritik Robot Alarmı',
+      value: criticalAlarms,
+      meta: `${alarms.data?.length ?? 0} görünen alarm`,
       icon: AlertTriangle,
-      to: '/data-quality',
-      tone: highIssues > 0 ? 'danger' : 'normal',
+      to: '/rds',
+      tone: criticalAlarms > 0 ? 'danger' : 'normal',
     },
   ]
 
@@ -109,7 +103,7 @@ export function DashboardPage() {
       <PageHeader
         eyebrow="Operasyon & Sistem Özeti"
         title="Genel Bakış"
-        description="Makineler, fiziksel yerleşimler, robot bağlantısı ve veri kalitesinin anlık durumu."
+        description="Aktif makineler, saha cihazları, robot filosu ve son denetim hareketleri."
         actions={
           <div className="toolbar-group">
             <span className="last-sync-badge">Son güncelleme: {formattedTime}</span>
@@ -194,33 +188,6 @@ export function DashboardPage() {
           )}
         </Panel>
       </div>
-
-      <Panel>
-        <PanelHeader
-          title="Müdahale ve Veri Doğrulama"
-          description="Doğruluk kontrolü bekleyen lojistik ve konfigürasyon kayıtları"
-          action={<Link className="text-link" to="/data-quality">Tümünü İncele <ArrowUpRight size={15} /></Link>}
-        />
-        {issues.data && issues.data.length > 0 ? (
-          <div className="issue-strip">
-            {issues.data.slice(0, 5).map((issue) => (
-              <div key={`${issue.kind}-${issue.entityId}`}>
-                <StatusPill value={issue.severity} />
-                <strong>{issue.code}</strong>
-                <span>{issue.message}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="issue-strip-clean">
-            <CheckCircle2 size={24} className="text-success" />
-            <div>
-              <strong>Tüm kontroller normal</strong>
-              <p>Müdahale gerektiren açık bir veri kalite veya konfigürasyon uyarısı bulunmuyor.</p>
-            </div>
-          </div>
-        )}
-      </Panel>
     </div>
   )
 }
