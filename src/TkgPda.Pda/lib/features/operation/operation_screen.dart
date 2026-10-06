@@ -199,33 +199,47 @@ class _PartFirstWithBatchSkip extends StatelessWidget {
         controller: controller,
       );
       if (PdaScale.usesSideColumn(context)) {
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: Column(
-                children: [
-                  Expanded(child: selector),
-                  ?skip,
-                ],
-              ),
-            ),
-            if (showMamul || showTransports) ...[
-              SizedBox(width: PdaScale.gutter(context)),
-              SizedBox(
-                width: (constraints.maxWidth * 0.42).clamp(300.0, 560.0),
+        final gutter = PdaScale.gutter(context);
+        // Near-equal columns. Flex keeps the split as the screen grows;
+        // a fixed right-column ceiling made the left side dominate.
+        return Padding(
+          padding: EdgeInsets.fromLTRB(
+            gutter,
+            gutter * 0.4,
+            gutter,
+            gutter * 0.4,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                key: const Key('production-left-column'),
+                flex: 52,
                 child: Column(
                   children: [
-                    if (showMamul)
-                      ContainerPositionPanel(controller: controller),
-                    if (showMamul && showTransports)
-                      SizedBox(height: PdaScale.gutter(context) * 0.4),
-                    if (showTransports) Expanded(child: transports),
+                    Expanded(child: selector),
+                    ?skip,
                   ],
                 ),
               ),
+              if (showMamul || showTransports) ...[
+                SizedBox(width: gutter),
+                Expanded(
+                  key: const Key('production-right-column'),
+                  flex: 48,
+                  child: Column(
+                    children: [
+                      if (showMamul)
+                        ContainerPositionPanel(controller: controller),
+                      if (showMamul && showTransports)
+                        SizedBox(height: gutter * 0.4),
+                      if (showTransports) Expanded(child: transports),
+                    ],
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         );
       }
       final transportHeight = requests.isEmpty

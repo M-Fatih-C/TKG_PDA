@@ -107,45 +107,34 @@ class _TransportCardState extends State<_TransportCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 6,
-              runSpacing: 4,
-              children: [
-                Text(
-                  '#${request.requestNo} · ${actionLabel(request.operation)}',
-                  style: TextStyle(
-                    fontSize: PdaScale.body(context),
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                Chip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(executionStateLabel(execution.state)),
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                if (request.canCancel)
-                  OutlinedButton.icon(
-                    key: Key('cancel-${request.requestId}'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Theme.of(context).colorScheme.error,
-                      visualDensity: VisualDensity.compact,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      minimumSize: const Size(48, 36),
-                    ),
-                    onPressed: widget.controller.mutationEnabled
-                        ? () => _confirmCancel(context)
-                        : null,
-                    icon: const Icon(Icons.cancel_outlined, size: 18),
-                    label: const Text('Talebi İptal Et'),
-                  ),
-              ],
+            _TransportHeadline(
+              request: request,
+              onCancel: () => _confirmCancel(context),
+              enabled: widget.controller.mutationEnabled,
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 2),
             ..._partLines(caption),
             ..._summaryLines(caption),
-            const SizedBox(height: 4),
-            _LifecycleBar(request: request),
+            const SizedBox(height: 2),
+            Row(
+              children: [
+                Expanded(child: _LifecycleBar(request: request)),
+                TextButton(
+                  key: Key('transport-detail-${request.requestId}'),
+                  style: TextButton.styleFrom(
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    minimumSize: const Size(48, 48),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    textStyle: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  onPressed: () => setState(() => _details = !_details),
+                  child: Text(_details ? 'Detayı gizle' : 'Detay'),
+                ),
+              ],
+            ),
             if (execution.failureCode != null)
               Text(
                 failureLabel(execution.failureCode, execution.operatorMessage),
@@ -157,19 +146,6 @@ class _TransportCardState extends State<_TransportCard> {
               ),
             if (!request.canCancel && request.cancelDisabledMessage != null)
               Text(request.cancelDisabledMessage!, style: caption),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                key: Key('transport-detail-${request.requestId}'),
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  minimumSize: const Size(48, 32),
-                ),
-                onPressed: () => setState(() => _details = !_details),
-                child: Text(_details ? 'Detayı gizle' : 'Detay'),
-              ),
-            ),
             if (_details) ..._detailLines(caption),
           ],
         ),
@@ -229,19 +205,31 @@ class _TransportCardState extends State<_TransportCard> {
   List<Widget> _summaryLines(TextStyle caption) {
     final readiness = requestReadinessLabel(request.readinessState);
     final age = request.ageSeconds;
+    if (readiness == null && age == null) return const [];
     return [
-      if (readiness != null)
-        Text(
-          'Hazırlık: $readiness',
-          key: const Key('active-readiness'),
-          style: caption,
-        ),
-      if (age != null)
-        Text(
-          'Talep süresi: ${formatServerDuration(age)}',
-          key: const Key('active-age'),
-          style: caption,
-        ),
+      Row(
+        children: [
+          if (readiness != null)
+            Flexible(
+              child: Text(
+                'Hazırlık: $readiness',
+                key: const Key('active-readiness'),
+                style: caption,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          if (readiness != null && age != null) Text(' · ', style: caption),
+          if (age != null)
+            Text(
+              'Talep süresi: ${formatServerDuration(age)}',
+              key: const Key('active-age'),
+              style: caption,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+        ],
+      ),
     ];
   }
 
@@ -297,6 +285,84 @@ class _TransportCardState extends State<_TransportCard> {
       ),
     );
     if (confirmed == true) await widget.controller.cancelTransport(request);
+  }
+}
+
+/// Title, status, and cancel stay on one line once the card is wide enough.
+/// The cancel control keeps a glove-sized hit target without a second row.
+class _TransportHeadline extends StatelessWidget {
+  const _TransportHeadline({
+    required this.request,
+    required this.onCancel,
+    required this.enabled,
+  });
+
+  final ActiveTransportRequest request;
+  final VoidCallback onCancel;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = Text(
+      '#${request.requestNo} · ${actionLabel(request.operation)}',
+      style: TextStyle(
+        fontSize: PdaScale.body(context),
+        fontWeight: FontWeight.w900,
+      ),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+    final status = Chip(
+      visualDensity: VisualDensity.compact,
+      label: Text(
+        executionStateLabel(request.execution.state),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: EdgeInsets.zero,
+      labelPadding: const EdgeInsets.symmetric(horizontal: 8),
+    );
+    final cancel = request.canCancel
+        ? OutlinedButton.icon(
+            key: Key('cancel-${request.requestId}'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              minimumSize: const Size(48, 48),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              textStyle: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            onPressed: enabled ? onCancel : null,
+            icon: const Icon(Icons.cancel_outlined, size: 18),
+            label: const Text('Talebi İptal Et', maxLines: 1),
+          )
+        : null;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final sideBySide = constraints.maxWidth >= 400 && cancel != null;
+        if (!sideBySide) {
+          return Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 6,
+            runSpacing: 4,
+            children: [title, status, ?cancel],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: title),
+            const SizedBox(width: 6),
+            Flexible(child: status),
+            const SizedBox(width: 6),
+            cancel,
+          ],
+        );
+      },
+    );
   }
 }
 

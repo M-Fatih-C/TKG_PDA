@@ -347,6 +347,125 @@ void main() {
     expect(find.text('Toplu Taşıma Modu Açık'), findsNothing);
   });
 
+  testWidgets('1024x600 columns stay near an even split', (tester) async {
+    await _production(
+      tester,
+      size: const Size(1024, 600),
+      context: testContext(activeRequests: [testActiveRequest]),
+    );
+    _expectSideColumn(tester);
+    _expectBalancedColumns(tester, viewportWidth: 1024);
+    final right = tester.getSize(
+      find.byKey(const Key('production-right-column')),
+    );
+    expect(right.width, greaterThan(1024 * 0.44));
+    expect(right.width, lessThan(560));
+  });
+
+  testWidgets('1280x800 columns stay near an even split', (tester) async {
+    await _production(
+      tester,
+      size: const Size(1280, 800),
+      context: testContext(activeRequests: [testActiveRequest]),
+    );
+    _expectSideColumn(tester);
+    _expectBalancedColumns(tester, viewportWidth: 1280);
+  });
+
+  testWidgets('a large desktop grows the right column past the old cap', (
+    tester,
+  ) async {
+    await _production(
+      tester,
+      size: const Size(1920, 1080),
+      context: testContext(activeRequests: [testActiveRequest]),
+    );
+    _expectSideColumn(tester);
+    _expectBalancedColumns(tester, viewportWidth: 1920);
+    final right = tester.getSize(
+      find.byKey(const Key('production-right-column')),
+    );
+    expect(right.width, greaterThan(560));
+    final left = tester.getSize(
+      find.byKey(const Key('production-left-column')),
+    );
+    expect(left.width / right.width, lessThan(1.2));
+  });
+
+  testWidgets('mamul cards stay two-up and centered inside a wide section', (
+    tester,
+  ) async {
+    await _production(
+      tester,
+      size: const Size(1920, 1080),
+      positions: [_readyPosition(1), _readyPosition(2)],
+    );
+    final first = tester.getRect(find.byKey(const Key('container-card-1')));
+    final second = tester.getRect(find.byKey(const Key('container-card-2')));
+    expect((first.top - second.top).abs(), lessThan(4));
+    expect(second.left, greaterThan(first.right));
+    expect((first.width - second.width).abs(), lessThan(2));
+    expect(first.width, lessThanOrEqualTo(440));
+    expect(first.height, inInclusiveRange(130, 210));
+    final panel = tester.getRect(
+      find.byKey(const Key('container-position-panel')),
+    );
+    final leftGap = first.left - panel.left;
+    final rightGap = panel.right - second.right;
+    expect((leftGap - rightGap).abs(), lessThan(28));
+    final action = tester.getSize(
+      find.byKey(const Key('direct-action-REMOVE_FULL-1')),
+    );
+    expect(action.height, greaterThanOrEqualTo(48));
+    expect(action.width, greaterThanOrEqualTo(48));
+  });
+
+  testWidgets('short-terminal mamul action stays a glove-sized target', (
+    tester,
+  ) async {
+    await _production(tester, size: const Size(1024, 600));
+    final card = tester.getSize(find.byKey(const Key('container-card-1')));
+    expect(card.height, inInclusiveRange(130, 155));
+    final action = tester.getSize(
+      find.byKey(const Key('direct-action-REMOVE_FULL-1')),
+    );
+    expect(action.height, greaterThanOrEqualTo(48));
+    expect(action.width, greaterThanOrEqualTo(48));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('active transport cancel and detail keep glove-sized targets', (
+    tester,
+  ) async {
+    await _production(
+      tester,
+      size: const Size(1280, 800),
+      context: testContext(activeRequests: [testActiveRequest]),
+    );
+    final card = tester.getSize(
+      find.byKey(
+        const Key('active-transport-90000000-0000-0000-0000-000000000001'),
+      ),
+    );
+    expect(card.height, lessThan(220));
+    final title = tester.getRect(find.textContaining('#42'));
+    final cancel = tester.getRect(
+      find.byKey(const Key('cancel-90000000-0000-0000-0000-000000000001')),
+    );
+    final detail = tester.getRect(
+      find.byKey(
+        const Key('transport-detail-90000000-0000-0000-0000-000000000001'),
+      ),
+    );
+    expect(cancel.height, greaterThan(47));
+    expect(cancel.width, greaterThan(47));
+    expect(detail.height, greaterThan(47));
+    expect(detail.width, greaterThan(47));
+    expect((title.center.dy - cancel.center.dy).abs(), lessThan(16));
+    expect(find.byKey(const Key('active-transport-section')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('a business error stays in the persistent banner', (
     tester,
   ) async {
@@ -367,6 +486,41 @@ void main() {
 
 const _secondAltId = '70000000-0000-0000-0000-000000000021';
 const _thirdAltId = '70000000-0000-0000-0000-000000000022';
+
+void _expectBalancedColumns(
+  WidgetTester tester, {
+  required double viewportWidth,
+}) {
+  final left = tester.getSize(find.byKey(const Key('production-left-column')));
+  final right = tester.getSize(
+    find.byKey(const Key('production-right-column')),
+  );
+  expect(left.width / right.width, inInclusiveRange(0.98, 1.16));
+  expect(right.width, greaterThan(viewportWidth * 0.40));
+  expect(left.width, lessThan(viewportWidth * 0.60));
+  expect(tester.takeException(), isNull);
+}
+
+ContainerPosition _readyPosition(int number) => ContainerPosition(
+  positionNumber: number,
+  label: 'Kasa $number',
+  fullAction: const ContainerActionAvailability(
+    enabled: true,
+    status: 'READY',
+    disabledCode: null,
+    disabledMessage: null,
+  ),
+  emptyAction: const ContainerActionAvailability(
+    enabled: false,
+    status: 'READY',
+    disabledCode: 'NOT_APPLICABLE',
+    disabledMessage: 'Alan boşaltma şu an uygun değil.',
+  ),
+  transportState: 'READY',
+  queuePosition: null,
+  etaSeconds: null,
+  etaState: 'UNAVAILABLE',
+);
 
 void _expectSideColumn(WidgetTester tester) {
   final alt = tester.getTopLeft(find.text('ALT PARÇA TALEPLERİ'));

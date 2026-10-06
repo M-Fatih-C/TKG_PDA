@@ -34,7 +34,8 @@ class ContainerPositionPanel extends StatelessWidget {
   static const double _minCardWidth = 268;
 
   /// Touch-sized when an action is available. A reason-only card stays short
-  /// so it does not reserve a blank action well.
+  /// so it does not reserve a blank action well. Short terminals stay in a
+  /// modest band; the action itself keeps a glove-sized target.
   static double _cardBand(
     BuildContext context,
     List<ContainerPosition> positions,
@@ -42,12 +43,16 @@ class ContainerPositionPanel extends StatelessWidget {
     final actionable = positions.any(
       (position) => position.fullAction.enabled || position.emptyAction.enabled,
     );
-    if (!actionable) return PdaScale.isCompact(context) ? 112 : 128;
-    return PdaScale.isCompact(context) ? 164 : 196;
+    if (!actionable) {
+      return PdaScale.isShortTerminal(context) ? 118 : 128;
+    }
+    if (PdaScale.isShortTerminal(context)) return 152;
+    return PdaScale.isCompact(context) ? 172 : 204;
   }
 
-  /// Beyond this a single position just stretches into empty space.
-  static const double _maxCardWidth = 520;
+  /// Beyond this a kasa card becomes an empty rectangle. The right column
+  /// itself stays wide so active transports can use the space.
+  static const double _maxCardWidth = 440;
 
   @override
   Widget build(BuildContext context) {
@@ -110,27 +115,47 @@ class ContainerPositionPanel extends StatelessWidget {
                 height: cardHeight,
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    // Fill the terminal rather than leaving a 238px strip in
-                    // the middle of a 1920px screen: widen the cards until
-                    // they use the row, and only scroll once they cannot.
-                    final available =
-                        constraints.maxWidth - gutter * (positions.length - 1);
-                    final fitted = available / positions.length;
+                    final count = positions.length;
+                    final gaps = gutter * (count - 1);
+                    final fitted = count == 0
+                        ? _minCardWidth
+                        : (constraints.maxWidth - gaps) / count;
                     final cardWidth = fitted.isFinite
                         ? fitted.clamp(150.0, _maxCardWidth)
                         : _minCardWidth;
+                    final rowWidth = cardWidth * count + gaps;
+                    Widget cardAt(int index) => SizedBox(
+                      width: cardWidth,
+                      child: _PositionCard(
+                        controller: controller,
+                        position: positions[index],
+                      ),
+                    );
+                    // Two equal cards, centered once a max width leaves slack.
+                    // Scroll only when the minimum readable width cannot fit.
+                    if (rowWidth <= constraints.maxWidth + 0.5) {
+                      return Align(
+                        alignment: Alignment.center,
+                        child: SizedBox(
+                          key: const Key('container-position-list'),
+                          width: rowWidth,
+                          child: Row(
+                            children: [
+                              for (var index = 0; index < count; index++) ...[
+                                if (index > 0) SizedBox(width: gutter),
+                                cardAt(index),
+                              ],
+                            ],
+                          ),
+                        ),
+                      );
+                    }
                     return ListView.separated(
                       key: const Key('container-position-list'),
                       scrollDirection: Axis.horizontal,
-                      itemCount: positions.length,
+                      itemCount: count,
                       separatorBuilder: (_, _) => SizedBox(width: gutter),
-                      itemBuilder: (context, index) => SizedBox(
-                        width: cardWidth,
-                        child: _PositionCard(
-                          controller: controller,
-                          position: positions[index],
-                        ),
-                      ),
+                      itemBuilder: (context, index) => cardAt(index),
                     );
                   },
                 ),
@@ -222,20 +247,27 @@ class _PositionCard extends StatelessWidget {
     final theme = Theme.of(context);
     final total = controller.containerPositions.length;
     final pad = PdaScale.cardPadding(context);
+    final verticalPad = PdaScale.isShortTerminal(context) ? pad + 4 : pad;
 
     return Card(
+      key: Key('container-card-${position.positionNumber}'),
       margin: EdgeInsets.zero,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final actionHeight = math.max(
             48.0,
-            constraints.maxHeight - pad * 2 - 52,
+            constraints.maxHeight - verticalPad * 2 - 52,
           );
           return SingleChildScrollView(
             child: ConstrainedBox(
               constraints: BoxConstraints(minHeight: constraints.maxHeight),
               child: Padding(
-                padding: EdgeInsets.all(pad),
+                padding: EdgeInsets.fromLTRB(
+                  pad,
+                  verticalPad,
+                  pad,
+                  verticalPad,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
@@ -438,7 +470,8 @@ class _BusinessActionButton extends StatelessWidget {
                       ? () => controller.submitContainerAction(position, action)
                       : null,
                   style: ElevatedButton.styleFrom(
-                    minimumSize: Size.zero,
+                    minimumSize: const Size(48, 48),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     backgroundColor: enabled
                         ? (action == 'FULL'
                               ? const Color(0xFFC2410C)
