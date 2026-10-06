@@ -65,6 +65,7 @@ try {
         'db\migrations\015_part_demand_dependencies.sql',
         'db\migrations\016_finished_goods_areas.sql',
         'db\migrations\017_internal_device_notifications.sql',
+        'db\migrations\018_production_end_priorities.sql',
         'db\seeds\generated\002a_customer_textual_master_data.sql',
         'db\seeds\generated\002b_customer_physical_layouts.sql',
         'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'

@@ -401,3 +401,24 @@ export interface RdsTaskTemplateValidation {
   code: number
   message: string
 }
+
+export interface ProductionEndPriority {
+  operationCode: string
+  priority: number | null
+  updatedAt: string | null
+}
+
+export interface TransportEvidence {
+  requestId: string
+  totalSeconds: number | null
+  warehouseResponseSeconds: number | null
+  robotExecutionSeconds: number | null
+  failures: { eventType: string; occurredAt: string; actorUserId: string | null; message: string | null }[]
+  robot: {
+    taskRecordId: string | null
+    rdsStatus: number | null
+    endedReason: string | null
+    startedAt: string | null
+    endedAt: string | null
+  } | null
+}

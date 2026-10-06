@@ -24,6 +24,8 @@ import type {
   RdsWorkSite,
   RdsTaskTemplate,
   RdsTaskTemplateValidation,
+  ProductionEndPriority,
+  TransportEvidence,
   Slot,
   SlotDraft,
   SlotPartRecord,
@@ -215,6 +217,12 @@ export const createAdminApi = (token: string) => ({
     (await request<RdsTaskTemplate[]>('/api/v1/admin/rds/task-templates', { token, signal })).data,
   validateRdsTaskTemplate: async (taskTemplateId: string) =>
     (await request<RdsTaskTemplateValidation>('/api/v1/admin/rds/task-templates/validate', { method: 'POST', token, body: { taskTemplateId } })).data,
+  productionEndPriorities: async (signal?: AbortSignal) =>
+    (await request<ProductionEndPriority[]>('/api/v1/admin/production-end-priorities', { token, signal })).data,
+  setProductionEndPriority: async (operationCode: string, priority: number | null) =>
+    (await request<ProductionEndPriority[]>('/api/v1/admin/production-end-priorities', { method: 'PUT', token, body: { operationCode, priority } })).data,
+  transportEvidence: async (requestId: string, signal?: AbortSignal) =>
+    (await request<TransportEvidence>(`/api/v1/admin/transport-requests/${requestId}/evidence`, { token, signal })).data,
 })
 
 export type AdminApi = ReturnType<typeof createAdminApi>

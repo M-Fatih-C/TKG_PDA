@@ -5,6 +5,7 @@ import {
   LogOut,
   Menu,
   RadioTower,
+  ListOrdered,
   ShieldCheck,
   Smartphone,
   Users,
@@ -21,6 +22,7 @@ const links = [
   { to: '/devices', label: 'Cihazlar', icon: Smartphone },
   { to: '/machines', label: 'Makine & Varyantlar', icon: DatabaseZap },
   { to: '/audit', label: 'Audit Geçmişi', icon: ClipboardList },
+  { to: '/production-end-priorities', label: 'Üretim Bitiş Önceliği', icon: ListOrdered },
   { to: '/rds', label: 'RDS Entegrasyonu', icon: RadioTower },
 ]
 

@@ -148,6 +148,7 @@ builder.Services.AddSingleton<IWarehousePreparationStore>(services => services.G
 builder.Services.AddSingleton<WarehousePreparationService>();
 builder.Services.Configure<DeviceNotificationOptions>(builder.Configuration.GetSection("DeviceNotifications"));
 builder.Services.AddSingleton<IDeviceNotificationStore, PostgresDeviceNotificationStore>();
+builder.Services.AddSingleton<IOperationalEvidenceStore, PostgresOperationalEvidenceStore>();
 builder.Services.AddSingleton<IFinishedGoodsStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<FinishedGoodsStoreService>();
 builder.Services.AddSingleton<ContainerActionService>();
