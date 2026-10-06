@@ -126,6 +126,10 @@ abstract interface class PdaDataSource {
     required int expectedRowVersion,
   });
   Future<StoreLocation> clearStoreLocation(String locationId);
+  Future<StoreLocation> recordEmptyContainer({
+    required String locationId,
+    required String idempotencyKey,
+  });
 
   /// Customer Monitoring — Robot Alarm Visibility.
   Future<RobotAlarmSummary> robotAlarmSummary();
@@ -567,6 +571,18 @@ class PdaRepository implements PdaDataSource {
     final response = await _api.post(
       '$_store/units/$unitId/remove',
       body: {'expectedRowVersion': expectedRowVersion},
+    );
+    return StoreLocation.fromJson(_json(response.body));
+  }
+
+  @override
+  Future<StoreLocation> recordEmptyContainer({
+    required String locationId,
+    required String idempotencyKey,
+  }) async {
+    final response = await _api.post(
+      '$_store/locations/$locationId/empty-container',
+      idempotencyKey: idempotencyKey,
     );
     return StoreLocation.fromJson(_json(response.body));
   }

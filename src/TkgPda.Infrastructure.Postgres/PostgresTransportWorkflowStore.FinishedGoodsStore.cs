@@ -325,6 +325,56 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         return refreshed.Single();
     }
 
+    public async Task<StoreLocationRecord> RecordEmptyContainerAsync(
+        RecordEmptyContainerCommand command, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        await ValidateFinishedGoodsActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
+        var key = command.IdempotencyKey.Trim();
+
+        await using (var replay = new NpgsqlCommand("""
+            SELECT 1 FROM ops.store_events
+            WHERE store_location_id = @location
+              AND event_type = 'EMPTY_CONTAINER_RECORDED'
+              AND data_json->>'idempotency_key' = @key
+            """, connection, transaction))
+        {
+            replay.Parameters.AddWithValue("location", command.LocationId);
+            replay.Parameters.AddWithValue("key", key);
+            if (await replay.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                var existing = await ReadLocationsAsync(connection, transaction, command.LocationId, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return existing.Single();
+            }
+        }
+
+        Guid unitId;
+        await using (var insert = new NpgsqlCommand("""
+            INSERT INTO ops.store_units (store_location_id, load_state)
+            SELECT id, 'EMPTY' FROM ops.store_locations
+            WHERE id = @location AND is_enabled
+            RETURNING id
+            """, connection, transaction))
+        {
+            insert.Parameters.AddWithValue("location", command.LocationId);
+            if (await insert.ExecuteScalarAsync(cancellationToken) is not Guid created)
+            {
+                throw new WorkflowRuleException("STORE_LOCATION_NOT_FOUND", "Depo konumu bulunamadı veya kapalı.");
+            }
+
+            unitId = created;
+        }
+
+        await InsertStoreEventAsync(connection, transaction, command.LocationId, unitId, "EMPTY_CONTAINER_RECORDED",
+            partId: null, containerTypeId: null, transportRequestId: null,
+            command.ActorUserId, command.DeviceId, new { idempotency_key = key }, cancellationToken);
+        var refreshed = await ReadLocationsAsync(connection, transaction, command.LocationId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return refreshed.Single();
+    }
+
     private static async Task<List<StoreLocationRecord>> ReadLocationsAsync(
         NpgsqlConnection connection, NpgsqlTransaction? transaction,
         Guid? locationId, CancellationToken cancellationToken)
@@ -333,7 +383,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             SELECT l.id, l.code, l.display_name, l.capacity, l.is_enabled,
                    u.id, u.transport_request_id, r.request_no, u.part_id, p.part_code,
                    u.container_type_id, ct.code, u.machine_id, m.code,
-                   u.delivered_at, u.row_version
+                   u.delivered_at, u.row_version, u.load_state
             FROM ops.store_locations l
             LEFT JOIN ops.store_units u
                    ON u.store_location_id = l.id AND u.removed_at IS NULL
@@ -376,7 +426,8 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                 MachineId: reader.IsDBNull(12) ? null : reader.GetGuid(12),
                 MachineCode: reader.IsDBNull(13) ? null : reader.GetString(13),
                 DeliveredAt: reader.GetFieldValue<DateTimeOffset>(14),
-                RowVersion: reader.GetInt64(15)));
+                RowVersion: reader.GetInt64(15),
+                LoadState: reader.IsDBNull(16) ? "FULL" : reader.GetString(16)));
         }
 
         return locations;

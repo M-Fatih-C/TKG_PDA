@@ -261,7 +261,8 @@ foreach ($migration in @(
     '012_client_device_machine_binding.sql',
     '013_user_sessions.sql',
     '014_transport_event_context.sql',
-    '015_part_demand_dependencies.sql'
+    '015_part_demand_dependencies.sql',
+    '016_finished_goods_areas.sql'
 )) {
     Write-Host "Applying migration $migration..." -ForegroundColor Cyan
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot "db\migrations\$migration") | Out-Null

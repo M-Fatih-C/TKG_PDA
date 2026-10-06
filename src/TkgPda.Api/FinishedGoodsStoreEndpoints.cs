@@ -23,6 +23,7 @@ public static class FinishedGoodsStoreEndpoints
         group.MapGet("/locations", LocationsAsync);
         group.MapPost("/units/{unitId:guid}/remove", RemoveUnitAsync);
         group.MapPost("/locations/{locationId:guid}/clear", ClearLocationAsync);
+        group.MapPost("/locations/{locationId:guid}/empty-container", RecordEmptyContainerAsync);
         return endpoints;
     }
 
@@ -44,6 +45,17 @@ public static class FinishedGoodsStoreEndpoints
         Results.Ok(await service.ClearLocationAsync(
             new ClearStoreLocationCommand(locationId, context.User.UserId(), DeviceId(context)),
             cancellationToken));
+
+    private static async Task<IResult> RecordEmptyContainerAsync(
+        Guid locationId, HttpContext context,
+        FinishedGoodsStoreService service, CancellationToken cancellationToken)
+    {
+        var key = context.Request.Headers[ApiHeaders.IdempotencyKey].ToString().Trim();
+        var location = await service.RecordEmptyContainerAsync(
+            new RecordEmptyContainerCommand(locationId, context.User.UserId(), DeviceId(context), key),
+            cancellationToken);
+        return Results.Ok(location);
+    }
 
     private static Guid DeviceId(HttpContext context) =>
         context.Items.TryGetValue(ApiContextKeys.Device, out var value) && value is DeviceRecord device

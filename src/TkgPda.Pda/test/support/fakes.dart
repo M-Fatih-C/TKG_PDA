@@ -989,6 +989,12 @@ class FakePdaRepository implements PdaDataSource {
   }
 
   @override
+  Future<StoreLocation> recordEmptyContainer({
+    required String locationId,
+    required String idempotencyKey,
+  }) async => fakeStoreLocation(code: 'STORE-1');
+
+  @override
   Future<StoreLocation> clearStoreLocation(String locationId) async {
     clearedLocations.add(locationId);
     if (clearStoreLocationError case final error?) throw error;

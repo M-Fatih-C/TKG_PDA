@@ -50,8 +50,9 @@ void main() {
     repository.storeLocationsValue = [fakeStoreLocation(capacity: 3)];
     await pump(tester);
 
-    expect(find.text('Bu alan boş.'), findsOneWidget);
+    expect(find.textContaining('Bu alan boş.'), findsOneWidget);
     expect(find.byKey(const Key('clear-location-STORE-1')), findsNothing);
+    expect(find.byKey(const Key('record-empty-STORE-1')), findsOneWidget);
   });
 
   testWidgets('a delivered container shows what it is and where from', (

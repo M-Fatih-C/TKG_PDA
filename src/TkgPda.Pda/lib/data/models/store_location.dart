@@ -31,6 +31,7 @@ class StoreUnit {
     required this.machineCode,
     required this.deliveredAt,
     required this.rowVersion,
+    this.loadState = 'FULL',
   });
 
   final String id;
@@ -50,6 +51,11 @@ class StoreUnit {
   /// container that has since gone cannot remove the one that replaced it.
   final int rowVersion;
 
+  /// FULL is a finished product. EMPTY is an empty container standing in the
+  /// area. Absence of a unit is vacant, not an empty container.
+  final String loadState;
+  bool get isEmptyContainer => loadState == 'EMPTY';
+
   factory StoreUnit.fromJson(JsonMap json) => StoreUnit(
     id: json['id'] as String,
     transportRequestId: json['transportRequestId'] as String?,
@@ -62,6 +68,7 @@ class StoreUnit {
     machineCode: json['machineCode'] as String?,
     deliveredAt: _time(json['deliveredAt']),
     rowVersion: _integer(json['rowVersion']),
+    loadState: json['loadState'] as String? ?? 'FULL',
   );
 }
 

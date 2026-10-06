@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\18\bin',
     [int]$Port = 55460
 )
@@ -63,6 +63,7 @@ try {
         'db\migrations\013_user_sessions.sql',
         'db\migrations\014_transport_event_context.sql',
         'db\migrations\015_part_demand_dependencies.sql',
+        'db\migrations\016_finished_goods_areas.sql',
         'db\seeds\generated\002a_customer_textual_master_data.sql',
         'db\seeds\generated\002b_customer_physical_layouts.sql',
         'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'

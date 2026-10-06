@@ -206,9 +206,7 @@ class _LocationCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    location.displayName.isNotEmpty
-                        ? location.displayName
-                        : location.code,
+                    '${location.code} · ${location.displayName.isNotEmpty ? location.displayName : location.code}',
                     style: TextStyle(
                       fontSize: PdaScale.title(context),
                       fontWeight: FontWeight.w700,
@@ -220,11 +218,25 @@ class _LocationCard extends StatelessWidget {
               ],
             ),
             SizedBox(height: PdaScale.gutter(context) / 2),
-            if (location.isEmpty)
+            if (location.isEmpty) ...[
               Text(
-                'Bu alan boş.',
+                'Bu alan boş. Boş kasa varlığı ayrıca kaydedilir.',
                 style: TextStyle(fontSize: PdaScale.body(context)),
-              )
+              ),
+              SizedBox(height: PdaScale.gutter(context) / 2),
+              SizedBox(
+                height: PdaScale.secondaryActionHeight(context),
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  key: Key('record-empty-${location.code}'),
+                  onPressed: coordinator.inFlight
+                      ? null
+                      : () => coordinator.recordEmptyContainer(location),
+                  icon: const Icon(Icons.inbox_outlined),
+                  label: const Text('Boş kasa bırak'),
+                ),
+              ),
+            ]
             else
               for (final unit in location.units)
                 _UnitRow(
@@ -296,7 +308,9 @@ class _UnitRow extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  unit.partCode ?? 'Parça bilinmiyor',
+                  unit.isEmptyContainer
+                      ? 'Boş kasa'
+                      : (unit.partCode ?? 'Parça bilinmiyor'),
                   style: TextStyle(
                     fontSize: PdaScale.body(context),
                     fontWeight: FontWeight.w600,
@@ -324,6 +338,7 @@ class _UnitRow extends StatelessWidget {
 
   static String _subtitle(StoreUnit unit) {
     final parts = <String>[
+      unit.isEmptyContainer ? 'Boş kasa' : 'Dolu mamul',
       ?unit.machineCode,
       if (unit.containerCode case final container?) 'Kap: $container',
       if (unit.requestNo case final number?) 'Talep #$number',

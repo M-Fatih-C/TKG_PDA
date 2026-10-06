@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\18\bin',
     [int]$Port = 55439,
     [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests|FullyQualifiedName~GlobalTaskVisibilityAndCancellationScopeApiTests|FullyQualifiedName~OperationalAuditEventsApiTests|FullyQualifiedName~OperationalAuditContainerActionEventsApiTests|FullyQualifiedName~ActiveTransportProjectionApiTests|FullyQualifiedName~FinishedContainerFlowApiTests|FullyQualifiedName~PartDemandApiTests'
@@ -63,6 +63,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\013_user_sessions.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\014_transport_event_context.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\015_part_demand_dependencies.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\016_finished_goods_areas.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')))
@@ -77,6 +78,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\013_user_sessions.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\014_transport_event_context.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\015_part_demand_dependencies.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\016_finished_goods_areas.sql')))
 
     $connectionString = "Host=127.0.0.1;Port=$Port;Database=$database;Username=postgres;Pooling=true;Maximum Pool Size=50"
     $env:TKG_PDA_API_TEST_CONNECTION_STRING = $connectionString
@@ -112,6 +114,7 @@ SELECT md5(jsonb_build_array(
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\013_user_sessions.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\014_transport_event_context.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\015_part_demand_dependencies.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\016_finished_goods_areas.sql')))
     $productionAfter = & $psql @common -Atc $productionDigestSql
     if ($LASTEXITCODE -ne 0 -or $productionBefore -ne $productionAfter) { throw 'Migration replay changed production/transport/audit records' }
 

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\18\bin',
     [int]$PgPort = 55446,
     [int]$ApiPort = 55447,
@@ -197,6 +197,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\010_finished_goods_store.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\014_transport_event_context.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\015_part_demand_dependencies.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\016_finished_goods_areas.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')))
 
     $testPassword = [Convert]::ToBase64String(
@@ -249,7 +250,7 @@ SELECT id,
 FROM slots
 WHERE rn <= 3;
 
--- Customer Workflow — Empty Container Buffer: BRING_EMPTY auto-allocates its
+-- Customer Workflow â€” Empty Container Buffer: BRING_EMPTY auto-allocates its
 -- source from a configured EMPTY_STORAGE slot. The real customer layout has
 -- none, so this test provisions one directly (test-only, not production
 -- master data) for the single BRING_EMPTY submission this test performs.

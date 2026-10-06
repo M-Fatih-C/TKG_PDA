@@ -164,6 +164,24 @@ class StoreCoordinator extends ChangeNotifier {
     );
   });
 
+  final Map<String, String> _emptyContainerKeys = {};
+
+  /// Records an empty container standing in a vacant area. This is not inferred
+  /// from the absence of a finished product.
+  Future<bool> recordEmptyContainer(StoreLocation location) {
+    final key = _emptyContainerKeys.putIfAbsent(
+      location.id,
+      () => 'empty-container:${location.id}:${DateTime.now().microsecondsSinceEpoch}',
+    );
+    return _mutate(location.id, () async {
+      await repository.recordEmptyContainer(
+        locationId: location.id,
+        idempotencyKey: key,
+      );
+      _emptyContainerKeys.remove(location.id);
+    });
+  }
+
   /// Everything standing in one location left together, the lorry case.
   Future<bool> clearLocation(StoreLocation location) =>
       _mutate(location.id, () async {
