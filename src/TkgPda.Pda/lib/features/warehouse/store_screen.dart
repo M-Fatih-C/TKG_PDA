@@ -497,9 +497,9 @@ class _UnitRow extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  unit.isEmptyContainer
-                      ? 'Boş kasa'
-                      : (unit.partCode ?? 'Parça bilinmiyor'),
+                  unit.loadState == 'FULL'
+                      ? (unit.partCode ?? unit.loadPresentation)
+                      : unit.loadPresentation,
                   style: TextStyle(
                     fontSize: PdaScale.body(context),
                     fontWeight: FontWeight.w600,
@@ -527,7 +527,7 @@ class _UnitRow extends StatelessWidget {
 
   static String subtitle(StoreUnit unit) {
     final parts = <String>[
-      unit.isEmptyContainer ? 'Boş kasa' : 'Dolu mamul',
+      unit.loadPresentation,
       ?unit.machineCode,
       if (unit.containerCode case final container?) 'Kap: $container',
       if (unit.requestNo case final number?) 'Talep #$number',

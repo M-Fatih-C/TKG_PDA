@@ -75,12 +75,18 @@ class OperationScreen extends StatelessWidget {
                 PopupMenuItem(value: 'refresh', child: Text('Yenile')),
               ],
             ),
-            TextButton(
-              key: const Key('logout-button'),
-              onPressed: controller.isMutationInFlight
-                  ? null
-                  : controller.logout,
-              child: const Text('Çıkış', style: TextStyle(color: Colors.white)),
+            Tooltip(
+              message: 'Oturumu kapat',
+              child: TextButton(
+                key: const Key('logout-button'),
+                onPressed: controller.isMutationInFlight
+                    ? null
+                    : controller.logout,
+                child: const Text(
+                  'Çıkış',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
             ),
           ],
         ),
@@ -181,60 +187,61 @@ class _PartFirstWithBatchSkip extends StatelessWidget {
             )
           : null;
 
-      // Mamul kasa sits with the production workspace. Active transports
-      // are under that area and stay scoped to this terminal's machine.
+      // Wide and 1024×600 terminals: alt parts on the left, Mamul Kasa then
+      // active transports in the same right column. Phones stay one stack.
+      // There is one transport section; it is not repeated under the page.
       final showMamul = controller.mamulActionsReady;
-      final workspace = PdaScale.isWide(context) && showMamul
-          ? Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: Column(
-                    children: [
-                      Expanded(child: selector),
-                      ?skip,
-                    ],
-                  ),
-                ),
-                SizedBox(width: PdaScale.gutter(context)),
-                SizedBox(
-                  width: (constraints.maxWidth * 0.46).clamp(560.0, 940.0),
-                  child: ContainerPositionPanel(
-                    controller: controller,
-                    expand: true,
-                  ),
-                ),
-              ],
-            )
-          : Column(
-              children: [
-                Expanded(child: selector),
-                if (showMamul)
-                  ContainerPositionPanel(
-                    controller: controller,
-                    maxHeight: constraints.maxHeight * 0.42,
-                  ),
-                ?skip,
-              ],
-            );
       final requests = controller.context?.activeTransportRequests ?? const [];
-      final available = constraints.maxHeight;
-      final transportHeight = requests.isEmpty
-          ? 0.0
-          : (available * 0.28).clamp(0.0, available * 0.34).clamp(0.0, 260.0);
-      return Column(
-        children: [
-          Expanded(child: workspace),
-          if (requests.isNotEmpty && transportHeight >= 72)
-            SizedBox(
-              height: transportHeight,
-              child: SingleChildScrollView(
-                child: OperatorActiveTransportList(
-                  requests: requests,
-                  controller: controller,
-                ),
+      final showTransports =
+          requests.isNotEmpty || controller.production.active != null;
+      final transports = OperatorActiveTransportList(
+        requests: requests,
+        controller: controller,
+      );
+      if (PdaScale.usesSideColumn(context)) {
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: Column(
+                children: [
+                  Expanded(child: selector),
+                  ?skip,
+                ],
               ),
             ),
+            if (showMamul || showTransports) ...[
+              SizedBox(width: PdaScale.gutter(context)),
+              SizedBox(
+                width: (constraints.maxWidth * 0.42).clamp(300.0, 560.0),
+                child: Column(
+                  children: [
+                    if (showMamul)
+                      ContainerPositionPanel(controller: controller),
+                    if (showMamul && showTransports)
+                      SizedBox(height: PdaScale.gutter(context) * 0.4),
+                    if (showTransports) Expanded(child: transports),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        );
+      }
+      final transportHeight = requests.isEmpty
+          ? 88.0
+          : (constraints.maxHeight * 0.34).clamp(168.0, 240.0);
+      return Column(
+        children: [
+          Expanded(child: selector),
+          if (showMamul)
+            ContainerPositionPanel(
+              controller: controller,
+              maxHeight: constraints.maxHeight * 0.38,
+            ),
+          ?skip,
+          if (showTransports)
+            SizedBox(height: transportHeight, child: transports),
         ],
       );
     },
@@ -482,7 +489,7 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                                 ? 'Parça seçip sepete ekleyin'
                                 : '${cart.length} kayıt hazır',
                             style: TextStyle(
-                              fontSize: 11,
+                              fontSize: PdaScale.caption(context),
                               color: theme.hintColor,
                             ),
                           ),

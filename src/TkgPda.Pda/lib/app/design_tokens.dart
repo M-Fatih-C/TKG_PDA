@@ -33,6 +33,12 @@ class PdaScale {
       MediaQuery.sizeOf(context).width >= twoColumnBreakpoint &&
       !isShortTerminal(context);
 
+  /// Production workspace columns. A 1024×600 industrial terminal is short,
+  /// so [isWide] is false there, but it still has room for Mamul Kasa and
+  /// active transports beside the alt-part list. Phones stay one column.
+  static bool usesSideColumn(BuildContext context) =>
+      MediaQuery.sizeOf(context).width >= 960;
+
   /// True on a handheld or short industrial terminal.
   static bool isCompact(BuildContext context) {
     final size = MediaQuery.sizeOf(context);

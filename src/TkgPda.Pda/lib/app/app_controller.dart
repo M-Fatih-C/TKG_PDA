@@ -1135,6 +1135,10 @@ class AppController extends ChangeNotifier {
   /// successful submission or an explicit operator cancel — never on a
   /// recoverable failure (ambiguous/API error), so a failed submit keeps the
   /// cart intact for retry.
+  ///
+  /// During an active production session the main part, variant and mamul
+  /// context stay. Resetting the part selection is refused in that state and
+  /// would surface a false error, so only the batch-specific state is cleared.
   void exitBatchSelection() {
     _containerBatchProductionId = null;
     _batchMode = false;
@@ -1145,7 +1149,9 @@ class AppController extends ChangeNotifier {
     _batchSubmission.clear();
     _containerBatchKey = null;
     _containerBatchAmbiguous = false;
-    resetPartSelection();
+    if (production.active == null) {
+      resetPartSelection();
+    }
     notifyListeners();
   }
 

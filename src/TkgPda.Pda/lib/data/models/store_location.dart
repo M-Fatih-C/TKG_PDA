@@ -31,7 +31,7 @@ class StoreUnit {
     required this.machineCode,
     required this.deliveredAt,
     required this.rowVersion,
-    this.loadState = 'FULL',
+    this.loadState = 'UNKNOWN',
   });
 
   final String id;
@@ -52,9 +52,17 @@ class StoreUnit {
   final int rowVersion;
 
   /// FULL is a finished product. EMPTY is an empty container standing in the
-  /// area. Absence of a unit is vacant, not an empty container.
+  /// area. Absence of a unit is vacant, not an empty container. Anything else,
+  /// including a missing value, stays UNKNOWN and is never treated as FULL.
   final String loadState;
   bool get isEmptyContainer => loadState == 'EMPTY';
+
+  /// Operator-facing load words. UNKNOWN is never presented as full or empty.
+  String get loadPresentation => switch (loadState) {
+    'FULL' => 'Dolu mamul',
+    'EMPTY' => 'Boş kasa',
+    _ => 'Durum bilinmiyor',
+  };
 
   factory StoreUnit.fromJson(JsonMap json) => StoreUnit(
     id: json['id'] as String,

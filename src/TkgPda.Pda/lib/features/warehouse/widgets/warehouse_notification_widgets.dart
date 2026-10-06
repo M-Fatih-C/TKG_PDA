@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../../app/app_controller.dart' show AppStage;
+import '../../../app/design_tokens.dart';
 import '../../../shared/widgets/pda_empty_state.dart';
 import '../warehouse_notification_coordinator.dart';
 
@@ -88,8 +89,8 @@ class WarehouseNotificationBanner extends StatelessWidget {
                               ),
                               child: Text(
                                 tag,
-                                style: const TextStyle(
-                                  fontSize: 10,
+                                style: TextStyle(
+                                  fontSize: PdaScale.caption(context),
                                   fontWeight: FontWeight.w800,
                                   color: Colors.white,
                                   letterSpacing: 0.4,

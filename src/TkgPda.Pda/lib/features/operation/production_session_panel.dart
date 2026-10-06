@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
+import '../../app/design_tokens.dart';
 import '../../data/models/production_session.dart';
 import 'production_coordinator.dart';
 
@@ -514,27 +515,27 @@ class _CompactActiveHeader extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
+                      Text(
                         'ÜRETİM AKTİF',
                         style: TextStyle(
                           fontWeight: FontWeight.w900,
-                          fontSize: 13,
+                          fontSize: PdaScale.caption(context),
                           letterSpacing: 0.4,
                         ),
                       ),
                       Text(
                         name == null || name.isEmpty ? code : '$code · $name',
                         key: const Key('active-production-product'),
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontWeight: FontWeight.w800,
-                          fontSize: 16,
+                          fontSize: PdaScale.body(context),
                         ),
                       ),
                       Text(
                         'Varyant $variant · Başlangıç ${ProductionSessionPanel._clock(active.startedAt.toLocal())}',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: Color(0xFF334155),
+                        style: TextStyle(
+                          fontSize: PdaScale.caption(context),
+                          color: const Color(0xFF334155),
                         ),
                       ),
                     ],
@@ -577,9 +578,9 @@ class _CompactActiveHeader extends StatelessWidget {
                 child: Text(
                   '$openCount açık taşıma var. Üretimi bitirmek için tamamlanmalarını bekleyin veya talepleri ayrıca iptal edin.',
                   key: const Key('production-open-transports'),
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: Color(0xFF9A3412),
+                  style: TextStyle(
+                    fontSize: PdaScale.caption(context),
+                    color: const Color(0xFF9A3412),
                     fontWeight: FontWeight.w600,
                   ),
                 ),

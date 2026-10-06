@@ -702,10 +702,10 @@ class _DemandTile extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             '${demand.machineCode} · Talep #${demand.requestNo}',
-            style: const TextStyle(
-              fontSize: 12,
+            style: TextStyle(
+              fontSize: PdaScale.caption(context),
               fontWeight: FontWeight.w600,
-              color: Color(0xFF475569),
+              color: const Color(0xFF475569),
             ),
           ),
           const SizedBox(height: 2),
@@ -717,10 +717,10 @@ class _DemandTile extends StatelessWidget {
             const SizedBox(height: 2),
             Text(
               'Alan $number hazırlıyor',
-              style: const TextStyle(
-                color: Color(0xFF2F6FED),
+              style: TextStyle(
+                color: const Color(0xFF2F6FED),
                 fontWeight: FontWeight.w700,
-                fontSize: 12,
+                fontSize: PdaScale.caption(context),
               ),
             ),
           ],
@@ -737,7 +737,7 @@ class _DemandTile extends StatelessWidget {
         child: Text(
           demand.needsMaterial ? 'Dolu' : 'Boş',
           style: TextStyle(
-            fontSize: 12,
+            fontSize: PdaScale.caption(context),
             fontWeight: FontWeight.w700,
             color: demand.needsMaterial
                 ? const Color(0xFFC2410C)

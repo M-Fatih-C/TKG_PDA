@@ -17,7 +17,6 @@ class ContainerPositionPanel extends StatelessWidget {
   const ContainerPositionPanel({
     required this.controller,
     this.maxHeight = double.infinity,
-    this.expand = false,
     super.key,
   });
 
@@ -29,14 +28,23 @@ class ContainerPositionPanel extends StatelessWidget {
   /// above it — which is precisely when the operator needs both to be visible.
   final double maxHeight;
 
-  /// True when the panel owns a column of its own and should use all of it.
-  /// Docked at the bottom it stops at its preferred height instead, so the
-  /// part selection above keeps the rest.
-  final bool expand;
-
   /// A card narrower than this cannot hold a two-line action label at the
-  /// terminal type scale without ellipsing it.
+  /// terminal type scale without ellipsing it. The side column may go lower
+  /// so two kasa cards still sit beside each other.
   static const double _minCardWidth = 268;
+
+  /// Touch-sized when an action is available. A reason-only card stays short
+  /// so it does not reserve a blank action well.
+  static double _cardBand(
+    BuildContext context,
+    List<ContainerPosition> positions,
+  ) {
+    final actionable = positions.any(
+      (position) => position.fullAction.enabled || position.emptyAction.enabled,
+    );
+    if (!actionable) return PdaScale.isCompact(context) ? 112 : 128;
+    return PdaScale.isCompact(context) ? 164 : 196;
+  }
 
   /// Beyond this a single position just stretches into empty space.
   static const double _maxCardWidth = 520;
@@ -78,85 +86,72 @@ class ContainerPositionPanel extends StatelessWidget {
     }
 
     final gutter = PdaScale.gutter(context);
-    // The ceiling wraps the whole panel, padding and safe area included:
-    // constraining only the inner Column let the panel exceed it by its own
-    // padding, which is how a 29px overflow survived the first attempt.
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: maxHeight),
-      child: Material(
-        key: const Key('container-position-panel'),
-        elevation: 10,
-        color: Theme.of(context).colorScheme.surface,
-        child: SafeArea(
-          top: false,
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(
-              gutter,
-              gutter * 0.5,
-              gutter,
-              gutter * 0.5,
-            ),
-            child: Column(
-              mainAxisSize: expand ? MainAxisSize.max : MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Flexible(
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxHeight: expand
-                          ? PdaScale.containerCardMaxHeight(context)
-                          : PdaScale.containerPanelHeight(context),
-                    ),
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        // Fill the terminal rather than leaving a 238px strip in
-                        // the middle of a 1920px screen: widen the cards until
-                        // they use the row, and only scroll once they cannot.
-                        final available =
-                            constraints.maxWidth -
-                            gutter * (positions.length - 1);
-                        final fitted = available / positions.length;
-                        final cardWidth = fitted.isFinite
-                            ? math.min(
-                                _maxCardWidth,
-                                math.max(_minCardWidth, fitted),
-                              )
-                            : _minCardWidth;
-                        return ListView.separated(
-                          key: const Key('container-position-list'),
-                          scrollDirection: Axis.horizontal,
-                          itemCount: positions.length,
-                          separatorBuilder: (_, _) => SizedBox(width: gutter),
-                          itemBuilder: (context, index) => SizedBox(
-                            width: cardWidth,
-                            child: _PositionCard(
-                              controller: controller,
-                              position: positions[index],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
+    final cardHeight = _cardBand(context, positions);
+    final panel = Material(
+      key: const Key('container-position-panel'),
+      elevation: 1,
+      color: Theme.of(context).colorScheme.surface,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            gutter,
+            gutter * 0.5,
+            gutter,
+            gutter * 0.5,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _SectionHeading(controller: controller),
+              SizedBox(height: gutter * 0.35),
+              SizedBox(
+                height: cardHeight,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // Fill the terminal rather than leaving a 238px strip in
+                    // the middle of a 1920px screen: widen the cards until
+                    // they use the row, and only scroll once they cannot.
+                    final available =
+                        constraints.maxWidth - gutter * (positions.length - 1);
+                    final fitted = available / positions.length;
+                    final cardWidth = fitted.isFinite
+                        ? fitted.clamp(150.0, _maxCardWidth)
+                        : _minCardWidth;
+                    return ListView.separated(
+                      key: const Key('container-position-list'),
+                      scrollDirection: Axis.horizontal,
+                      itemCount: positions.length,
+                      separatorBuilder: (_, _) => SizedBox(width: gutter),
+                      itemBuilder: (context, index) => SizedBox(
+                        width: cardWidth,
+                        child: _PositionCard(
+                          controller: controller,
+                          position: positions[index],
+                        ),
+                      ),
+                    );
+                  },
                 ),
-                if (expand) const Spacer(),
-                if (!controller.isConfiguringBatchItem) ...[
-                  SizedBox(height: gutter * 0.5),
-                  _RemoveAllBar(controller: controller),
-                ],
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
     );
+    if (!maxHeight.isFinite) return panel;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: SingleChildScrollView(child: panel),
+    );
   }
 }
 
-/// Variant-scoped bulk removal. Destructive and variant-wide, so it is stated
-/// at readable size instead of the 10px caption it used to carry.
-class _RemoveAllBar extends StatelessWidget {
-  const _RemoveAllBar({required this.controller});
+/// Section title. It sits above the cards. The gate message stays beside it
+/// so a locked mutation is readable without a second banner.
+class _SectionHeading extends StatelessWidget {
+  const _SectionHeading({required this.controller});
 
   final AppController controller;
 
@@ -189,6 +184,7 @@ class _RemoveAllBar extends StatelessWidget {
               controller.production.active != null
                   ? 'Mamul Kasa'
                   : 'Kasa Pozisyonları (${controller.context?.activeVariantCode ?? 'Aktif Varyant'})',
+              key: const Key('mamul-section-heading'),
               style: TextStyle(
                 fontWeight: FontWeight.w700,
                 fontSize: PdaScale.body(context),

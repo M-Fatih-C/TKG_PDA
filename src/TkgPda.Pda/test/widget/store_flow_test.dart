@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tkg_pda/core/errors/api_problem.dart';
+import 'package:tkg_pda/data/models/store_location.dart';
 import 'package:tkg_pda/features/warehouse/store_coordinator.dart';
 import 'package:tkg_pda/features/warehouse/store_screen.dart';
 
@@ -323,5 +324,66 @@ void main() {
     expect(find.byKey(const Key('record-empty-OFF')), findsNothing);
     expect(find.text('Tümünü Aldım (1)'), findsNothing);
     expect(find.byKey(const Key('remove-unit-full')), findsOneWidget);
+  });
+
+  test('an omitted load state stays UNKNOWN', () {
+    const unit = StoreUnit(
+      id: 'unit-default',
+      transportRequestId: null,
+      requestNo: null,
+      partId: null,
+      partCode: '67116BN050-40',
+      containerTypeId: null,
+      containerCode: null,
+      machineId: null,
+      machineCode: null,
+      deliveredAt: null,
+      rowVersion: 0,
+    );
+    expect(unit.loadState, 'UNKNOWN');
+    expect(unit.loadPresentation, 'Durum bilinmiyor');
+    expect(unit.loadPresentation, isNot('Dolu mamul'));
+
+    final parsed = StoreUnit.fromJson({'id': 'unit-json', 'rowVersion': 1});
+    expect(parsed.loadState, 'UNKNOWN');
+    expect(parsed.loadPresentation, 'Durum bilinmiyor');
+  });
+
+  testWidgets('UNKNOWN load is never presented as a full container', (
+    tester,
+  ) async {
+    repository.storeLocationsValue = [
+      fakeStoreLocation(units: [fakeStoreUnit(loadState: 'UNKNOWN')]),
+    ];
+    await pump(tester);
+
+    expect(find.textContaining('Durum bilinmiyor'), findsWidgets);
+    expect(find.text('DURUM BİLİNMİYOR'), findsOneWidget);
+    expect(find.textContaining('Dolu mamul'), findsNothing);
+    expect(find.text('DOLU MAMUL'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('store-state-STORE-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('Durum bilinmiyor'), findsWidgets);
+    expect(find.textContaining('Dolu mamul'), findsNothing);
+  });
+
+  testWidgets('FULL and EMPTY keep their own labels', (tester) async {
+    repository.storeLocationsValue = [
+      fakeStoreLocation(
+        code: 'FULL',
+        units: [fakeStoreUnit(id: 'full', loadState: 'FULL')],
+      ),
+      fakeStoreLocation(
+        code: 'EMPTY',
+        units: [fakeStoreUnit(id: 'empty', loadState: 'EMPTY')],
+      ),
+    ];
+    await pump(tester, size: const Size(1280, 800));
+
+    expect(find.textContaining('Dolu mamul'), findsWidgets);
+    expect(find.textContaining('Boş kasa'), findsWidgets);
+    expect(find.text('DOLU MAMUL'), findsOneWidget);
+    expect(find.text('BOŞ KASA VAR'), findsOneWidget);
   });
 }

@@ -35,4 +35,41 @@ describe('Dashboard navigation', () => {
     expect(screen.queryByText('Veri Kalite Konusu')).not.toBeInTheDocument()
     expect(screen.queryByText('Müdahale ve Veri Doğrulama')).not.toBeInTheDocument()
   })
+
+  it('shows warning and critical robot states with text, not color alone', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/rds/status')) {
+        return Promise.resolve(jsonResponse({
+          enabled: true,
+          reachable: true,
+          stale: false,
+          lastSuccessfulRead: null,
+          baseAddressDisplaySafe: 'http://rds.test',
+          businessStatus: 200,
+          businessMessage: 'Success',
+          errorCode: null,
+          errorMessage: null,
+        }))
+      }
+      if (url.endsWith('/rds/robots')) {
+        return Promise.resolve(jsonResponse([
+          { connectivity: 'ONLINE', execution: 'IDLE', motion: 'IDLE' },
+          { connectivity: 'OFFLINE', execution: 'IDLE', motion: 'IDLE' },
+        ]))
+      }
+      if (url.endsWith('/rds/alarms')) {
+        return Promise.resolve(jsonResponse([
+          { severity: 'fatal', robotId: 'sim_01', code: 'F1', description: 'Fatal' },
+        ]))
+      }
+      return Promise.resolve(jsonResponse([]))
+    }))
+    renderAuthenticated(<DashboardPage />)
+
+    expect(await screen.findByText('Dikkat')).toBeVisible()
+    expect(screen.getByText('Kritik')).toBeVisible()
+    expect(screen.getByRole('link', { name: /Robot Filosu/ })).toHaveClass('stat-card--warning')
+    expect(screen.getByRole('link', { name: /Kritik Robot Alarmı/ })).toHaveClass('stat-card--danger')
+  })
 })

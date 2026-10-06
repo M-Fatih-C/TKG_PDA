@@ -115,12 +115,17 @@ export function DashboardPage() {
       />
 
       <div className="stat-grid">
-        {cards.map(({ label, value, meta, icon: Icon, to }) => (
-          <Link className="stat-card" to={to} key={label}>
+        {cards.map(({ label, value, meta, icon: Icon, to, tone }) => (
+          <Link className={`stat-card stat-card--${tone}`} to={to} key={label}>
             <div>
               <span>{label}</span>
               <strong>{typeof value === 'number' ? compactNumber(value) : value}</strong>
               <small>{meta}</small>
+              {tone === 'danger' ? (
+                <em className="stat-card__state">Kritik</em>
+              ) : tone === 'warning' ? (
+                <em className="stat-card__state">Dikkat</em>
+              ) : null}
             </div>
             <div className="stat-card__icon">
               <Icon />

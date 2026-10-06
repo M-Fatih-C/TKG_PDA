@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
+import '../../app/design_tokens.dart';
 import '../../data/models/pda_models.dart';
 import 'production_session_panel.dart';
 
@@ -122,7 +123,7 @@ class _PartFirstSelectorState extends State<PartFirstSelector> {
                           ? 'Toplu Alt Parça: seçin, sonra Seçilenleri Gönder.'
                           : 'Toplu Taşıma Modu Açık: Parça ve kasa butonuna bastığınızda talep sepete eklenir.',
                       style: TextStyle(
-                        fontSize: 12,
+                        fontSize: PdaScale.body(context),
                         fontWeight: FontWeight.w700,
                         color: Theme.of(context).colorScheme.onPrimaryContainer,
                       ),
@@ -297,7 +298,7 @@ class _MainPartChip extends StatelessWidget {
               description,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: PdaScale.caption(context),
                 fontWeight: FontWeight.w500,
                 color: selected
                     ? const Color(0xFF0369A1)
@@ -386,10 +387,10 @@ class _EffectivePartCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'SEÇİLİ ANA PARÇA',
                           style: TextStyle(
-                            fontSize: 10,
+                            fontSize: PdaScale.caption(context),
                             fontWeight: FontWeight.w800,
                             letterSpacing: 0.8,
                             color: Color(0xFF64748B),
@@ -476,9 +477,12 @@ class _EffectivePartCard extends StatelessWidget {
               const Divider(height: 18),
               const _SectionLabel('Alt / İlgili Parçalar'),
               const SizedBox(height: 2),
-              const Text(
+              Text(
                 'Taşıma talebi için ilgili parçayı seçebilirsiniz.',
-                style: TextStyle(fontSize: 12, color: Color(0xFF475569)),
+                style: TextStyle(
+                  fontSize: PdaScale.caption(context),
+                  color: const Color(0xFF475569),
+                ),
               ),
             ],
             if (related.isNotEmpty && controller.production.active == null) ...[
@@ -533,7 +537,10 @@ class _EffectivePartCard extends StatelessWidget {
                           ? 'Seçin, sonra alttan gönderin. Seçmek talep oluşturmaz.'
                           : 'Karta dokunmak malzemeyi talep eder.')
                     : 'İlgili alt parçayı seçebilirsiniz.',
-                style: const TextStyle(fontSize: 13, color: Color(0xFF475569)),
+                style: TextStyle(
+                  fontSize: PdaScale.caption(context),
+                  color: const Color(0xFF475569),
+                ),
               ),
               const SizedBox(height: 8),
               _RelatedPartChips(

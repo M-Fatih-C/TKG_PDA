@@ -18,49 +18,81 @@ class OperatorActiveTransportList extends StatelessWidget {
   final AppController controller;
 
   @override
-  Widget build(BuildContext context) => Card(
-    key: const Key('active-transport-section'),
-    child: Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.local_shipping, size: 30),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'Aktif Taşımalar (${requests.length})',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-            ],
+  Widget build(BuildContext context) {
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Aktif Taşımalar (${requests.length})',
+          style: TextStyle(
+            fontSize: PdaScale.secondaryAction(context),
+            fontWeight: FontWeight.w900,
           ),
-          const SizedBox(height: 10),
-          for (final request in requests) ...[
-            _TransportCard(request: request, controller: controller),
-            const SizedBox(height: 10),
+        ),
+        const SizedBox(height: 6),
+        if (requests.isEmpty)
+          Text(
+            'Aktif taşıma yok',
+            key: const Key('active-transport-empty'),
+            style: TextStyle(
+              fontSize: PdaScale.caption(context),
+              color: const Color(0xFF475569),
+            ),
+          )
+        else
+          for (var index = 0; index < requests.length; index++) ...[
+            _TransportCard(request: requests[index], controller: controller),
+            if (index != requests.length - 1) const SizedBox(height: 6),
           ],
-        ],
+      ],
+    );
+    return Card(
+      key: const Key('active-transport-section'),
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final bounded = constraints.maxHeight.isFinite;
+            if (!bounded && requests.length <= 3) return content;
+            return SizedBox(
+              height: bounded ? constraints.maxHeight : 280,
+              child: SingleChildScrollView(
+                key: const Key('active-transport-scroll'),
+                child: content,
+              ),
+            );
+          },
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
-class _TransportCard extends StatelessWidget {
+class _TransportCard extends StatefulWidget {
   const _TransportCard({required this.request, required this.controller});
 
   final ActiveTransportRequest request;
   final AppController controller;
 
   @override
+  State<_TransportCard> createState() => _TransportCardState();
+}
+
+class _TransportCardState extends State<_TransportCard> {
+  bool _details = false;
+
+  ActiveTransportRequest get request => widget.request;
+
+  @override
   Widget build(BuildContext context) {
     final execution = request.execution;
     final failure = execution.failureCode != null;
+    final caption = TextStyle(
+      fontSize: PdaScale.caption(context),
+      color: const Color(0xFF334155),
+    );
     return Material(
       key: Key('active-transport-${request.requestId}'),
       color: failure ? const Color(0xFFFEE2E2) : const Color(0xFFEFF6FF),
@@ -71,53 +103,74 @@ class _TransportCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 6,
+              runSpacing: 4,
               children: [
-                Expanded(
-                  child: Text(
-                    '#${request.requestNo} · ${actionLabel(request.operation)}',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                    ),
+                Text(
+                  '#${request.requestNo} · ${actionLabel(request.operation)}',
+                  style: TextStyle(
+                    fontSize: PdaScale.body(context),
+                    fontWeight: FontWeight.w900,
                   ),
                 ),
-                Chip(label: Text(executionStateLabel(execution.state))),
-                if (request.canCancel) ...[
-                  const SizedBox(width: 8),
+                Chip(
+                  visualDensity: VisualDensity.compact,
+                  label: Text(executionStateLabel(execution.state)),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                if (request.canCancel)
                   OutlinedButton.icon(
                     key: Key('cancel-${request.requestId}'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Theme.of(context).colorScheme.error,
                       visualDensity: VisualDensity.compact,
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      minimumSize: const Size(48, 36),
                     ),
-                    onPressed: controller.mutationEnabled
+                    onPressed: widget.controller.mutationEnabled
                         ? () => _confirmCancel(context)
                         : null,
                     icon: const Icon(Icons.cancel_outlined, size: 18),
                     label: const Text('Talebi İptal Et'),
                   ),
-                ],
               ],
             ),
-            const SizedBox(height: 6),
-            ..._partLines(),
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
+            ..._partLines(caption),
+            ..._summaryLines(caption),
+            const SizedBox(height: 4),
             _LifecycleBar(request: request),
-            ..._statusLines(),
             if (execution.failureCode != null)
               Text(
                 failureLabel(execution.failureCode, execution.operatorMessage),
                 key: const Key('operator-failure-message'),
-                style: const TextStyle(fontWeight: FontWeight.w800),
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: PdaScale.caption(context),
+                ),
               ),
             if (!request.canCancel && request.cancelDisabledMessage != null)
-              Text(request.cancelDisabledMessage!),
+              Text(request.cancelDisabledMessage!, style: caption),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                key: Key('transport-detail-${request.requestId}'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  minimumSize: const Size(48, 32),
+                ),
+                onPressed: () => setState(() => _details = !_details),
+                child: Text(_details ? 'Detayı gizle' : 'Detay'),
+              ),
+            ),
+            if (_details) ..._detailLines(caption),
           ],
         ),
       ),
@@ -126,7 +179,7 @@ class _TransportCard extends StatelessWidget {
 
   /// Part identity exactly as the server resolved it from master data. No
   /// identifier is ever shown; a missing part falls back to a short note.
-  List<Widget> _partLines() {
+  List<Widget> _partLines(TextStyle caption) {
     final code = request.partCode?.trim() ?? '';
     final description = request.partDescription?.trim() ?? '';
     return [
@@ -143,56 +196,77 @@ class _TransportCard extends StatelessWidget {
                 style: TextStyle(fontWeight: FontWeight.w900),
               ),
               visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
           ),
         ),
       if (code.isEmpty)
-        const Text('Parça bilgisi yok', key: Key('active-part-missing'))
+        Text(
+          'Parça bilgisi yok',
+          key: const Key('active-part-missing'),
+          style: caption,
+        )
       else
         Text(
-          'Parça: $code',
+          code,
           key: const Key('active-part-code'),
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          style: TextStyle(
+            fontSize: PdaScale.body(context),
+            fontWeight: FontWeight.w800,
+          ),
         ),
       if (description.isNotEmpty)
         Text(
-          'Açıklama: $description',
+          description,
           key: const Key('active-part-description'),
+          style: caption,
         ),
     ];
   }
 
-  /// Status rows. Every number is a server value: the TKG request order and
-  /// the server-measured durations. There is deliberately no progress
-  /// percentage, bar or distance: nothing here is a robot estimate.
-  List<Widget> _statusLines() {
+  /// The one-line operational summary. Queue, chain and robot elapsed stay
+  /// behind Detay so the default card stays short.
+  List<Widget> _summaryLines(TextStyle caption) {
     final readiness = requestReadinessLabel(request.readinessState);
-    final queuePosition = request.queuePosition;
     final age = request.ageSeconds;
+    return [
+      if (readiness != null)
+        Text(
+          'Hazırlık: $readiness',
+          key: const Key('active-readiness'),
+          style: caption,
+        ),
+      if (age != null)
+        Text(
+          'Talep süresi: ${formatServerDuration(age)}',
+          key: const Key('active-age'),
+          style: caption,
+        ),
+    ];
+  }
+
+  /// Secondary evidence. Every number is a server value. There is no
+  /// progress percentage.
+  List<Widget> _detailLines(TextStyle caption) {
+    final queuePosition = request.queuePosition;
     final robotElapsed = request.executionElapsedSeconds;
     return [
-      const SizedBox(height: 4),
       if (queuePosition != null)
         Tooltip(
           message: 'TKG aktif talep sırası',
           child: Text(
             'Talep Sırası: $queuePosition',
             key: const Key('active-queue-position'),
+            style: caption,
           ),
         ),
-      if (readiness != null)
-        Text('Hazırlık: $readiness', key: const Key('active-readiness')),
       if (_chainLabel(request.chainState) case final label?)
-        Text(label, key: const Key('active-chain-state')),
-      if (age != null)
-        Text(
-          'Talep süresi: ${formatServerDuration(age)}',
-          key: const Key('active-age'),
-        ),
+        Text(label, key: const Key('active-chain-state'), style: caption),
       if (robotElapsed != null)
         Text(
           'Robot çalışma süresi: ${formatServerDuration(robotElapsed)}',
           key: const Key('active-robot-elapsed'),
+          style: caption,
         ),
     ];
   }
@@ -222,7 +296,7 @@ class _TransportCard extends StatelessWidget {
         ],
       ),
     );
-    if (confirmed == true) await controller.cancelTransport(request);
+    if (confirmed == true) await widget.controller.cancelTransport(request);
   }
 }
 

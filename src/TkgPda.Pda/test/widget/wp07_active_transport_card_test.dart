@@ -80,8 +80,8 @@ void main() {
 
         expect(find.textContaining('#123'), findsOneWidget);
         expect(find.textContaining('Dolu Kasa Getir'), findsOneWidget);
-        expect(find.text('Parça: ABC-123'), findsOneWidget);
-        expect(find.text('Açıklama: Ön Sol Braket'), findsOneWidget);
+        expect(find.text('ABC-123'), findsOneWidget);
+        expect(find.text('Ön Sol Braket'), findsOneWidget);
         expect(find.text('Robot bekleniyor'), findsOneWidget);
       },
     );
@@ -112,6 +112,10 @@ void main() {
       tester,
     ) async {
       await _pump(tester, [_request(queuePosition: 3)]);
+      expect(find.text('Talep Sırası: 3'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('transport-detail-req-1')));
+      await tester.pumpAndSettle();
 
       expect(find.text('Talep Sırası: 3'), findsOneWidget);
       expect(find.textContaining('RDS'), findsNothing);
@@ -155,6 +159,10 @@ void main() {
       await _pump(tester, [
         _request(executionElapsedSeconds: 66, state: 'RUNNING'),
       ]);
+      expect(find.text('Robot çalışma süresi: 01:06'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('transport-detail-req-1')));
+      await tester.pumpAndSettle();
 
       expect(find.text('Robot çalışma süresi: 01:06'), findsOneWidget);
     });
@@ -224,7 +232,7 @@ void main() {
       ]);
 
       expect(find.byKey(const Key('active-part-description')), findsNothing);
-      expect(find.text('Parça: ABC-123'), findsOneWidget);
+      expect(find.text('ABC-123'), findsOneWidget);
       expect(find.text('Parça bilgisi yok'), findsOneWidget);
       expect(find.textContaining('Tanımlı değil'), findsNothing);
     });
