@@ -9,6 +9,7 @@ import 'core/network/api_client.dart';
 import 'core/platform/platform_info.dart';
 import 'core/storage/device_code_store_factory.dart';
 import 'data/repositories/pda_repository.dart';
+import 'features/warehouse/push_notification_client.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,6 +31,7 @@ Future<void> main() async {
     repository: PdaRepository(api),
     deviceCodeStore: createDeviceCodeStore(),
     session: session,
+    pushClient: createPushNotificationClient(),
   );
   await controller.initialize();
   runApp(TkgPdaApp(controller: controller));

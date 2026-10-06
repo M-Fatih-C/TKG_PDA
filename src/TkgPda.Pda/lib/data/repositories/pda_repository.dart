@@ -13,6 +13,7 @@ abstract interface class PdaDataSource {
   Future<LoginSession> login(String employeeNumber);
   Future<void> heartbeatSession();
   Future<void> logout();
+  Future<void> registerPushToken(String token);
   Future<AuthenticatedUser> me();
   Future<List<MachineSummary>> machines();
   Future<OperationalContext> operationalContext(String machineId);
@@ -194,6 +195,14 @@ class PdaRepository implements PdaDataSource {
   @override
   Future<void> logout() async {
     await _api.post('/api/v1/auth/logout');
+  }
+
+  @override
+  Future<void> registerPushToken(String token) async {
+    await _api.put(
+      '/api/v1/auth/push-registration',
+      body: {'provider': 'FCM', 'platform': 'ANDROID', 'token': token},
+    );
   }
 
   @override

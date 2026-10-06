@@ -20,6 +20,9 @@ public static class ApiEndpoints
         endpoints.MapPost("/api/v1/auth/logout", LogoutAsync)
             .RequireAuthorization();
 
+        endpoints.MapPut("/api/v1/auth/push-registration", RegisterPushAsync)
+            .RequireAuthorization();
+
         endpoints.MapGet("/api/v1/auth/me", CurrentUserAsync)
             .RequireAuthorization();
 
@@ -342,6 +345,7 @@ public static class ApiEndpoints
         HttpContext context,
         IFieldSessionStore sessionStore,
         IApiDataStore dataStore,
+        IPushRegistrationStore pushRegistrations,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
@@ -357,6 +361,7 @@ public static class ApiEndpoints
                 var revoked = await sessionStore.RevokeSessionAsync(sessionId, userId, "USER_LOGOUT", now, cancellationToken);
                 if (revoked && device is not null)
                 {
+                    await pushRegistrations.DeactivateAsync(userId, device.Id, cancellationToken);
                     await WriteAuditAsync(
                         dataStore,
                         context,
@@ -372,6 +377,41 @@ public static class ApiEndpoints
         }
 
         return Results.Ok(new { message = "Logged out successfully" });
+    }
+
+    private static async Task<IResult> RegisterPushAsync(
+        PushRegistrationHttpRequest request,
+        HttpContext context,
+        IPushRegistrationStore pushRegistrations,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(request.Provider, "FCM", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(request.Platform, "ANDROID", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ApiException(
+                StatusCodes.Status422UnprocessableEntity,
+                "PUSH_PROVIDER_UNSUPPORTED",
+                "Only the FCM provider on ANDROID is supported.");
+        }
+
+        var token = request.Token?.Trim() ?? "";
+        if (token.Length == 0 || token.Length > 4096)
+        {
+            throw new ApiException(
+                StatusCodes.Status422UnprocessableEntity,
+                "PUSH_TOKEN_INVALID",
+                "A push token is required.");
+        }
+
+        var device = Device(context);
+        await pushRegistrations.RegisterAsync(
+            context.User.UserId(),
+            device.Id,
+            "FCM",
+            "ANDROID",
+            token,
+            cancellationToken);
+        return Results.NoContent();
     }
 
     private static IResult CurrentUserAsync(HttpContext context)

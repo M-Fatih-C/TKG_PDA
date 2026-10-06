@@ -23,6 +23,8 @@ var fieldSessionOptions = new FieldSessionOptions(
     builder.Configuration.GetValue("Authentication:FieldSession:LeaseSeconds", 120),
     builder.Configuration.GetValue("Authentication:FieldSession:HeartbeatSeconds", 30));
 fieldSessionOptions.Validate();
+var pushOptions = builder.Configuration.GetSection("PushNotifications").Get<PushNotificationOptions>() ?? new PushNotificationOptions();
+pushOptions.Validate();
 var rdsOptions = RdsOptions.FromConfiguration(builder.Configuration);
 var rdsCoreDiscoveryOptions = RdsCoreDiscoveryOptions.FromConfiguration(builder.Configuration);
 var rdsCoreExecutionOptions = RdsCoreExecutionOptions.FromConfiguration(builder.Configuration);
@@ -56,6 +58,7 @@ builder.Services.Configure<JsonOptions>(options =>
 });
 builder.Services.AddSingleton(jwtOptions);
 builder.Services.AddSingleton(fieldSessionOptions);
+builder.Services.AddSingleton(pushOptions);
 builder.Services.AddSingleton(rdsOptions);
 builder.Services.AddSingleton(rdsCoreDiscoveryOptions);
 builder.Services.AddSingleton(rdsCoreExecutionOptions);
@@ -157,6 +160,18 @@ builder.Services.AddSingleton(new RdsExecutionSettings(
     rdsOptions.FullContentValue));
 builder.Services.AddSingleton<RdsExecutionCoordinator>();
 builder.Services.AddHostedService<RdsExecutionWorker>();
+builder.Services.AddSingleton<PostgresPushRegistrationStore>();
+builder.Services.AddSingleton<IPushRegistrationStore>(services => services.GetRequiredService<PostgresPushRegistrationStore>());
+builder.Services.AddSingleton<PushOutboxProcessor>();
+if (pushOptions.Enabled)
+{
+    builder.Services.AddSingleton<IPushNotificationSender, FirebasePushNotificationSender>();
+    builder.Services.AddHostedService<PushOutboxWorker>();
+}
+else
+{
+    builder.Services.AddSingleton<IPushNotificationSender, DisabledPushNotificationSender>();
+}
 builder.Services.AddCors(options => options.AddPolicy("OperatorWeb", policy =>
 {
     if (operatorWebOrigins.Length > 0)
@@ -257,6 +272,12 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+if (pushOptions.Enabled)
+{
+    // Construct the sender now so a missing project id or credentials fails
+    // startup instead of the first delivery.
+    _ = app.Services.GetRequiredService<IPushNotificationSender>();
+}
 
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("TkgPda.Startup");
 startupLogger.LogInformation(

@@ -22,6 +22,8 @@ public sealed record DeviceResponse(Guid Id, string Code, string Name, string Ty
 
 public sealed record HeartbeatResponse(Guid SessionId, DateTimeOffset LeaseExpiresAt, DateTimeOffset TokenExpiresAt);
 
+public sealed record PushRegistrationHttpRequest(string? Provider, string? Platform, string? Token);
+
 public sealed record CreateTransportHttpRequest(
     Guid MachineId,
     Guid VariantId,

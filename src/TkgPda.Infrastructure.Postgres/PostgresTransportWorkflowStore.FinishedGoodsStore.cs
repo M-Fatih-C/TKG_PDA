@@ -1,4 +1,5 @@
 using System.Data;
+using System.Globalization;
 using System.Text.Json;
 using Npgsql;
 using NpgsqlTypes;
@@ -73,6 +74,82 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         await InsertStoreEventAsync(connection, transaction, locationId, unitId, "UNIT_DELIVERED",
             request.PartId, request.ContainerTypeId, request.Id,
             actorUserId: null, deviceId: null, new { source = "TRANSPORT_COMPLETED" }, cancellationToken);
+
+        // Same transaction, and only for a unit this completion just inserted.
+        // A replay that conflicts above has already returned. FCM is not called
+        // here: the outbox is what the worker sends after commit.
+        await EnqueueFinishedGoodsDeliveryAsync(
+            connection, transaction, request, locationId, unitId, cancellationToken);
+    }
+
+    private static async Task EnqueueFinishedGoodsDeliveryAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        TransportRequestSnapshot request,
+        Guid locationId,
+        Guid unitId,
+        CancellationToken cancellationToken)
+    {
+        string displayName;
+        string? partCode;
+        string? machineCode;
+        await using (var lookup = new NpgsqlCommand(
+            """
+            SELECT sl.display_name,
+                   (SELECT p.part_code FROM master.parts p WHERE p.id = @part),
+                   (SELECT m.code FROM master.machines m WHERE m.id = @machine)
+            FROM ops.store_locations sl
+            WHERE sl.id = @location
+            """,
+            connection,
+            transaction))
+        {
+            AddNullableUuid(lookup, "part", request.PartId);
+            lookup.Parameters.AddWithValue("machine", request.MachineId);
+            lookup.Parameters.AddWithValue("location", locationId);
+            await using var reader = await lookup.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) return;
+            displayName = reader.GetString(0);
+            partCode = reader.IsDBNull(1) ? null : reader.GetString(1);
+            machineCode = reader.IsDBNull(2) ? null : reader.GetString(2);
+        }
+
+        var data = new Dictionary<string, string>
+        {
+            ["notificationType"] = FinishedGoodsPushCopy.NotificationType,
+            ["unitId"] = unitId.ToString("D"),
+            ["locationId"] = locationId.ToString("D"),
+            ["locationName"] = displayName,
+            ["requestNo"] = request.RequestNo.ToString(CultureInfo.InvariantCulture)
+        };
+        if (!string.IsNullOrWhiteSpace(partCode)) data["partCode"] = partCode;
+        if (!string.IsNullOrWhiteSpace(machineCode)) data["machineCode"] = machineCode;
+        var dataJson = JsonSerializer.Serialize(data);
+
+        await using var insert = new NpgsqlCommand(
+            """
+            INSERT INTO integration.push_outbox
+                (event_key, notification_type, registration_id, title, body, data_json)
+            SELECT @event_key, @notification_type, reg.id, @title, @body, @data
+            FROM integration.device_push_registrations reg
+            WHERE reg.is_active
+              AND EXISTS (
+                  SELECT 1
+                  FROM auth.user_roles ur
+                  JOIN auth.roles role ON role.id = ur.role_id
+                  WHERE ur.user_id = reg.user_id
+                    AND role.code = ANY(@roles))
+            ON CONFLICT (event_key, registration_id) DO NOTHING
+            """,
+            connection,
+            transaction);
+        insert.Parameters.AddWithValue("event_key", FinishedGoodsPushCopy.EventKey(unitId));
+        insert.Parameters.AddWithValue("notification_type", FinishedGoodsPushCopy.NotificationType);
+        insert.Parameters.AddWithValue("title", FinishedGoodsPushCopy.Title(displayName));
+        insert.Parameters.AddWithValue("body", FinishedGoodsPushCopy.Body(partCode, machineCode, request.RequestNo));
+        insert.Parameters.Add(new NpgsqlParameter("data", NpgsqlDbType.Jsonb) { Value = dataJson });
+        insert.Parameters.Add(new NpgsqlParameter("roles", FinishedGoodsPushAuthorization.RecipientRoles));
+        await insert.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private const string FinishedGoodsDestinationNotConfiguredMessage =

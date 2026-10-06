@@ -515,6 +515,15 @@ class FakePdaRepository implements PdaDataSource {
     if (logoutError case final error?) throw error;
   }
 
+  final List<String> pushTokens = [];
+  Object? pushRegistrationError;
+
+  @override
+  Future<void> registerPushToken(String token) async {
+    pushTokens.add(token);
+    if (pushRegistrationError case final error?) throw error;
+  }
+
   @override
   Future<AuthenticatedUser> me() async {
     meCount++;

@@ -16,6 +16,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     public const string CallbackKey = "phase08b-test-callback-key-0000000000000000";
     public TestRdsReadClient RdsClient { get; } = new();
     public TestRdsCoreDiscoveryClient RdsCoreDiscoveryClient { get; } = new();
+    public CapturingPushSender PushSender { get; } = new();
 
     public string ConnectionString => Environment.GetEnvironmentVariable("TKG_PDA_API_TEST_CONNECTION_STRING")
         ?? throw new InvalidOperationException("TKG_PDA_API_TEST_CONNECTION_STRING is required.");
@@ -34,6 +35,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             services.AddSingleton<IRdsReadClient>(RdsClient);
             services.RemoveAll<IRdsCoreDiscoveryClient>();
             services.AddSingleton<IRdsCoreDiscoveryClient>(RdsCoreDiscoveryClient);
+            services.RemoveAll<IPushNotificationSender>();
+            services.AddSingleton<IPushNotificationSender>(PushSender);
         });
     }
 
@@ -41,9 +44,12 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     {
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
+        PushSender.Reset();
         await ExecuteAsync(
             """
             TRUNCATE
+                integration.push_outbox,
+                integration.device_push_registrations,
                 ops.store_events,
                 ops.store_units,
                 integration.rds_tasks,
@@ -249,7 +255,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     /// API suite have no DROP role (simulation DROP-001 is seed 002d, not
     /// loaded here), so a test-only DROP is inserted when the layout has none.
     /// The mapping then follows the same first-enabled-DROP rule as dispatch.
-    /// Customer names, the 19 FG areas and capacity are not modelled.
+    /// Customer names stay on the FG_AREA rows from migration 015. This helper
+    /// does not rename them and does not attach a DROP slot to any of them.
     /// </summary>
     private async Task EnsureDefaultFinishedGoodsDestinationAsync(Guid layoutId)
     {

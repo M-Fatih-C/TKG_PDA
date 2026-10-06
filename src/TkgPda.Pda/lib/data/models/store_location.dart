@@ -99,6 +99,14 @@ class StoreLocation {
   bool get isNearlyFull =>
       hasKnownCapacity && !isFull && unitCount >= capacity! - 1;
 
+  /// Warehouse presentation only. This is not occupancy and not load state,
+  /// and it is not stored.
+  String get presenceLabel {
+    if (!isEnabled) return 'DEVRE DIŞI';
+    if (units.isEmpty) return 'BOŞ';
+    return 'DOLU';
+  }
+
   factory StoreLocation.fromJson(JsonMap json) => StoreLocation(
     id: json['id'] as String,
     code: json['code'] as String? ?? '',

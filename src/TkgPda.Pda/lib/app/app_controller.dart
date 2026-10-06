@@ -10,7 +10,9 @@ import '../data/models/pda_models.dart';
 import '../data/repositories/pda_repository.dart';
 import '../features/transport/submission_coordinator.dart';
 import '../features/operation/production_coordinator.dart';
+import '../features/warehouse/android_push_notification_service.dart';
 import '../features/warehouse/preparation_coordinator.dart';
+import '../features/warehouse/push_notification_client.dart';
 import '../features/warehouse/store_coordinator.dart';
 import '../features/warehouse/warehouse_notification_coordinator.dart';
 
@@ -91,6 +93,7 @@ class AppController extends ChangeNotifier {
     required SessionMemory session,
     SubmissionCoordinator? submissionCoordinator,
     WarehouseNotificationCoordinator? warehouseNotificationCoordinator,
+    PushNotificationClient? pushClient,
     bool enablePolling = true,
     bool enableProductionWorkflow = true,
     bool? enableHeartbeat,
@@ -103,6 +106,11 @@ class AppController extends ChangeNotifier {
       session: session,
       submissionCoordinator: submissionCoordinator,
       notifications: notifications,
+      push: AndroidPushNotificationService(
+        client: pushClient ?? const DisabledPushNotificationClient(),
+        repository: repository,
+        notifications: notifications,
+      ),
       enablePolling: enablePolling,
       enableProductionWorkflow: enableProductionWorkflow,
       enableHeartbeat: enableHeartbeat,
@@ -114,6 +122,7 @@ class AppController extends ChangeNotifier {
     required DeviceCodeStore deviceCodeStore,
     required SessionMemory session,
     required WarehouseNotificationCoordinator notifications,
+    required AndroidPushNotificationService push,
     SubmissionCoordinator? submissionCoordinator,
     bool enablePolling = true,
     bool enableProductionWorkflow = true,
@@ -126,6 +135,7 @@ class AppController extends ChangeNotifier {
        _enableProductionWorkflow = enableProductionWorkflow,
        _enableHeartbeat = enableHeartbeat ?? enablePolling,
        warehouseNotifications = notifications,
+       _push = push,
        production = ProductionCoordinator(repository),
        preparation = PreparationCoordinator(
          repository,
@@ -147,6 +157,7 @@ class AppController extends ChangeNotifier {
   final bool _enableProductionWorkflow;
   final bool _enableHeartbeat;
   final WarehouseNotificationCoordinator warehouseNotifications;
+  final AndroidPushNotificationService _push;
   final ProductionCoordinator production;
   int _machineGeneration = 0;
   String? _restoredProductionId;
@@ -449,6 +460,11 @@ class AppController extends ChangeNotifier {
 
   Future<void> initialize() async {
     _deviceCode = await _deviceCodeStore.read();
+    try {
+      await _push.start();
+    } catch (_) {
+      // Push setup must not stop the warehouse tablet from opening.
+    }
     _stage = _deviceCode == null ? AppStage.deviceSetup : AppStage.login;
     notifyListeners();
   }
@@ -578,6 +594,7 @@ class AppController extends ChangeNotifier {
       }
       _offline = false;
       _startHeartbeat();
+      await _push.onAuthenticated(roles);
       return true;
     } on ApiProblem catch (problem) {
       if (serverSessionEstablished) {
@@ -615,6 +632,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> _releaseServerSessionBestEffort() async {
+    _push.onLoggedOut();
     if (!_session.isAuthenticated) return;
     try {
       await _repository.logout();
@@ -630,6 +648,7 @@ class AppController extends ChangeNotifier {
       return;
     }
     _stopHeartbeat();
+    _push.onLoggedOut();
     try {
       await _repository.logout();
     } catch (_) {
@@ -648,6 +667,7 @@ class AppController extends ChangeNotifier {
 
   void handleUnauthorized() {
     _stopHeartbeat();
+    _push.onLoggedOut();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -2395,6 +2415,7 @@ class AppController extends ChangeNotifier {
     production.dispose();
     warehouseNotifications.removeListener(notifyListeners);
     warehouseNotifications.dispose();
+    unawaited(_push.dispose());
     super.dispose();
   }
 }

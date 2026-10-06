@@ -260,6 +260,8 @@ Write-Host 'Applying migration 011 (011_warehouse_operator_roles.sql)...' -Foreg
 Write-Host 'Applying migration 012 (012_client_device_machine_binding.sql)...' -ForegroundColor Cyan
 Write-Host 'Applying migration 013 (013_user_sessions.sql)...' -ForegroundColor Cyan
 Write-Host 'Applying migration 014 (014_transport_event_context.sql)...' -ForegroundColor Cyan
+Write-Host 'Applying migration 015 (015_finished_goods_areas.sql)...' -ForegroundColor Cyan
+Write-Host 'Applying migration 016 (016_android_push_notifications.sql)...' -ForegroundColor Cyan
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\006_production_sessions.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\007_bring_full_task_type.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\008_warehouse_preparation_areas.sql') | Out-Null
@@ -269,6 +271,8 @@ Write-Host 'Applying migration 014 (014_transport_event_context.sql)...' -Foregr
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\012_client_device_machine_binding.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\013_user_sessions.sql') | Out-Null
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\014_transport_event_context.sql') | Out-Null
+& $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\015_finished_goods_areas.sql') | Out-Null
+& $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\016_android_push_notifications.sql') | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Applying 006_production_sessions.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 007_bring_full_task_type.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 008_warehouse_preparation_areas.sql failed with exit code $LASTEXITCODE" }
@@ -278,6 +282,8 @@ if ($LASTEXITCODE -ne 0) { throw "Applying 011_warehouse_operator_roles.sql fail
 if ($LASTEXITCODE -ne 0) { throw "Applying 012_client_device_machine_binding.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 013_user_sessions.sql failed with exit code $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "Applying 014_transport_event_context.sql failed with exit code $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw "Applying 015_finished_goods_areas.sql failed with exit code $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw "Applying 016_android_push_notifications.sql failed with exit code $LASTEXITCODE" }
 
 Write-Host 'Applying customer master seeds (002a, 002b, 002c)...' -ForegroundColor Cyan
 $seedFiles = @(

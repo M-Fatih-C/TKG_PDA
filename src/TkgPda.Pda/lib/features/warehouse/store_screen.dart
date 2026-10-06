@@ -205,22 +205,48 @@ class _LocationCard extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: Text(
-                    location.displayName.isNotEmpty
-                        ? location.displayName
-                        : location.code,
-                    style: TextStyle(
-                      fontSize: PdaScale.title(context),
-                      fontWeight: FontWeight.w700,
-                    ),
-                    overflow: TextOverflow.ellipsis,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        location.displayName.isNotEmpty
+                            ? location.displayName
+                            : location.code,
+                        style: TextStyle(
+                          fontSize: PdaScale.title(context),
+                          fontWeight: FontWeight.w700,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      Text(
+                        location.code,
+                        key: Key('store-code-${location.code}'),
+                        style: TextStyle(
+                          fontSize: PdaScale.caption(context),
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                _OccupancyChip(location: location),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      location.presenceLabel,
+                      key: Key('store-presence-${location.code}'),
+                      style: TextStyle(
+                        fontSize: PdaScale.body(context),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    _OccupancyChip(location: location),
+                  ],
+                ),
               ],
             ),
             SizedBox(height: PdaScale.gutter(context) / 2),
-            if (location.isEmpty)
+            if (location.isEnabled && location.isEmpty)
               Text(
                 'Bu alan boş.',
                 style: TextStyle(fontSize: PdaScale.body(context)),
