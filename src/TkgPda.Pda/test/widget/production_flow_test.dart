@@ -31,14 +31,8 @@ void main() {
       expect(c.production.active, isNotNull);
       expect(repo.productionStartCount, 1);
       expect(repo.createCount, 0);
-      expect(find.text('Üretim Devam Ediyor'), findsOneWidget);
-      await reveal(tester, const Key('change-main-part'));
-      expect(
-        tester
-            .widget<OutlinedButton>(find.byKey(const Key('change-main-part')))
-            .onPressed,
-        isNull,
-      );
+      expect(find.text('ÜRETİM AKTİF'), findsOneWidget);
+      expect(find.byKey(const Key('change-main-part')), findsNothing);
       expect(c.transportActionsReady, isTrue);
     },
   );

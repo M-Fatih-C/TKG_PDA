@@ -12,30 +12,31 @@ import 'package:tkg_pda/data/models/pda_models.dart';
 import '../support/fakes.dart';
 
 void main() {
-  testWidgets('1: Kasam Doldu submits immediately without a confirmation dialog', (
-    tester,
-  ) async {
-    final harness = await _operationHarness(tester);
+  testWidgets(
+    '1: Kasam Doldu submits immediately without a confirmation dialog',
+    (tester) async {
+      final harness = await _operationHarness(tester);
 
-    expect(find.text('1. Kasam Doldu'), findsOneWidget);
-    await tester.tap(find.text('1. Kasam Doldu'));
-    await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Kasam Doldu'), findsOneWidget);
+      await tester.tap(find.text('Kasam Doldu'));
+      await tester.pump(const Duration(milliseconds: 500));
 
-    expect(harness.repository.containerActionCount, 1);
-    expect(harness.repository.lastCommand?.operation, 'REMOVE_FULL');
-    expect(harness.repository.lastCommand?.sourceSlotId, isNull);
-    expect(harness.repository.lastCommand?.destinationSlotId, isNull);
-    expect(find.byKey(const Key('confirm-direct-transport')), findsNothing);
-    harness.dispose();
-  });
+      expect(harness.repository.containerActionCount, 1);
+      expect(harness.repository.lastCommand?.operation, 'REMOVE_FULL');
+      expect(harness.repository.lastCommand?.sourceSlotId, isNull);
+      expect(harness.repository.lastCommand?.destinationSlotId, isNull);
+      expect(find.byKey(const Key('confirm-direct-transport')), findsNothing);
+      harness.dispose();
+    },
+  );
 
   testWidgets('2: Alan Boş submits immediately without a confirmation dialog', (
     tester,
   ) async {
     final harness = await _operationHarness(tester);
 
-    expect(find.text('1. Alan Boş'), findsOneWidget);
-    await tester.tap(find.text('1. Alan Boş'));
+    expect(find.text('Alan Boş'), findsOneWidget);
+    await tester.tap(find.text('Alan Boş'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(harness.repository.containerActionCount, 1);
@@ -76,17 +77,11 @@ void main() {
       ];
     final harness = await _operationHarness(tester, repository: repository);
 
-    final button = tester.widget<ElevatedButton>(
-      find.byKey(const Key('direct-action-REMOVE_FULL-1')),
-    );
-    expect(button.onPressed, isNull);
+    expect(find.byKey(const Key('direct-action-REMOVE_FULL-1')), findsNothing);
     expect(
-      tester.widget<Tooltip>(find.byKey(const Key('container-1-FULL'))).message,
-      message,
+      find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+      findsOneWidget,
     );
-
-    await tester.tap(find.byKey(const Key('direct-action-REMOVE_FULL-1')));
-    await tester.pump();
     expect(repository.containerActionCount, 0);
     harness.dispose();
   });
@@ -98,7 +93,7 @@ void main() {
       ..createCompleter = Completer<TransportResult>();
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('1. Kasam Doldu'));
+    await tester.tap(find.text('Kasam Doldu'));
     await tester.pump();
     await tester.tap(find.byKey(const Key('direct-action-REMOVE_FULL-1')));
     await tester.pump();
@@ -127,7 +122,7 @@ void main() {
       );
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('1. Kasam Doldu'));
+    await tester.tap(find.text('Kasam Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
     final firstKey = repository.lastIdempotencyKey;
     expect(find.byKey(const Key('retry-ambiguous')), findsOneWidget);
@@ -149,10 +144,11 @@ void main() {
       operation: 'REMOVE_FULL',
       readinessState: 'NOT_REQUIRED',
     );
-    final repository = FakePdaRepository()..containerActionActiveRequest = request;
+    final repository = FakePdaRepository()
+      ..containerActionActiveRequest = request;
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('1. Kasam Doldu'));
+    await tester.tap(find.text('Kasam Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(
@@ -175,18 +171,25 @@ void main() {
       operation: 'BRING_EMPTY',
       readinessState: 'WAITING_PREPARATION',
     );
-    final repository = FakePdaRepository()..containerActionActiveRequest = request;
+    final repository = FakePdaRepository()
+      ..containerActionActiveRequest = request;
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('1. Alan Boş'));
+    await tester.tap(find.text('Alan Boş'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(
       harness.controller.context!.activeTransportRequests.single.readinessState,
       'WAITING_PREPARATION',
     );
-    await _scrollTo(tester, find.byKey(const Key('active-transport-wp08-empty')));
-    expect(find.byKey(const Key('active-transport-wp08-empty')), findsOneWidget);
+    await _scrollTo(
+      tester,
+      find.byKey(const Key('active-transport-wp08-empty')),
+    );
+    expect(
+      find.byKey(const Key('active-transport-wp08-empty')),
+      findsOneWidget,
+    );
     expect(find.byKey(const Key('active-readiness')), findsOneWidget);
     expect(find.text('Hazırlık: Depo hazırlığı bekleniyor'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsNothing);

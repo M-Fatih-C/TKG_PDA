@@ -264,21 +264,18 @@ void main() {
       expect(repository.lastCommand!.productGroupId, testProductGroupId);
       expect(repository.lastCommand!.partId, testMainPartId);
       expect(repository.lastCommand!.operation, 'BRING_EMPTY');
+      await tester.pump();
       expect(find.text('1. Kasa talebi oluşturuldu.'), findsOneWidget);
       expect(find.text('Fiziksel Yerleşim'), findsNothing);
-      await _scrollTo(
-        tester,
+      expect(
         find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+        findsNothing,
       );
       expect(
-        tester
-            .widget<ElevatedButton>(
-              find.byKey(const Key('direct-action-BRING_EMPTY-1')),
-            )
-            .onPressed,
-        isNull,
+        find.text('Bu kasa konumunda aktif bir taşıma talebi bulunuyor.'),
+        findsOneWidget,
       );
-      expect(find.text('Aktif taşıma: 1'), findsOneWidget);
+      expect(find.textContaining('Aktif Taşımalar (1)'), findsOneWidget);
       harness.dispose();
     });
 
@@ -358,7 +355,10 @@ void main() {
       ..createCompleter = Completer<TransportResult>();
     final harness = await _operationHarness(tester, repository: repository);
 
-    await _scrollTo(tester, find.byKey(const Key('direct-action-BRING_EMPTY-1')));
+    await _scrollTo(
+      tester,
+      find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+    );
     await tester.tap(find.byKey(const Key('direct-action-BRING_EMPTY-1')));
     // A single frame — the pending completer never resolves, and the busy
     // indicator is an indeterminate animation, so pumpAndSettle would hang.
@@ -435,7 +435,10 @@ void main() {
   ) async {
     final repository = FakePdaRepository();
     final harness = await _operationHarness(tester, repository: repository);
-    await _scrollTo(tester, find.byKey(const Key('direct-action-BRING_EMPTY-1')));
+    await _scrollTo(
+      tester,
+      find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+    );
     repository.contextError = const ConnectivityException();
 
     await harness.controller.refreshContext(showBusy: true);
@@ -458,7 +461,7 @@ void main() {
     await _scrollTo(tester, find.byKey(const Key('active-transport-section')));
     expect(find.text('Robot bekleniyor'), findsOneWidget);
     expect(find.text('#42 · Boş Kasa Getir'), findsOneWidget);
-    expect(find.text('Aktif taşıma: 1'), findsOneWidget);
+    expect(find.textContaining('Aktif Taşımalar (1)'), findsOneWidget);
     expect(find.textContaining('AGV'), findsNothing);
     harness.dispose();
   });
@@ -653,7 +656,10 @@ void main() {
         find.byKey(const Key('direct-action-REMOVE_FULL-1')),
         findsOneWidget,
       );
-      expect(find.byKey(const Key('direct-action-REMOVE_EMPTY-1')), findsNothing);
+      expect(
+        find.byKey(const Key('direct-action-REMOVE_EMPTY-1')),
+        findsNothing,
+      );
       expect(find.text('İşleme Devam Et'), findsNothing);
       expect(find.text('Fiziksel Yerleşim'), findsNothing);
       expect(tester.takeException(), isNull);

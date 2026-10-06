@@ -57,6 +57,7 @@ const testAmbiguousMainPartId = '70000000-0000-0000-0000-000000000005';
 OperationalContext testContext({
   List<ActiveTransportRequest> activeRequests = const [],
   String activeVariantId = testVariantV1Id,
+  List<Map<String, Object?>> additionalParts = const [],
 }) {
   final isV2 = activeVariantId == testVariantV2Id;
   return OperationalContext.fromJson({
@@ -118,6 +119,7 @@ OperationalContext testContext({
             'lotQuantity': null,
             'displayOrder': 2,
           },
+          ...additionalParts,
         ],
       },
     ],
@@ -655,6 +657,7 @@ class FakePdaRepository implements PdaDataSource {
   int partDemandBatchCount = 0;
   List<String> lastPartDemandIds = const [];
   String? lastPartDemandKey;
+  Object? partDemandError;
 
   @override
   Future<PartDemandResult> createPartDemand({
@@ -665,6 +668,7 @@ class FakePdaRepository implements PdaDataSource {
     partDemandCount++;
     lastPartDemandIds = [partId];
     lastPartDemandKey = idempotencyKey;
+    if (partDemandError case final error?) throw error;
     return const PartDemandResult(
       requestNo: 1,
       taskType: 'BRING_FULL',
@@ -1369,6 +1373,7 @@ StoreUnit fakeStoreUnit({
   int? requestNo = 42,
   DateTime? deliveredAt,
   int rowVersion = 0,
+  String loadState = 'FULL',
 }) => StoreUnit(
   id: id,
   transportRequestId: 'request-1',
@@ -1381,6 +1386,7 @@ StoreUnit fakeStoreUnit({
   machineCode: machineCode,
   deliveredAt: deliveredAt,
   rowVersion: rowVersion,
+  loadState: loadState,
 );
 
 StoreLocation fakeStoreLocation({

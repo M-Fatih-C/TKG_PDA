@@ -79,24 +79,36 @@ void main() {
       expect(coordinator.activeBanner?.id, notif.id);
     });
 
-    test('capacity warnings trigger correctly and clear when capacity frees up', () {
-      // 1 free area left
-      coordinator.notifyPreparationCapacity(freeAreaCount: 1, totalAreas: 4);
-      expect(coordinator.notifications, hasLength(1));
-      expect(coordinator.notifications.first.type, WarehouseNotificationType.capacity);
-      expect(coordinator.notifications.first.message, contains('Son bir hazırlık alanı'));
+    test(
+      'capacity warnings trigger correctly and clear when capacity frees up',
+      () {
+        // 1 free area left
+        coordinator.notifyPreparationCapacity(freeAreaCount: 1, totalAreas: 4);
+        expect(coordinator.notifications, hasLength(1));
+        expect(
+          coordinator.notifications.first.type,
+          WarehouseNotificationType.capacity,
+        );
+        expect(
+          coordinator.notifications.first.message,
+          contains('Son bir hazırlık alanı'),
+        );
 
-      // 0 free areas left
-      coordinator.notifyPreparationCapacity(freeAreaCount: 0, totalAreas: 4);
-      expect(coordinator.notifications, hasLength(2));
-      expect(coordinator.notifications.first.message, contains('tamamı dolu'));
+        // 0 free areas left
+        coordinator.notifyPreparationCapacity(freeAreaCount: 0, totalAreas: 4);
+        expect(coordinator.notifications, hasLength(2));
+        expect(
+          coordinator.notifications.first.message,
+          contains('tamamı dolu'),
+        );
 
-      // Area is cleared
-      coordinator.clearPreparationCapacityAlert();
-      // Can warn again after state reset
-      coordinator.notifyPreparationCapacity(freeAreaCount: 1, totalAreas: 4);
-      expect(coordinator.notifications, hasLength(3));
-    });
+        // Area is cleared
+        coordinator.clearPreparationCapacityAlert();
+        // Can warn again after state reset
+        coordinator.notifyPreparationCapacity(freeAreaCount: 1, totalAreas: 4);
+        expect(coordinator.notifications, hasLength(3));
+      },
+    );
 
     test('sound toggle changes soundEnabled property', () {
       expect(coordinator.soundEnabled, isTrue);
@@ -144,48 +156,60 @@ void main() {
       coordinator.dispose();
     });
 
-    testWidgets('top notification banner appears and tapping action navigates', (
-      tester,
-    ) async {
-      AppStage? navigatedStage;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: WarehouseNotificationBanner(
-              coordinator: coordinator,
-              onNavigate: (stage) {
-                navigatedStage = stage;
-              },
+    testWidgets(
+      'top notification banner appears and tapping action navigates',
+      (tester) async {
+        AppStage? navigatedStage;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: WarehouseNotificationBanner(
+                coordinator: coordinator,
+                onNavigate: (stage) {
+                  navigatedStage = stage;
+                },
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      expect(find.byKey(const Key('warehouse-notification-banner')), findsNothing);
+        expect(
+          find.byKey(const Key('warehouse-notification-banner')),
+          findsNothing,
+        );
 
-      coordinator.notifyDemand(
-        requestId: 'req-test-1',
-        machineCode: 'SH-01-A',
-        partCode: '67185BN050-40',
-        needsMaterial: true,
-        requestNo: 101,
-      );
-      await tester.pumpAndSettle();
+        coordinator.notifyDemand(
+          requestId: 'req-test-1',
+          machineCode: 'SH-01-A',
+          partCode: '67185BN050-40',
+          needsMaterial: true,
+          requestNo: 101,
+        );
+        await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('warehouse-notification-banner')), findsOneWidget);
-      expect(find.text('YENİ TALEP'), findsOneWidget);
-      expect(find.textContaining('SH-01-A'), findsOneWidget);
-      expect(find.textContaining('67185BN050-40'), findsOneWidget);
+        expect(
+          find.byKey(const Key('warehouse-notification-banner')),
+          findsOneWidget,
+        );
+        expect(find.text('YENİ TALEP'), findsOneWidget);
+        expect(find.textContaining('SH-01-A'), findsOneWidget);
+        expect(find.textContaining('67185BN050-40'), findsOneWidget);
 
-      final actionButton = find.byKey(const Key('warehouse-notification-action'));
-      expect(actionButton, findsOneWidget);
-      await tester.tap(actionButton);
-      await tester.pumpAndSettle();
+        final actionButton = find.byKey(
+          const Key('warehouse-notification-action'),
+        );
+        expect(actionButton, findsOneWidget);
+        await tester.tap(actionButton);
+        await tester.pumpAndSettle();
 
-      expect(navigatedStage, AppStage.preparationAreas);
-      expect(coordinator.activeBanner, isNull);
-      expect(find.byKey(const Key('warehouse-notification-banner')), findsNothing);
-    });
+        expect(navigatedStage, AppStage.preparationAreas);
+        expect(coordinator.activeBanner, isNull);
+        expect(
+          find.byKey(const Key('warehouse-notification-banner')),
+          findsNothing,
+        );
+      },
+    );
 
     testWidgets('bell icon shows badge count and opens notification sheet', (
       tester,
@@ -205,7 +229,10 @@ void main() {
         ),
       );
 
-      expect(find.byKey(const Key('warehouse-notification-badge')), findsNothing);
+      expect(
+        find.byKey(const Key('warehouse-notification-badge')),
+        findsNothing,
+      );
 
       coordinator.notifyDelivery(
         unitId: 'unit-1',
@@ -216,20 +243,29 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('warehouse-notification-badge')), findsOneWidget);
+      expect(
+        find.byKey(const Key('warehouse-notification-badge')),
+        findsOneWidget,
+      );
       expect(find.text('1'), findsOneWidget);
+      expect(find.textContaining(' yeni'), findsNothing);
 
       await tester.tap(find.byKey(const Key('warehouse-notifications-button')));
       await tester.pumpAndSettle();
 
-      expect(find.byKey(const Key('warehouse-notification-sheet')), findsOneWidget);
+      expect(
+        find.byKey(const Key('warehouse-notification-sheet')),
+        findsOneWidget,
+      );
       expect(find.text('Bildirimler'), findsOneWidget);
       expect(find.text('YENİ TESLİMAT'), findsOneWidget);
       expect(find.textContaining('STORE-1'), findsOneWidget);
 
       // Test sound toggle button in sheet
       expect(coordinator.soundEnabled, isTrue);
-      await tester.tap(find.byKey(const Key('warehouse-notification-sound-toggle')));
+      await tester.tap(
+        find.byKey(const Key('warehouse-notification-sound-toggle')),
+      );
       await tester.pumpAndSettle();
       expect(coordinator.soundEnabled, isFalse);
 
