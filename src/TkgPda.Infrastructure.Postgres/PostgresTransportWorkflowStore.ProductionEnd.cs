@@ -63,9 +63,16 @@ public sealed partial class PostgresTransportWorkflowStore
 
         await EnsureNoProductionTransportAsync(connection, transaction, command.MachineId, cancellationToken);
         var layoutId = await ReadActiveLayoutAsync(connection, transaction, command, cancellationToken);
-        var observed = await ReadProductionPositionsAsync(connection, transaction, before, layoutId, cancellationToken);
+        var positions = await ListProductionPositionsAsync(connection, transaction, before, layoutId, cancellationToken);
+        var returnSlots = await ListConfiguredReturnDestinationsAsync(connection, transaction, before, layoutId, cancellationToken);
+        var locked = await LockPlanningSlotsAsync(
+            connection,
+            transaction,
+            positions.Select(position => position.SlotId).Concat(returnSlots.Select(slot => slot.SlotId)),
+            cancellationToken);
+        var observed = ApplyLockedPositionState(positions, locked);
         var removals = ClassifyProductionEnd(before, observed);
-        await ValidateProductionEndPlanAsync(connection, transaction, before, layoutId, removals, cancellationToken);
+        await ValidateProductionEndPlanAsync(connection, transaction, before, layoutId, removals, locked, returnSlots, cancellationToken);
 
         var runId = Guid.NewGuid();
         if (removals.Count == 0)
@@ -82,6 +89,15 @@ public sealed partial class PostgresTransportWorkflowStore
         for (var index = 0; index < removals.Count; index++)
         {
             var removal = removals[index];
+            if (!removal.FinishedGoods
+                && removal.Operation == TransportTaskType.RemoveFull
+                && removal.DestinationSlotId is null)
+            {
+                throw new WorkflowRuleException(
+                    "PRODUCTION_END_REMOVAL_NOT_CONFIGURED",
+                    $"{removal.Code} paletinin kaldırılacağı alan yapılandırılmamış. Üretim kapatılmadı.");
+            }
+
             var created = await CreateAndQueueWithinTransactionAsync(
                 connection,
                 transaction,
@@ -98,17 +114,12 @@ public sealed partial class PostgresTransportWorkflowStore
                     removal.ContainerTypeId,
                     removal.Operation,
                     removal.SlotId,
-                    null,
+                    removal.FinishedGoods ? null : removal.DestinationSlotId,
                     removal.Priority,
                     RequiresFinishedGoodsDestination: removal.FinishedGoods),
                 null,
                 OperationalEventContext.ForUser(command.ActorUserId, command.DeviceId),
                 cancellationToken);
-            if (removal.SharedDestinationId is { } destinationId)
-            {
-                await AssignSharedDestinationAsync(connection, transaction, created.Request.Id, destinationId, cancellationToken);
-            }
-
             await InsertProductionEndItemAsync(connection, transaction, runId, index + 1, removal, created.Request.Id, cancellationToken);
             if (previousRequestId is { } predecessorId)
             {
@@ -169,7 +180,7 @@ public sealed partial class PostgresTransportWorkflowStore
                 operation,
                 Priority: 0,
                 FinishedGoods: operation == TransportTaskType.RemoveFull && partId == session.MainPartId,
-                SharedDestinationId: null));
+                DestinationSlotId: null));
         }
 
         return removals;
@@ -181,6 +192,8 @@ public sealed partial class PostgresTransportWorkflowStore
         ProductionSessionRecord session,
         Guid layoutId,
         List<CleanupRemoval> removals,
+        IReadOnlyDictionary<Guid, SlotSnapshot> lockedSlots,
+        IReadOnlyList<ConfiguredReturnSlot> returnSlots,
         CancellationToken cancellationToken)
     {
         var priorities = new Dictionary<TransportTaskType, int>();
@@ -195,7 +208,6 @@ public sealed partial class PostgresTransportWorkflowStore
             }
 
             await RequireTaskTemplateAsync(connection, transaction, session, removal.Operation, cancellationToken);
-            Guid? sharedDestination = null;
             if (removal.FinishedGoods)
             {
                 _ = await ResolveFinishedGoodsDestinationAsync(
@@ -219,23 +231,22 @@ public sealed partial class PostgresTransportWorkflowStore
                         RequiresFinishedGoodsDestination: true),
                     cancellationToken);
             }
-            else if (removal.Operation == TransportTaskType.RemoveFull)
-            {
-                sharedDestination = await ResolveNonFinishedRemovalDestinationAsync(
-                    connection,
-                    transaction,
-                    session,
-                    layoutId,
-                    removal.Code,
-                    cancellationToken);
-            }
-            else
+            else if (removal.Operation != TransportTaskType.RemoveFull)
             {
                 emptyCount++;
             }
 
-            removals[index] = removal with { Priority = priority, SharedDestinationId = sharedDestination };
+            removals[index] = removal with { Priority = priority };
         }
+
+        await AllocateNonFinishedDestinationsAsync(
+            connection,
+            transaction,
+            layoutId,
+            removals,
+            lockedSlots,
+            returnSlots,
+            cancellationToken);
 
         if (emptyCount > 0)
         {
@@ -302,18 +313,17 @@ public sealed partial class PostgresTransportWorkflowStore
     }
 
     /// <summary>
-    /// Alt and other non-main full pallets reuse the configured REMOVE_FULL
-    /// destination group, skipping any slot already linked to finished goods.
-    /// No return location is created here.
+    /// Members of the active REMOVE_FULL destination group, in allocation
+    /// order. Finished-goods delivery slots are not return positions.
     /// </summary>
-    private static async Task<Guid> ResolveNonFinishedRemovalDestinationAsync(
+    private static async Task<IReadOnlyList<ConfiguredReturnSlot>> ListConfiguredReturnDestinationsAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         ProductionSessionRecord session,
         Guid layoutId,
-        string slotCode,
         CancellationToken cancellationToken)
     {
+        var slots = new List<ConfiguredReturnSlot>();
         await using var command = new NpgsqlCommand(
             """
             WITH template AS (
@@ -322,6 +332,7 @@ public sealed partial class PostgresTransportWorkflowStore
                 JOIN master.task_types tt ON tt.id = t.task_type_id AND tt.code = 'REMOVE_FULL'
                 WHERE t.variant_id = @variant
                   AND t.is_active
+                  AND t.destination_slot_group_id IS NOT NULL
                   AND (t.product_group_id = @group OR t.product_group_id IS NULL)
                 ORDER BY (t.product_group_id = @group) DESC, t.id
                 LIMIT 1
@@ -337,21 +348,215 @@ public sealed partial class PostgresTransportWorkflowStore
                   SELECT 1 FROM ops.store_location_delivery_slots d
                   WHERE d.layout_slot_id = ls.id)
             ORDER BY sgm.priority, ls.display_order, ls.id
-            LIMIT 1
             """,
             connection,
             transaction);
         command.Parameters.AddWithValue("variant", session.VariantId);
         command.Parameters.AddWithValue("group", session.ProductGroupId);
         command.Parameters.AddWithValue("layout", layoutId);
-        if (await command.ExecuteScalarAsync(cancellationToken) is Guid slotId)
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
         {
-            return slotId;
+            slots.Add(new ConfiguredReturnSlot(reader.GetGuid(0)));
         }
 
-        throw new WorkflowRuleException(
-            "PRODUCTION_END_REMOVAL_NOT_CONFIGURED",
-            $"{slotCode} paletinin kaldırılacağı alan yapılandırılmamış. Üretim kapatılmadı.");
+        return slots;
+    }
+
+    private static async Task AllocateNonFinishedDestinationsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid layoutId,
+        List<CleanupRemoval> removals,
+        IReadOnlyDictionary<Guid, SlotSnapshot> lockedSlots,
+        IReadOnlyList<ConfiguredReturnSlot> returnSlots,
+        CancellationToken cancellationToken)
+    {
+        var pending = new List<int>();
+        for (var index = 0; index < removals.Count; index++)
+        {
+            if (!removals[index].FinishedGoods && removals[index].Operation == TransportTaskType.RemoveFull)
+            {
+                pending.Add(index);
+            }
+        }
+
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
+        if (returnSlots.Count == 0)
+        {
+            throw new WorkflowRuleException(
+                "PRODUCTION_END_REMOVAL_NOT_CONFIGURED",
+                $"{removals[pending[0]].Code} paletinin kaldırılacağı alan yapılandırılmamış. Üretim kapatılmadı.");
+        }
+
+        var candidateIds = returnSlots.Select(slot => slot.SlotId).Distinct().ToArray();
+        var reserved = await ActiveEndpointSlotsAsync(connection, transaction, candidateIds, cancellationToken);
+        var storeSlots = await StoreDeliverySlotsAsync(connection, transaction, candidateIds, cancellationToken);
+        var sources = removals.Select(removal => removal.SlotId).ToHashSet();
+        var available = new List<Guid>();
+        foreach (var candidate in returnSlots)
+        {
+            if (available.Contains(candidate.SlotId) || !lockedSlots.TryGetValue(candidate.SlotId, out var slot))
+            {
+                continue;
+            }
+
+            if (!IsAvailableReturnSlot(slot, layoutId, sources, reserved, storeSlots))
+            {
+                continue;
+            }
+
+            available.Add(slot.Id);
+        }
+
+        if (available.Count < pending.Count)
+        {
+            throw new WorkflowRuleException(
+                "PRODUCTION_END_REMOVAL_CAPACITY_UNAVAILABLE",
+                $"Kaldırılacak {pending.Count} dolu palet için {available.Count} boş dönüş konumu var. Üretim kapatılmadı.");
+        }
+
+        for (var offset = 0; offset < pending.Count; offset++)
+        {
+            var index = pending[offset];
+            removals[index] = removals[index] with { DestinationSlotId = available[offset] };
+        }
+    }
+
+    private static bool IsAvailableReturnSlot(
+        SlotSnapshot slot,
+        Guid layoutId,
+        IReadOnlySet<Guid> sourceSlotIds,
+        IReadOnlySet<Guid> reservedSlotIds,
+        IReadOnlySet<Guid> storeSlotIds) =>
+        slot.IsEnabled
+        && slot.LayoutId == layoutId
+        && slot.Role is not (SlotRole.Machine or SlotRole.EmptyStorage)
+        && !sourceSlotIds.Contains(slot.Id)
+        && !storeSlotIds.Contains(slot.Id)
+        && !reservedSlotIds.Contains(slot.Id)
+        && slot.State.Occupancy == OccupancyState.Vacant
+        && slot.State.Load == LoadState.Unknown;
+
+    private static async Task<HashSet<Guid>> ActiveEndpointSlotsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid[] slotIds,
+        CancellationToken cancellationToken)
+    {
+        var reserved = new HashSet<Guid>();
+        await using var command = new NpgsqlCommand(
+            $"""
+             SELECT source_slot_id
+             FROM ops.transport_requests
+             WHERE status IN ({ActiveStatusesSql})
+               AND source_slot_id = ANY(@slot_ids)
+             UNION
+             SELECT destination_slot_id
+             FROM ops.transport_requests
+             WHERE status IN ({ActiveStatusesSql})
+               AND destination_slot_id = ANY(@slot_ids)
+             """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("slot_ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid, slotIds);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!reader.IsDBNull(0))
+            {
+                reserved.Add(reader.GetGuid(0));
+            }
+        }
+
+        return reserved;
+    }
+
+    private static async Task<HashSet<Guid>> StoreDeliverySlotsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid[] slotIds,
+        CancellationToken cancellationToken)
+    {
+        var storeSlots = new HashSet<Guid>();
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT layout_slot_id
+            FROM ops.store_location_delivery_slots
+            WHERE layout_slot_id = ANY(@slot_ids)
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("slot_ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid, slotIds);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            storeSlots.Add(reader.GetGuid(0));
+        }
+
+        return storeSlots;
+    }
+
+    /// <summary>
+    /// A non-finished full removal physically arrives at its reserved return
+    /// slot. Finished-goods delivery keeps the shared store path instead.
+    /// </summary>
+    private static async Task ApplyNonFinishedReturnCompletionAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        TransportRequestSnapshot request,
+        CancellationToken cancellationToken)
+    {
+        if (request.TaskType != TransportTaskType.RemoveFull || request.DestinationSlotId is not Guid destinationId)
+        {
+            return;
+        }
+
+        if (!await IsProductionEndRemovalAsync(connection, transaction, request.Id, cancellationToken)
+            || await IsStoreDeliverySlotAsync(connection, transaction, destinationId, cancellationToken))
+        {
+            return;
+        }
+
+        await UpdateSlotStateAsync(
+            connection,
+            transaction,
+            destinationId,
+            new SlotState(OccupancyState.Occupied, LoadState.Full, request.PartId, request.ContainerTypeId),
+            updatedBy: null,
+            cancellationToken);
+    }
+
+    private static async Task<bool> IsProductionEndRemovalAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT 1 FROM ops.production_end_run_items WHERE transport_request_id = @request",
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("request", requestId);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    private static async Task<bool> IsStoreDeliverySlotAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid slotId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT 1 FROM ops.store_location_delivery_slots WHERE layout_slot_id = @slot",
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("slot", slotId);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     private static async Task<int> CountAvailableBuffersAsync(
@@ -384,7 +589,7 @@ public sealed partial class PostgresTransportWorkflowStore
         return (int)(long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
     }
 
-    private static async Task<IReadOnlyList<ObservedPosition>> ReadProductionPositionsAsync(
+    private static async Task<IReadOnlyList<ObservedPosition>> ListProductionPositionsAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         ProductionSessionRecord session,
@@ -392,7 +597,7 @@ public sealed partial class PostgresTransportWorkflowStore
         CancellationToken cancellationToken)
     {
         var positions = new List<ObservedPosition>();
-        await using (var command = new NpgsqlCommand(
+        await using var command = new NpgsqlCommand(
             """
             SELECT DISTINCT ON (s.id) s.id, s.code, s.display_order
             FROM master.layout_slots s
@@ -411,25 +616,37 @@ public sealed partial class PostgresTransportWorkflowStore
             ORDER BY s.id
             """,
             connection,
-            transaction))
+            transaction);
+        command.Parameters.AddWithValue("group", session.ProductGroupId);
+        command.Parameters.AddWithValue("layout", layoutId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
         {
-            command.Parameters.AddWithValue("group", session.ProductGroupId);
-            command.Parameters.AddWithValue("layout", layoutId);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                positions.Add(new ObservedPosition(reader.GetGuid(0), reader.GetString(1), reader.GetInt32(2), default, default, null, null));
-            }
+            positions.Add(new ObservedPosition(reader.GetGuid(0), reader.GetString(1), reader.GetInt32(2), default, default, null, null));
         }
 
-        var orderedIds = positions.Select(position => position.SlotId).Order().ToArray();
+        return positions;
+    }
+
+    private static async Task<Dictionary<Guid, SlotSnapshot>> LockPlanningSlotsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        IEnumerable<Guid> slotIds,
+        CancellationToken cancellationToken)
+    {
         var locked = new Dictionary<Guid, SlotSnapshot>();
-        foreach (var slotId in orderedIds)
+        foreach (var slotId in slotIds.Distinct().Order())
         {
             locked[slotId] = await LockSlotAsync(connection, transaction, slotId, cancellationToken);
         }
 
-        return positions
+        return locked;
+    }
+
+    private static IReadOnlyList<ObservedPosition> ApplyLockedPositionState(
+        IReadOnlyList<ObservedPosition> positions,
+        IReadOnlyDictionary<Guid, SlotSnapshot> locked) =>
+        positions
             .OrderBy(position => position.DisplayOrder)
             .ThenBy(position => position.Code, StringComparer.Ordinal)
             .ThenBy(position => position.SlotId)
@@ -445,7 +662,6 @@ public sealed partial class PostgresTransportWorkflowStore
                 };
             })
             .ToArray();
-    }
 
     private static async Task<Guid> ReadActiveLayoutAsync(
         NpgsqlConnection connection,
@@ -725,22 +941,6 @@ public sealed partial class PostgresTransportWorkflowStore
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private static async Task AssignSharedDestinationAsync(
-        NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
-        Guid requestId,
-        Guid destinationId,
-        CancellationToken cancellationToken)
-    {
-        await using var command = new NpgsqlCommand(
-            "UPDATE ops.transport_requests SET destination_slot_id = @slot WHERE id = @id AND destination_slot_id IS NULL",
-            connection,
-            transaction);
-        command.Parameters.AddWithValue("slot", destinationId);
-        command.Parameters.AddWithValue("id", requestId);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
     private static async Task<ProductionSessionRecord> SetProductionStatusAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -977,5 +1177,7 @@ public sealed partial class PostgresTransportWorkflowStore
         TransportTaskType Operation,
         int Priority,
         bool FinishedGoods,
-        Guid? SharedDestinationId);
+        Guid? DestinationSlotId);
+
+    private sealed record ConfiguredReturnSlot(Guid SlotId);
 }

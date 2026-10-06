@@ -417,7 +417,9 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             // A full container leaving a machine physically ends up in the
             // finished-goods store. Recorded in the same transaction as the
             // completion so the store can never disagree with the transport
-            // that filled it.
+            // that filled it. A non-finished return is a real position and is
+            // occupied here instead of becoming a store delivery.
+            await ApplyNonFinishedReturnCompletionAsync(connection, transaction, request, cancellationToken);
             await RecordStoreDeliveryAsync(connection, transaction, request, cancellationToken);
         }
 

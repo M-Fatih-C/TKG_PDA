@@ -387,6 +387,11 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
             """, ("group", setup.Group), ("part", alt));
         await fixture.ExecuteAsync("INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)", ("slot", setup.Slots[0]), ("part", alt));
         await fixture.SetSlotAsync(setup.Slots[0], "OCCUPIED", "FULL", alt);
+        var container = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+        await fixture.ExecuteAsync(
+            "UPDATE ops.slot_runtime_state SET current_container_type_id = @container WHERE layout_slot_id = @slot",
+            ("container", container),
+            ("slot", setup.Slots[0]));
         var destination = await fixture.ScalarAsync<Guid>("""
             INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
             VALUES (@layout, @code, 'PE return', 'OTHER', 9900)
@@ -418,7 +423,203 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
         await CompleteAsync(store, requestId);
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.notification_outbox"));
+        Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", setup.Slots[0])));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", setup.Slots[0])));
+        Assert.Equal("OCCUPIED", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", destination)));
+        Assert.Equal("FULL", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", destination)));
+        Assert.Equal(alt, await fixture.ScalarAsync<Guid>("SELECT current_part_id FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", destination)));
+        Assert.Equal(container, await fixture.ScalarAsync<Guid>("SELECT current_container_type_id FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", destination)));
         Assert.Equal("ENDED", await StatusAsync(session.Id));
+    }
+
+    [Fact]
+    public async Task Two_alt_full_pallets_receive_distinct_return_slots()
+    {
+        var setup = await SetupAsync(slotCount: 2);
+        var alt = await MapAltAsync(setup, setup.Slots);
+        var groupId = await CreateReturnGroupAsync(setup);
+        var first = await AddReturnSlotAsync(setup, groupId, priority: 1, displayOrder: 9801);
+        var second = await AddReturnSlotAsync(setup, groupId, priority: 2, displayOrder: 9802);
+        await SeedAltRemovalAsync(setup, groupId);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "end-two-alt")).EnsureSuccessStatusCode();
+
+        var destinations = await IdsAsync("""
+            SELECT r.destination_slot_id
+            FROM ops.production_end_run_items i
+            JOIN ops.transport_requests r ON r.id = i.transport_request_id
+            ORDER BY i.sequence_no
+            """);
+        Assert.Equal([first, second], destinations);
+        Assert.Equal(2, destinations.Distinct().Count());
+        Assert.Equal("ENDING", await StatusAsync(session.Id));
+    }
+
+    [Fact]
+    public async Task Too_few_return_slots_creates_zero_cleanup_requests()
+    {
+        var setup = await SetupAsync(slotCount: 2);
+        await MapAltAsync(setup, setup.Slots);
+        var groupId = await CreateReturnGroupAsync(setup);
+        await AddReturnSlotAsync(setup, groupId, priority: 1, displayOrder: 9801);
+        await SeedAltRemovalAsync(setup, groupId);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+
+        var response = await EndAsync(client, setup, session.Id, "end-capacity");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PRODUCTION_END_REMOVAL_CAPACITY_UNAVAILABLE", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal("ACTIVE", await StatusAsync(session.Id));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
+    }
+
+    [Fact]
+    public async Task Occupied_configured_return_slot_is_not_allocated()
+    {
+        var setup = await SetupAsync();
+        await MapAltAsync(setup, setup.Slots);
+        var groupId = await CreateReturnGroupAsync(setup);
+        await AddReturnSlotAsync(setup, groupId, priority: 1, displayOrder: 9801, occupancy: "OCCUPIED", load: "FULL");
+        await SeedAltRemovalAsync(setup, groupId);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+
+        var response = await EndAsync(client, setup, session.Id, "end-occupied-return");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PRODUCTION_END_REMOVAL_CAPACITY_UNAVAILABLE", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal("ACTIVE", await StatusAsync(session.Id));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Return_slot_with_an_active_reservation_is_not_allocated()
+    {
+        var setup = await SetupAsync();
+        await MapAltAsync(setup, setup.Slots);
+        var groupId = await CreateReturnGroupAsync(setup);
+        var reserved = await AddReturnSlotAsync(setup, groupId, priority: 1, displayOrder: 9801);
+        await SeedAltRemovalAsync(setup, groupId);
+        var other = await fixture.ContextAsync("SH-01-B", "1");
+        await fixture.ExecuteAsync("""
+            INSERT INTO ops.transport_requests (
+                idempotency_key, request_origin, machine_id, variant_id, layout_id,
+                task_type_id, destination_slot_id, status, priority)
+            SELECT 'reserve-return', 'API', @machine, @variant, @layout, tt.id, @slot, 'QUEUED', 1
+            FROM master.task_types tt WHERE tt.code = 'BRING_EMPTY'
+            """,
+            ("machine", other.MachineId),
+            ("variant", other.VariantId),
+            ("layout", other.LayoutId),
+            ("slot", reserved));
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+
+        var response = await EndAsync(client, setup, session.Id, "end-reserved-return");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PRODUCTION_END_REMOVAL_CAPACITY_UNAVAILABLE", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal("ACTIVE", await StatusAsync(session.Id));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Return_slots_are_allocated_by_group_priority_before_display_order()
+    {
+        var setup = await SetupAsync(slotCount: 2);
+        await MapAltAsync(setup, setup.Slots);
+        var groupId = await CreateReturnGroupAsync(setup);
+        var laterDisplay = await AddReturnSlotAsync(setup, groupId, priority: 1, displayOrder: 9900);
+        var earlierDisplay = await AddReturnSlotAsync(setup, groupId, priority: 5, displayOrder: 10);
+        await SeedAltRemovalAsync(setup, groupId);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "end-order")).EnsureSuccessStatusCode();
+
+        var destinations = await IdsAsync("""
+            SELECT r.destination_slot_id
+            FROM ops.production_end_run_items i
+            JOIN ops.transport_requests r ON r.id = i.transport_request_id
+            ORDER BY i.sequence_no
+            """);
+        Assert.Equal([laterDisplay, earlierDisplay], destinations);
+    }
+
+    [Fact]
+    public async Task Failed_or_cancelled_alt_removal_does_not_occupy_the_return_slot()
+    {
+        var setup = await SetupAsync(slotCount: 2);
+        await MapAltAsync(setup, setup.Slots);
+        var groupId = await CreateReturnGroupAsync(setup);
+        var firstReturn = await AddReturnSlotAsync(setup, groupId, priority: 1, displayOrder: 9801);
+        var secondReturn = await AddReturnSlotAsync(setup, groupId, priority: 2, displayOrder: 9802);
+        await SeedAltRemovalAsync(setup, groupId);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "end-fail-return")).EnsureSuccessStatusCode();
+        var requests = await IdsAsync("SELECT transport_request_id FROM ops.production_end_run_items ORDER BY sequence_no");
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        await store.RecordExecutionTransitionAsync(requests[0], TransportRequestStatus.SentToRds);
+        await store.RecordExecutionOutcomeAsync(requests[0], new ExecutionOutcome(TransportRequestStatus.Failed, "TEST", "cleanup failed"));
+
+        Assert.Equal("FAILED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requests[0])));
+        Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requests[1])));
+        Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
+        Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal("ENDING", await StatusAsync(session.Id));
+    }
+
+    [Fact]
+    public async Task New_end_attempt_does_not_reuse_an_occupied_return_slot()
+    {
+        var setup = await SetupAsync(slotCount: 2);
+        var alt = await MapAltAsync(setup, setup.Slots);
+        var groupId = await CreateReturnGroupAsync(setup);
+        var firstReturn = await AddReturnSlotAsync(setup, groupId, priority: 1, displayOrder: 9801);
+        var secondReturn = await AddReturnSlotAsync(setup, groupId, priority: 2, displayOrder: 9802);
+        await SeedAltRemovalAsync(setup, groupId);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "end-retry-return")).EnsureSuccessStatusCode();
+        var requests = await IdsAsync("SELECT transport_request_id FROM ops.production_end_run_items ORDER BY sequence_no");
+        var sources = await IdsAsync("SELECT layout_slot_id FROM ops.production_end_run_items ORDER BY sequence_no");
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        await CompleteAsync(store, requests[0]);
+        await store.RecordExecutionTransitionAsync(requests[1], TransportRequestStatus.SentToRds);
+        await store.RecordExecutionOutcomeAsync(requests[1], new ExecutionOutcome(TransportRequestStatus.Failed, "TEST", "second cleanup failed"));
+
+        Assert.Equal("OCCUPIED", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
+        Assert.Equal(alt, await fixture.ScalarAsync<Guid>("SELECT current_part_id FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
+        var retry = await EndAsync(client, setup, session.Id, "end-retry-return-2");
+        retry.EnsureSuccessStatusCode();
+        var retryDestinations = await IdsAsync("""
+            SELECT r.destination_slot_id
+            FROM ops.production_end_run_items i
+            JOIN ops.transport_requests r ON r.id = i.transport_request_id
+            JOIN ops.production_end_runs run ON run.id = i.run_id
+            WHERE run.idempotency_key = 'end-retry-return-2'
+            ORDER BY i.sequence_no
+            """);
+        var retrySources = await IdsAsync("""
+            SELECT i.layout_slot_id
+            FROM ops.production_end_run_items i
+            JOIN ops.production_end_runs run ON run.id = i.run_id
+            WHERE run.idempotency_key = 'end-retry-return-2'
+            ORDER BY i.sequence_no
+            """);
+        Assert.Equal([sources[1]], retrySources);
+        Assert.Equal([secondReturn], retryDestinations);
+        Assert.DoesNotContain(firstReturn, retryDestinations);
+        Assert.DoesNotContain(sources[0], retrySources);
     }
 
     [Fact]
@@ -533,6 +734,67 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         VALUES (@code, @priority)
         ON CONFLICT (operation_code) DO UPDATE SET priority = EXCLUDED.priority
         """, ("code", operation), ("priority", priority));
+
+    private async Task<Guid> MapAltAsync(Setup setup, IReadOnlyList<Guid> slots)
+    {
+        var alt = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.parts (part_code) VALUES (@code) RETURNING id",
+            ("code", "PE-ALT-" + Guid.NewGuid().ToString("N")[..8]));
+        await fixture.ExecuteAsync("""
+            INSERT INTO master.product_group_parts (product_group_id, part_id, relation_type)
+            VALUES (@group, @part, 'ALT_PART')
+            """, ("group", setup.Group), ("part", alt));
+        foreach (var slot in slots)
+        {
+            await fixture.ExecuteAsync(
+                "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
+                ("slot", slot),
+                ("part", alt));
+            await fixture.SetSlotAsync(slot, "OCCUPIED", "FULL", alt);
+        }
+
+        return alt;
+    }
+
+    private Task<Guid> CreateReturnGroupAsync(Setup setup) => fixture.ScalarAsync<Guid>("""
+        INSERT INTO master.slot_groups (layout_id, code, name, purpose)
+        VALUES (@layout, @code, 'PE return', 'DESTINATION')
+        RETURNING id
+        """, ("layout", setup.Context.LayoutId), ("code", "PE-GROUP-" + Guid.NewGuid().ToString("N")[..8]));
+
+    private async Task<Guid> AddReturnSlotAsync(
+        Setup setup,
+        Guid groupId,
+        int priority,
+        int displayOrder,
+        string occupancy = "VACANT",
+        string load = "UNKNOWN")
+    {
+        var slotId = await fixture.ScalarAsync<Guid>("""
+            INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
+            VALUES (@layout, @code, 'PE return', 'OTHER', @display_order)
+            RETURNING id
+            """,
+            ("layout", setup.Context.LayoutId),
+            ("code", "PE-RETURN-" + Guid.NewGuid().ToString("N")[..8]),
+            ("display_order", displayOrder));
+        await fixture.SetSlotAsync(slotId, occupancy, load, occupancy == "OCCUPIED" ? setup.MainPart : null);
+        await fixture.ExecuteAsync("""
+            INSERT INTO master.slot_group_members (slot_group_id, layout_slot_id, priority)
+            VALUES (@group, @slot, @priority)
+            """, ("group", groupId), ("slot", slotId), ("priority", priority));
+        return slotId;
+    }
+
+    private async Task SeedAltRemovalAsync(Setup setup, Guid groupId)
+    {
+        await SeedPriorityAsync("REMOVE_FULL", 40);
+        await fixture.ExecuteAsync("""
+            INSERT INTO master.task_templates (variant_id, product_group_id, task_type_id, destination_slot_group_id, rds_task_label, priority, is_active, config_json)
+            SELECT @variant, @product, tt.id, @destination_group, 'PE-ALT', 10, true, '{"testScope":"PRODUCTION_END"}'::jsonb
+            FROM master.task_types tt WHERE tt.code = 'REMOVE_FULL'
+            """, ("variant", setup.Context.VariantId), ("product", setup.Group), ("destination_group", groupId));
+    }
 
     private Task SeedTemplateAsync(Setup setup, string operation) => fixture.ExecuteAsync("""
         INSERT INTO master.task_templates (variant_id, product_group_id, task_type_id, rds_task_label, priority, is_active, config_json)
