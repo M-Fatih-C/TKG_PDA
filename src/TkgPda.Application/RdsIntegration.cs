@@ -391,6 +391,16 @@ public sealed record CommissioningDecision(
     bool IsDefault,
     IReadOnlyList<string> Blockers);
 
+public sealed record GeometryConfirmationDecision(
+    bool Applied,
+    string MachineCode,
+    string VariantCode,
+    string NavigationCode,
+    int RequiredPlanCount,
+    int ConfirmedCount,
+    int RemainingCount,
+    IReadOnlyList<string> Blockers);
+
 public interface IRdsIntegrationStore
 {
     Task<IReadOnlyList<RdsNavigationProfileRecord>> ListNavigationProfilesAsync(CancellationToken cancellationToken = default);
@@ -418,6 +428,7 @@ public interface IRdsIntegrationStore
         string machineCode,
         string variantCode,
         bool apply,
+        AdminMutationContext context,
         CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
 
@@ -425,6 +436,15 @@ public interface IRdsIntegrationStore
         string machineCode,
         string variantCode,
         bool apply,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<GeometryConfirmationDecision> ConfirmVariantGeometryAsync(
+        string machineCode,
+        string variantCode,
+        bool apply,
+        AdminMutationContext context,
         CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
     Task<IReadOnlyList<RdsActiveLockFingerprint>> GetActiveTkgLockFingerprintsAsync(CancellationToken cancellationToken = default);

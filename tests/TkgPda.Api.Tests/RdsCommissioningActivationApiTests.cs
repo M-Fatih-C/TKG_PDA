@@ -362,7 +362,7 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
         await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
         var store = new PostgresRdsIntegrationStore(dataSource);
 
-        var decision = await store.VerifyVariantCommissioningAsync("SH-01-A", "1", apply: true);
+        var decision = await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, UntrackedActor());
 
         Assert.False(decision.Applied);
         Assert.Contains("BINDING_INCOMPLETE", decision.Blockers);
@@ -374,16 +374,19 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
     {
         await fixture.ResetAsync();
         await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        var actor = await ActorAsync();
+        await InsertGateTemplateAsync();
         await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
         var store = new PostgresRdsIntegrationStore(dataSource);
+        Assert.True((await store.ConfirmVariantGeometryAsync("SH-01-A", "1", true, actor)).Applied);
 
-        var decision = await store.VerifyVariantCommissioningAsync("SH-01-A", "1", apply: true);
+        var decision = await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, actor);
 
         Assert.True(decision.Applied);
         Assert.Empty(decision.Blockers);
         Assert.Equal("VERIFIED", decision.CommissioningState);
         Assert.Equal("DRAFT", decision.ProfileStatus);
-        Assert.False(decision.GeometryVerified);
+        Assert.True(decision.GeometryVerified);
     }
 
     [Fact]
@@ -394,7 +397,7 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
         await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
         var store = new PostgresRdsIntegrationStore(dataSource);
 
-        var decision = await store.PromoteVariantCommissioningAsync("SH-01-A", "1", apply: true);
+        var decision = await store.PromoteVariantCommissioningAsync("SH-01-A", "1", true, UntrackedActor());
 
         Assert.False(decision.Applied);
         Assert.Contains("COMMISSIONING_NOT_VERIFIED", decision.Blockers);
@@ -406,11 +409,6 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
     {
         await fixture.ResetAsync();
         await fixture.ExecuteAsync("""
-            UPDATE master.navigation_profiles
-            SET config_json = jsonb_set(config_json, '{geometryVerified}', 'true'::jsonb)
-            WHERE code = 'TKG_SH01A_V01_NAV'
-            """);
-        await fixture.ExecuteAsync("""
             UPDATE master.variant_navigation_profile_assignments a
             SET is_default = true
             FROM master.navigation_profiles n, master.variants v
@@ -420,11 +418,14 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
               AND v.code = '2'
             """);
         await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        var actor = await ActorAsync();
+        await InsertGateTemplateAsync();
         await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
         var store = new PostgresRdsIntegrationStore(dataSource);
-        Assert.True((await store.VerifyVariantCommissioningAsync("SH-01-A", "1", apply: true)).Applied);
+        Assert.True((await store.ConfirmVariantGeometryAsync("SH-01-A", "1", true, actor)).Applied);
+        Assert.True((await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, actor)).Applied);
 
-        var decision = await store.PromoteVariantCommissioningAsync("SH-01-A", "1", apply: true);
+        var decision = await store.PromoteVariantCommissioningAsync("SH-01-A", "1", true, actor);
 
         Assert.True(decision.Applied);
         Assert.Equal("PUBLISHED", decision.ProfileStatus);
@@ -463,11 +464,14 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
             LIMIT 1
             """, ("user", identity.UserId), ("device", identity.DeviceId));
         await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        var actor = new AdminMutationContext(identity.UserId, Guid.NewGuid(), null, "test");
+        await InsertGateTemplateAsync();
         await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
         var store = new PostgresRdsIntegrationStore(dataSource);
-        Assert.True((await store.VerifyVariantCommissioningAsync("SH-01-A", "1", apply: true)).Applied);
+        Assert.True((await store.ConfirmVariantGeometryAsync("SH-01-A", "1", true, actor)).Applied);
+        Assert.True((await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, actor)).Applied);
 
-        Assert.True((await store.PromoteVariantCommissioningAsync("SH-01-A", "1", apply: true)).Applied);
+        Assert.True((await store.PromoteVariantCommissioningAsync("SH-01-A", "1", true, actor)).Applied);
 
         Assert.Equal(v2, await fixture.ScalarAsync<Guid>(
             "SELECT active_navigation_id FROM ops.machine_runtime_state WHERE machine_id = @id",
@@ -515,7 +519,7 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
 
         var report = await client.GetFromJsonAsync<VariantCommissioningReport[]>("/api/v1/admin/rds/commissioning/report");
         var sealer = Assert.Single(report!, row => row.MachineCode == "SEALER" && row.VariantCode == "3");
-        var decision = await store.VerifyVariantCommissioningAsync("SEALER", "3", apply: true);
+        var decision = await store.VerifyVariantCommissioningAsync("SEALER", "3", true, UntrackedActor());
 
         Assert.Equal(25, report!.Length);
         Assert.Equal("PENDING_SOURCE_LAYOUT", sealer.LayoutBindingState);
@@ -525,6 +529,257 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
         Assert.Contains("PENDING_SOURCE_LAYOUT", decision.Blockers);
         Assert.Equal("PENDING_SOURCE_LAYOUT", await fixture.ScalarAsync<string>(
             "SELECT config_json ->> 'layoutBindingState' FROM master.navigation_profiles WHERE code = 'TKG_SEALER_V03_NAV'"));
+    }
+
+    [Fact]
+    public async Task False_profile_geometry_blocks_verification()
+    {
+        await fixture.ResetAsync();
+        await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        await InsertGateTemplateAsync();
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+
+        var decision = await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, UntrackedActor());
+
+        Assert.False(decision.Applied);
+        Assert.Contains("GEOMETRY_NOT_VERIFIED", decision.Blockers);
+        Assert.False(decision.GeometryVerified);
+        Assert.Equal("DRAFT", decision.ProfileStatus);
+    }
+
+    [Fact]
+    public async Task One_unverified_required_plan_blocks_verification()
+    {
+        await fixture.ResetAsync();
+        await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        await InsertGateTemplateAsync();
+        await fixture.ExecuteAsync("""
+            UPDATE master.navigation_profiles
+            SET config_json = jsonb_set(config_json, '{geometryVerified}', 'true'::jsonb)
+            WHERE code = 'TKG_SH01A_V01_NAV';
+            UPDATE integration.rds_worksite_plans p
+            SET geometry_verified = true
+            FROM master.navigation_profiles n
+            WHERE n.id = p.navigation_profile_id AND n.code = 'TKG_SH01A_V01_NAV';
+            UPDATE integration.rds_worksite_plans p
+            SET geometry_verified = false
+            WHERE p.id = (
+                SELECT plan.id
+                FROM integration.rds_worksite_plans plan
+                JOIN integration.layout_slot_rds_plan_bindings b ON b.worksite_plan_id = plan.id
+                JOIN master.navigation_profiles n ON n.id = plan.navigation_profile_id
+                WHERE n.code = 'TKG_SH01A_V01_NAV'
+                ORDER BY plan.planned_rds_site_id
+                LIMIT 1)
+            """);
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+
+        var decision = await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, UntrackedActor());
+
+        Assert.False(decision.Applied);
+        Assert.Contains("GEOMETRY_NOT_VERIFIED", decision.Blockers);
+        Assert.Equal("DRAFT", decision.ProfileStatus);
+    }
+
+    [Fact]
+    public async Task Geometry_confirmation_dry_run_changes_nothing()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var actor = await ActorAsync();
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+
+        var decision = await store.ConfirmVariantGeometryAsync("SH-01-A", "1", false, actor);
+
+        Assert.False(decision.Applied);
+        Assert.Empty(decision.Blockers);
+        Assert.Equal("TKG_SH01A_V01_NAV", decision.NavigationCode);
+        Assert.True(decision.RequiredPlanCount > 0);
+        Assert.Equal(0, decision.ConfirmedCount);
+        Assert.Equal(decision.RequiredPlanCount, decision.RemainingCount);
+        Assert.False(await fixture.ScalarAsync<bool>("SELECT (config_json ->> 'geometryVerified')::boolean FROM master.navigation_profiles WHERE code = 'TKG_SH01A_V01_NAV'"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("""
+            SELECT count(*) FROM integration.rds_worksite_plans p
+            JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id
+            WHERE n.code = 'TKG_SH01A_V01_NAV' AND p.geometry_verified
+            """));
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT active_navigation_id IS NULL FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", context.MachineId)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'RDS_COMMISSIONING_GEOMETRY_CONFIRMED'"));
+    }
+
+    [Fact]
+    public async Task Explicit_geometry_confirmation_records_required_evidence_only()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var actor = await ActorAsync();
+        var worksitesBefore = await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_worksites");
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+
+        var decision = await store.ConfirmVariantGeometryAsync("SH-01-A", "1", true, actor);
+
+        Assert.True(decision.Applied);
+        Assert.Equal(decision.RequiredPlanCount, decision.ConfirmedCount);
+        Assert.Equal(0, decision.RemainingCount);
+        Assert.True(await fixture.ScalarAsync<bool>("SELECT (config_json ->> 'geometryVerified')::boolean FROM master.navigation_profiles WHERE code = 'TKG_SH01A_V01_NAV'"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("""
+            SELECT count(*)
+            FROM integration.layout_slot_rds_plan_bindings b
+            JOIN integration.rds_worksite_plans p ON p.id = b.worksite_plan_id
+            JOIN master.navigation_profiles n ON n.id = b.navigation_profile_id
+            WHERE n.code = 'TKG_SH01A_V01_NAV' AND NOT p.geometry_verified
+            """));
+        Assert.Equal("DRAFT", await fixture.ScalarAsync<string>("SELECT status FROM master.navigation_profiles WHERE code = 'TKG_SH01A_V01_NAV'"));
+        Assert.Equal(worksitesBefore, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_worksites"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT active_navigation_id IS NULL FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", context.MachineId)));
+    }
+
+    [Fact]
+    public async Task Verified_profile_cannot_promote_after_geometry_is_cleared()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        var actor = await ActorAsync();
+        await InsertGateTemplateAsync();
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+        Assert.True((await store.ConfirmVariantGeometryAsync("SH-01-A", "1", true, actor)).Applied);
+        Assert.True((await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, actor)).Applied);
+        await fixture.ExecuteAsync("""
+            UPDATE master.navigation_profiles
+            SET config_json = jsonb_set(config_json, '{geometryVerified}', 'false'::jsonb)
+            WHERE code = 'TKG_SH01A_V01_NAV'
+            """);
+
+        var decision = await store.PromoteVariantCommissioningAsync("SH-01-A", "1", true, actor);
+
+        Assert.False(decision.Applied);
+        Assert.Contains("GEOMETRY_NOT_VERIFIED", decision.Blockers);
+        Assert.Equal("DRAFT", decision.ProfileStatus);
+        Assert.Equal("VERIFIED", decision.CommissioningState);
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT active_navigation_id IS NULL FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", context.MachineId)));
+    }
+
+    [Fact]
+    public async Task Ready_stays_false_while_geometry_is_false()
+    {
+        await fixture.ResetAsync();
+        await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        await InsertGateTemplateAsync();
+        await fixture.ExecuteAsync("""
+            UPDATE master.navigation_profiles
+            SET status = 'PUBLISHED',
+                published_at = now(),
+                config_json = jsonb_set(
+                    jsonb_set(config_json, '{commissioningState}', '"COMMISSIONED"'::jsonb),
+                    '{geometryVerified}', 'false'::jsonb)
+            WHERE code = 'TKG_SH01A_V01_NAV'
+            """);
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+
+        var row = Assert.Single(await store.ListVariantCommissioningAsync(), item => item.MachineCode == "SH-01-A" && item.VariantCode == "1");
+
+        Assert.False(row.GeometryVerified);
+        Assert.True(row.ActiveTaskTemplates > 0);
+        Assert.Equal(0, row.MissingBindings);
+        Assert.Equal("COMMISSIONED", row.CommissioningState);
+        Assert.False(row.Ready);
+    }
+
+    [Fact]
+    public async Task Ready_is_true_only_after_geometry_and_the_other_commissioning_gates()
+    {
+        await fixture.ResetAsync();
+        await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        var actor = await ActorAsync();
+        await InsertGateTemplateAsync();
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+        var before = Assert.Single(await store.ListVariantCommissioningAsync(), item => item.NavigationCode == "TKG_SH01A_V01_NAV");
+        Assert.False(before.Ready);
+        Assert.True((await store.ConfirmVariantGeometryAsync("SH-01-A", "1", true, actor)).Applied);
+        Assert.True((await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, actor)).Applied);
+        Assert.True((await store.PromoteVariantCommissioningAsync("SH-01-A", "1", true, actor)).Applied);
+
+        var ready = Assert.Single(await store.ListVariantCommissioningAsync(), item => item.NavigationCode == "TKG_SH01A_V01_NAV");
+        Assert.True(ready.GeometryVerified);
+        Assert.True(ready.ActiveTaskTemplates > 0);
+        Assert.Equal(0, ready.MissingBindings);
+        Assert.Equal("PUBLISHED", ready.ProfileStatus);
+        Assert.Equal("COMMISSIONED", ready.CommissioningState);
+        Assert.True(ready.Ready);
+
+        await fixture.ExecuteAsync("""
+            UPDATE master.navigation_profiles
+            SET config_json = jsonb_set(config_json, '{geometryVerified}', 'false'::jsonb)
+            WHERE code = 'TKG_SH01A_V01_NAV'
+            """);
+        var cleared = Assert.Single(await store.ListVariantCommissioningAsync(), item => item.NavigationCode == "TKG_SH01A_V01_NAV");
+        Assert.False(cleared.Ready);
+    }
+
+    [Fact]
+    public async Task Missing_active_task_template_blocks_ready_verification_and_promotion()
+    {
+        await fixture.ResetAsync();
+        await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        var actor = await ActorAsync();
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+        Assert.True((await store.ConfirmVariantGeometryAsync("SH-01-A", "1", true, actor)).Applied);
+
+        var verify = await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, actor);
+        var promote = await store.PromoteVariantCommissioningAsync("SH-01-A", "1", true, actor);
+        var row = Assert.Single(await store.ListVariantCommissioningAsync(), item => item.NavigationCode == "TKG_SH01A_V01_NAV");
+
+        Assert.False(verify.Applied);
+        Assert.Contains("ACTIVE_TASK_TEMPLATE_MISSING", verify.Blockers);
+        Assert.False(promote.Applied);
+        Assert.Contains("ACTIVE_TASK_TEMPLATE_MISSING", promote.Blockers);
+        Assert.Equal(0, row.ActiveTaskTemplates);
+        Assert.False(row.Ready);
+        Assert.Equal("DRAFT", await fixture.ScalarAsync<string>("SELECT status FROM master.navigation_profiles WHERE code = 'TKG_SH01A_V01_NAV'"));
+    }
+
+    [Fact]
+    public async Task Commissioning_mutations_write_audit_rows()
+    {
+        await fixture.ResetAsync();
+        await BindRequiredAsync("TKG_SH01A_V01_NAV");
+        var actor = await ActorAsync();
+        await InsertGateTemplateAsync();
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsIntegrationStore(dataSource);
+        Assert.True((await store.ConfirmVariantGeometryAsync("SH-01-A", "1", true, actor)).Applied);
+        Assert.True((await store.VerifyVariantCommissioningAsync("SH-01-A", "1", true, actor)).Applied);
+        Assert.True((await store.PromoteVariantCommissioningAsync("SH-01-A", "1", true, actor)).Applied);
+
+        foreach (var action in new[] { "RDS_COMMISSIONING_GEOMETRY_CONFIRMED", "RDS_COMMISSIONING_VERIFIED", "RDS_COMMISSIONING_PROMOTED" })
+        {
+            Assert.Equal(1L, await fixture.ScalarAsync<long>("""
+                SELECT count(*) FROM audit.audit_logs
+                WHERE action = @action
+                  AND actor_user_id = @actor
+                  AND correlation_id = @correlation
+                  AND entity_type = 'NAVIGATION_PROFILE'
+                  AND after_json ->> 'navigationCode' = 'TKG_SH01A_V01_NAV'
+                  AND after_json ->> 'machineCode' = 'SH-01-A'
+                  AND after_json ->> 'variantCode' = '1'
+                """, ("action", action), ("actor", actor.ActorUserId), ("correlation", actor.CorrelationId)));
+        }
     }
 
     private async Task<HttpClient> SupervisorClientAsync(string machineCode)
@@ -537,6 +792,28 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
         client.PostAsJsonAsync(
             $"/api/v1/machines/{context.MachineId}/variant-selection",
             new VariantSwitchHttpRequest(context.VariantId, context.LayoutId, navigation));
+
+    private static AdminMutationContext UntrackedActor() => new(Guid.NewGuid(), Guid.NewGuid(), null, "test");
+
+    private async Task<AdminMutationContext> ActorAsync()
+    {
+        var identity = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+        return new AdminMutationContext(identity.UserId, Guid.NewGuid(), null, "test");
+    }
+
+    private Task InsertGateTemplateAsync() => fixture.ExecuteAsync("""
+        INSERT INTO master.task_templates
+            (variant_id, task_type_id, rds_task_label, priority, config_json, is_active)
+        SELECT v.id, tt.id, 'TEST-NAV-GATE', 10, '{"testScope":"TEST-NAV-GATE"}'::jsonb, true
+        FROM master.variants v
+        JOIN master.machines m ON m.id = v.machine_id
+        JOIN master.task_types tt ON tt.code = 'REMOVE_FULL'
+        WHERE m.code = 'SH-01-A' AND v.code = '1'
+          AND NOT EXISTS (
+              SELECT 1 FROM master.task_templates existing
+              WHERE existing.variant_id = v.id
+                AND existing.config_json ->> 'testScope' = 'TEST-NAV-GATE')
+        """);
 
     private Task PublishAsync(string code) => fixture.ExecuteAsync("""
         UPDATE master.navigation_profiles

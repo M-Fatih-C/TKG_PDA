@@ -130,7 +130,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             DELETE FROM master.navigation_profiles WHERE code LIKE 'DEV-RDS-SIM-%';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'P08A-%';
             DELETE FROM master.task_templates
-            WHERE config_json ->> 'testScope' = 'P07A';
+            WHERE config_json ->> 'testScope' IN ('P07A', 'TEST-NAV-GATE');
             DELETE FROM auth.user_sessions;
             DELETE FROM auth.user_machine_permissions;
             DELETE FROM auth.user_roles;

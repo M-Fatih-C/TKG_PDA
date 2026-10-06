@@ -18,10 +18,12 @@ public static class CommissioningActivationEndpoints
             IRdsIntegrationStore store,
             CancellationToken ct) => store.ReadWorkSiteNameDiffAsync(machineCode, variantCode, ct));
         admin.MapPut("/rds/commissioning/profile-mappings", SetProfileMappingAsync);
-        admin.MapPost("/rds/commissioning/verify", (CommissioningActionHttpRequest request, IRdsIntegrationStore store, CancellationToken ct) =>
-            store.VerifyVariantCommissioningAsync(request.MachineCode, request.VariantCode, request.Apply, ct));
-        admin.MapPost("/rds/commissioning/promote", (CommissioningActionHttpRequest request, IRdsIntegrationStore store, CancellationToken ct) =>
-            store.PromoteVariantCommissioningAsync(request.MachineCode, request.VariantCode, request.Apply, ct));
+        admin.MapPost("/rds/commissioning/verify", (CommissioningActionHttpRequest request, HttpContext context, IRdsIntegrationStore store, CancellationToken ct) =>
+            store.VerifyVariantCommissioningAsync(request.MachineCode, request.VariantCode, request.Apply, MutationContext(context), ct));
+        admin.MapPost("/rds/commissioning/promote", (CommissioningActionHttpRequest request, HttpContext context, IRdsIntegrationStore store, CancellationToken ct) =>
+            store.PromoteVariantCommissioningAsync(request.MachineCode, request.VariantCode, request.Apply, MutationContext(context), ct));
+        admin.MapPost("/rds/commissioning/confirm-geometry", (CommissioningActionHttpRequest request, HttpContext context, IRdsIntegrationStore store, CancellationToken ct) =>
+            store.ConfirmVariantGeometryAsync(request.MachineCode, request.VariantCode, request.Apply, MutationContext(context), ct));
         return admin;
     }
 
@@ -31,20 +33,25 @@ public static class CommissioningActivationEndpoints
         IRdsIntegrationStore store,
         CancellationToken cancellationToken)
     {
-        var correlationId = context.Items.TryGetValue(ApiContextKeys.CorrelationId, out var value) && value is Guid id
-            ? id
-            : Guid.NewGuid();
-        var userAgent = context.Request.Headers.UserAgent.ToString();
-        var mutation = new AdminMutationContext(
-            context.User.UserId(),
-            correlationId,
-            context.Connection.RemoteIpAddress?.ToString(),
-            userAgent.Length > 2000 ? userAgent[..2000] : userAgent);
+        var mutation = MutationContext(context);
         return store.SetProfileSlotMappingAsync(
             request.SlotId,
             request.NavigationProfileId,
             request.RdsWorkSiteId,
             mutation,
             cancellationToken);
+    }
+
+    private static AdminMutationContext MutationContext(HttpContext context)
+    {
+        var correlationId = context.Items.TryGetValue(ApiContextKeys.CorrelationId, out var value) && value is Guid id
+            ? id
+            : Guid.NewGuid();
+        var userAgent = context.Request.Headers.UserAgent.ToString();
+        return new AdminMutationContext(
+            context.User.UserId(),
+            correlationId,
+            context.Connection.RemoteIpAddress?.ToString(),
+            userAgent.Length > 2000 ? userAgent[..2000] : userAgent);
     }
 }

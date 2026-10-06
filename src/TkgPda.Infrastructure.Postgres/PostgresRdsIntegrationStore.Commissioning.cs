@@ -150,7 +150,12 @@ public sealed partial class PostgresRdsIntegrationStore
                    (SELECT s.status
                       FROM ops.production_sessions s
                      WHERE s.machine_id = m.id AND s.ended_at IS NULL
-                     LIMIT 1)
+                     LIMIT 1),
+                   (SELECT count(*)::int
+                      FROM integration.layout_slot_rds_plan_bindings b
+                      JOIN integration.rds_worksite_plans p ON p.id = b.worksite_plan_id
+                     WHERE b.navigation_profile_id = n.id
+                       AND NOT p.geometry_verified)
             FROM master.navigation_profiles n
             JOIN master.machines m ON m.id = n.machine_id
             JOIN master.variant_navigation_profile_assignments a
@@ -170,12 +175,18 @@ public sealed partial class PostgresRdsIntegrationStore
             var missing = reader.GetInt32(13);
             var crossMachine = reader.GetInt32(16);
             var crossProfile = reader.GetInt32(17);
+            var geometryVerified = reader.GetBoolean(8);
+            var activeTaskTemplates = reader.GetInt32(15);
+            var unverifiedRequiredPlans = reader.GetInt32(20);
             var ready = status == "PUBLISHED"
                 && state == "COMMISSIONED"
                 && layoutBinding == "SOURCE_BACKED"
                 && missing == 0
                 && crossMachine == 0
-                && crossProfile == 0;
+                && crossProfile == 0
+                && geometryVerified
+                && unverifiedRequiredPlans == 0
+                && activeTaskTemplates > 0;
             result.Add(new VariantCommissioningReport(
                 reader.GetString(0),
                 reader.GetString(1),
@@ -185,7 +196,7 @@ public sealed partial class PostgresRdsIntegrationStore
                 reader.GetGuid(5),
                 status,
                 state,
-                reader.GetBoolean(8),
+                geometryVerified,
                 layoutBinding,
                 reader.GetInt32(10),
                 reader.GetInt32(11),
@@ -252,46 +263,105 @@ public sealed partial class PostgresRdsIntegrationStore
         string machineCode,
         string variantCode,
         bool apply,
+        AdminMutationContext context,
         CancellationToken cancellationToken = default) =>
-        DecideAsync(machineCode, variantCode, apply, promote: false, cancellationToken);
+        DecideAsync(machineCode, variantCode, apply, promote: false, context, cancellationToken);
 
     public Task<CommissioningDecision> PromoteVariantCommissioningAsync(
         string machineCode,
         string variantCode,
         bool apply,
+        AdminMutationContext context,
         CancellationToken cancellationToken = default) =>
-        DecideAsync(machineCode, variantCode, apply, promote: true, cancellationToken);
+        DecideAsync(machineCode, variantCode, apply, promote: true, context, cancellationToken);
+
+    public async Task<GeometryConfirmationDecision> ConfirmVariantGeometryAsync(
+        string machineCode,
+        string variantCode,
+        bool apply,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var target = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+        var counts = await ReadGeometryCountsAsync(connection, transaction, target.ProfileId, cancellationToken);
+        var blockers = new List<string>();
+        if (target.LayoutBindingState == "PENDING_SOURCE_LAYOUT" || counts.Required == 0)
+        {
+            blockers.Add(target.LayoutBindingState == "PENDING_SOURCE_LAYOUT" ? "PENDING_SOURCE_LAYOUT" : "BINDING_INCOMPLETE");
+        }
+
+        var applied = false;
+        if (apply && blockers.Count == 0)
+        {
+            await ConfirmRequiredGeometryAsync(connection, transaction, target.ProfileId, cancellationToken);
+            var confirmed = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+            await WriteCommissioningAuditAsync(
+                connection,
+                transaction,
+                context,
+                "RDS_COMMISSIONING_GEOMETRY_CONFIRMED",
+                machineCode,
+                variantCode,
+                target,
+                confirmed,
+                cancellationToken);
+            counts = await ReadGeometryCountsAsync(connection, transaction, target.ProfileId, cancellationToken);
+            applied = true;
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return new GeometryConfirmationDecision(
+            applied,
+            machineCode,
+            variantCode,
+            target.NavigationCode,
+            counts.Required,
+            counts.Confirmed,
+            counts.Required - counts.Confirmed,
+            blockers);
+    }
 
     private async Task<CommissioningDecision> DecideAsync(
         string machineCode,
         string variantCode,
         bool apply,
         bool promote,
+        AdminMutationContext context,
         CancellationToken cancellationToken)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        var target = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
-        var blockers = await CollectBlockersAsync(connection, transaction, target, cancellationToken);
-        if (promote && target.CommissioningState != "VERIFIED")
+        var before = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+        var blockers = await CollectBlockersAsync(connection, transaction, before, cancellationToken);
+        if (promote && before.CommissioningState != "VERIFIED")
         {
             blockers.Add("COMMISSIONING_NOT_VERIFIED");
         }
 
         var applied = false;
+        var target = before;
         if (apply && blockers.Count == 0)
         {
             if (promote)
             {
-                await PromoteAsync(connection, transaction, target, cancellationToken);
+                await PromoteAsync(connection, transaction, before, cancellationToken);
+                target = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+                await WriteCommissioningAuditAsync(connection, transaction, context, "RDS_COMMISSIONING_PROMOTED", machineCode, variantCode, before, target, cancellationToken);
             }
-            else if (target.CommissioningState is "PLANNED" or "MAPPED")
+            else if (before.CommissioningState is "PLANNED" or "MAPPED")
             {
-                await MarkVerifiedAsync(connection, transaction, target.ProfileId, cancellationToken);
+                await MarkVerifiedAsync(connection, transaction, before.ProfileId, cancellationToken);
+                target = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+                await WriteCommissioningAuditAsync(connection, transaction, context, "RDS_COMMISSIONING_VERIFIED", machineCode, variantCode, before, target, cancellationToken);
             }
 
             applied = true;
-            target = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+            if (!promote && before.CommissioningState is not ("PLANNED" or "MAPPED"))
+            {
+                target = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+            }
         }
 
         await transaction.CommitAsync(cancellationToken);
@@ -356,6 +426,11 @@ public sealed partial class PostgresRdsIntegrationStore
             blockers.Add("PENDING_SOURCE_LAYOUT");
         }
 
+        if (!target.GeometryVerified)
+        {
+            blockers.Add("GEOMETRY_NOT_VERIFIED");
+        }
+
         await using var command = new NpgsqlCommand(
             """
             SELECT p.planned_rds_site_id,
@@ -365,7 +440,8 @@ public sealed partial class PostgresRdsIntegrationStore
                    w.last_disabled,
                    w.last_sync_failed,
                    w.last_sync_at,
-                   l.machine_id
+                   l.machine_id,
+                   p.geometry_verified
             FROM integration.layout_slot_rds_plan_bindings b
             JOIN integration.rds_worksite_plans p ON p.id = b.worksite_plan_id
             JOIN master.layout_slots s ON s.id = b.layout_slot_id
@@ -380,51 +456,74 @@ public sealed partial class PostgresRdsIntegrationStore
             transaction);
         command.Parameters.AddWithValue("profile_id", target.ProfileId);
         var bindings = 0;
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
-            bindings++;
-            var planned = reader.GetString(0);
-            if (reader.GetGuid(7) != target.MachineId)
+            while (await reader.ReadAsync(cancellationToken))
             {
-                AddBlocker(blockers, "CROSS_MACHINE_MAPPING");
-            }
+                bindings++;
+                var planned = reader.GetString(0);
+                if (reader.GetGuid(7) != target.MachineId)
+                {
+                    AddBlocker(blockers, "CROSS_MACHINE_MAPPING");
+                }
 
-            if (reader.IsDBNull(1) || reader.IsDBNull(6))
-            {
-                AddBlocker(blockers, "BINDING_INCOMPLETE");
-                continue;
-            }
+                if (!reader.GetBoolean(8))
+                {
+                    AddBlocker(blockers, "GEOMETRY_NOT_VERIFIED");
+                }
 
-            if (reader.GetGuid(2) != target.ProfileId)
-            {
-                AddBlocker(blockers, "CROSS_PROFILE_WORKSITE");
-            }
+                if (reader.IsDBNull(1) || reader.IsDBNull(6))
+                {
+                    AddBlocker(blockers, "BINDING_INCOMPLETE");
+                    continue;
+                }
 
-            if (!string.Equals(reader.GetString(1), planned, StringComparison.Ordinal))
-            {
-                AddBlocker(blockers, "RDS_WORKSITE_PLAN_NAME_MISMATCH");
-            }
+                if (reader.GetGuid(2) != target.ProfileId)
+                {
+                    AddBlocker(blockers, "CROSS_PROFILE_WORKSITE");
+                }
 
-            if (reader.IsDBNull(3) || reader.GetInt32(3) != 1)
-            {
-                AddBlocker(blockers, "RDS_WORKSITE_NOT_PHYSICAL");
-            }
+                if (!string.Equals(reader.GetString(1), planned, StringComparison.Ordinal))
+                {
+                    AddBlocker(blockers, "RDS_WORKSITE_PLAN_NAME_MISMATCH");
+                }
 
-            if (!reader.IsDBNull(4) && reader.GetInt32(4) == 1)
-            {
-                AddBlocker(blockers, "WORKSITE_DISABLED");
-            }
+                if (reader.IsDBNull(3) || reader.GetInt32(3) != 1)
+                {
+                    AddBlocker(blockers, "RDS_WORKSITE_NOT_PHYSICAL");
+                }
 
-            if (!reader.IsDBNull(5) && reader.GetInt32(5) == 1)
-            {
-                AddBlocker(blockers, "WORKSITE_SYNC_FAILED");
+                if (!reader.IsDBNull(4) && reader.GetInt32(4) == 1)
+                {
+                    AddBlocker(blockers, "WORKSITE_DISABLED");
+                }
+
+                if (!reader.IsDBNull(5) && reader.GetInt32(5) == 1)
+                {
+                    AddBlocker(blockers, "WORKSITE_SYNC_FAILED");
+                }
             }
         }
 
         if (target.LayoutBindingState == "SOURCE_BACKED" && bindings == 0)
         {
             AddBlocker(blockers, "BINDING_INCOMPLETE");
+        }
+
+        await using (var templates = new NpgsqlCommand(
+                         """
+                         SELECT count(*)::int
+                         FROM master.task_templates
+                         WHERE variant_id = @variant_id AND is_active
+                         """,
+                         connection,
+                         transaction))
+        {
+            templates.Parameters.AddWithValue("variant_id", target.VariantId);
+            if (Convert.ToInt32(await templates.ExecuteScalarAsync(cancellationToken)) == 0)
+            {
+                AddBlocker(blockers, "ACTIVE_TASK_TEMPLATE_MISSING");
+            }
         }
 
         return blockers;
@@ -443,6 +542,7 @@ public sealed partial class PostgresRdsIntegrationStore
                          FROM integration.layout_slot_rds_plan_bindings b
                          WHERE b.worksite_plan_id = p.id
                            AND b.navigation_profile_id = @profile_id
+                           AND p.geometry_verified
                            AND p.commissioning_state IN ('PLANNED', 'MAPPED')
                          """,
                          connection,
@@ -525,6 +625,121 @@ public sealed partial class PostgresRdsIntegrationStore
 
         await SetCommissioningStateAsync(connection, transaction, target.ProfileId, "COMMISSIONED", cancellationToken);
     }
+
+    private static async Task ConfirmRequiredGeometryAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid profileId,
+        CancellationToken cancellationToken)
+    {
+        await using (var plans = new NpgsqlCommand(
+                         """
+                         UPDATE integration.rds_worksite_plans p
+                         SET geometry_verified = true, updated_at = now()
+                         FROM integration.layout_slot_rds_plan_bindings b
+                         WHERE b.worksite_plan_id = p.id
+                           AND b.navigation_profile_id = @profile_id
+                         """,
+                         connection,
+                         transaction))
+        {
+            plans.Parameters.AddWithValue("profile_id", profileId);
+            await plans.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var bindings = new NpgsqlCommand(
+                         """
+                         UPDATE integration.layout_slot_rds_plan_bindings
+                         SET metadata_json = metadata_json || jsonb_build_object('geometryVerified', true),
+                             updated_at = now()
+                         WHERE navigation_profile_id = @profile_id
+                         """,
+                         connection,
+                         transaction))
+        {
+            bindings.Parameters.AddWithValue("profile_id", profileId);
+            await bindings.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var profile = new NpgsqlCommand(
+            """
+            UPDATE master.navigation_profiles
+            SET config_json = jsonb_set(config_json, '{geometryVerified}', 'true'::jsonb)
+            WHERE id = @profile_id
+            """,
+            connection,
+            transaction);
+        profile.Parameters.AddWithValue("profile_id", profileId);
+        await profile.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<(int Required, int Confirmed)> ReadGeometryCountsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid profileId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT count(*)::int,
+                   count(*) FILTER (WHERE p.geometry_verified)::int
+            FROM integration.layout_slot_rds_plan_bindings b
+            JOIN integration.rds_worksite_plans p ON p.id = b.worksite_plan_id
+            WHERE b.navigation_profile_id = @profile_id
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("profile_id", profileId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        return (reader.GetInt32(0), reader.GetInt32(1));
+    }
+
+    private static async Task WriteCommissioningAuditAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        AdminMutationContext context,
+        string action,
+        string machineCode,
+        string variantCode,
+        CommissioningTarget before,
+        CommissioningTarget after,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            INSERT INTO audit.audit_logs (
+                actor_user_id, action, entity_type, entity_id, before_json, after_json,
+                ip_address, user_agent, correlation_id)
+            VALUES (@actor, @action, 'NAVIGATION_PROFILE', @entity_id, @before, @after,
+                    CAST(@ip AS inet), @agent, @correlation)
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("actor", context.ActorUserId);
+        command.Parameters.AddWithValue("action", action);
+        command.Parameters.AddWithValue("entity_id", after.ProfileId.ToString());
+        AddJson(command, "before", CommissioningAudit(machineCode, variantCode, before));
+        AddJson(command, "after", CommissioningAudit(machineCode, variantCode, after));
+        AddText(command, "ip", context.IpAddress);
+        AddText(command, "agent", context.UserAgent);
+        command.Parameters.AddWithValue("correlation", context.CorrelationId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static object CommissioningAudit(string machineCode, string variantCode, CommissioningTarget target) => new
+    {
+        machineCode,
+        machineId = target.MachineId,
+        variantCode,
+        variantId = target.VariantId,
+        navigationProfileId = target.ProfileId,
+        navigationCode = target.NavigationCode,
+        profileStatus = target.ProfileStatus,
+        commissioningState = target.CommissioningState,
+        geometryVerified = target.GeometryVerified,
+        isDefault = target.IsDefault
+    };
 
     private static async Task SetCommissioningStateAsync(
         NpgsqlConnection connection,
