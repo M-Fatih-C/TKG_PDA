@@ -96,6 +96,7 @@ public sealed partial class PostgresTransportWorkflowStore
 
         var contextRequest = BuildTransportRequest(command, expectedOperation, machineSlotId: null, expectedOperation == TransportTaskType.BringEmpty);
         await LockAndValidateRuntimeContextAsync(connection, transaction, contextRequest, cancellationToken);
+        await RejectIfProductionEndingAsync(connection, transaction, command.MachineId, cancellationToken);
         await ValidateExpectedProductionAsync(connection, transaction, command.MachineId, command.ProductionSessionId, null, cancellationToken);
         var positions = await ReadPartPositionsAsync(connection, transaction, query, cancellationToken);
         var position = positions.SingleOrDefault(item => item.PositionNumber == command.PositionNumber)
@@ -200,6 +201,7 @@ public sealed partial class PostgresTransportWorkflowStore
             null,
             command.Priority);
         await LockAndValidateRuntimeContextAsync(connection, transaction, contextRequest, cancellationToken);
+        await RejectIfProductionEndingAsync(connection, transaction, command.MachineId, cancellationToken);
 
         var candidates = await ReadVariantPositionsAsync(connection, transaction, command.LayoutId, cancellationToken);
         await ValidateExpectedProductionAsync(connection, transaction, command.MachineId, command.ProductionSessionId, null, cancellationToken);
@@ -340,6 +342,7 @@ public sealed partial class PostgresTransportWorkflowStore
             null,
             command.Priority);
         await LockAndValidateRuntimeContextAsync(connection, transaction, contextRequest, cancellationToken);
+        await RejectIfProductionEndingAsync(connection, transaction, command.MachineId, cancellationToken);
 
         var resolved = new List<(ContainerActionBatchItem Item, Guid SlotId)>();
         await ValidateExpectedProductionAsync(connection, transaction, command.MachineId, command.ProductionSessionId, existing?.Items.Select(item => item.Id).ToArray(), cancellationToken);

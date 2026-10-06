@@ -241,7 +241,8 @@ public sealed record ActiveTransportDataRecord(
     int? QueuePosition = null,
     long AgeSeconds = 0,
     long? ExecutionElapsedSeconds = null,
-    string? ChainState = null);
+    string? ChainState = null,
+    bool ProductionEnd = false);
 
 /// <summary>
 /// Business execution view for the PDA. Raw RDS identifiers — taskRecordId,
@@ -295,7 +296,8 @@ public sealed record ActiveTransportRequestRecord(
     string? CancelDisabledCode,
     string? CancelDisabledMessage,
     PdaExecutionProjectionRecord Execution,
-    string? ChainState = null);
+    string? ChainState = null,
+    bool ProductionEnd = false);
 
 /// <summary>
 /// Customer UI — Warehouse Preparation Console: the minimum, self-contained

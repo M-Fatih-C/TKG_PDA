@@ -159,6 +159,23 @@ class _TransportCardState extends State<_TransportCard> {
     final code = request.partCode?.trim() ?? '';
     final description = request.partDescription?.trim() ?? '';
     return [
+      if (request.productionEnd)
+        const Padding(
+          padding: EdgeInsets.only(bottom: 4),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Chip(
+              key: Key('production-end-badge'),
+              avatar: Icon(Icons.flag_outlined, size: 18),
+              label: Text(
+                'ÜRETİM SONU',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ),
+        ),
       if (isAltPartRelation(request.relationType))
         const Padding(
           padding: EdgeInsets.only(bottom: 4),

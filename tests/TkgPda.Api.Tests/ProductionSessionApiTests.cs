@@ -399,9 +399,9 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var otherVariant = await fixture.ContextAsync("SH-01-A", "2");
         var invalid = await Assert.ThrowsAsync<PostgresException>(() => fixture.ExecuteAsync("""
             INSERT INTO ops.production_sessions(machine_id, variant_id, product_group_id, main_part_id, start_key,
-                started_by, started_device_id, started_at, ended_by, ended_device_id, ended_at)
+                started_by, started_device_id, started_at, ended_by, ended_device_id, ended_at, status)
             SELECT machine_id, @wrong_variant, product_group_id, main_part_id, 'wrong-group-variant',
-                started_by, started_device_id, started_at, started_by, started_device_id, clock_timestamp()
+                started_by, started_device_id, started_at, started_by, started_device_id, clock_timestamp(), 'ENDED'
             FROM ops.production_sessions
             """, ("wrong_variant", otherVariant.VariantId)));
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, invalid.SqlState);
@@ -503,7 +503,12 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         if (key is not null) request.Headers.Add(ApiHeaders.IdempotencyKey, key);
         return client.SendAsync(request);
     }
-    private static Task<HttpResponseMessage> EndAsync(HttpClient client, Setup setup, Guid id) => client.PostAsync(Path(setup) + $"/{id}/end", null);
+    private static Task<HttpResponseMessage> EndAsync(HttpClient client, Setup setup, Guid id)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, Path(setup) + $"/{id}/end");
+        request.Headers.Add(ApiHeaders.IdempotencyKey, "production-end");
+        return client.SendAsync(request);
+    }
     private static async Task<ProductionSessionResult> ReadAsync(HttpResponseMessage response)
     {
         response.EnsureSuccessStatusCode();

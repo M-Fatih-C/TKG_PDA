@@ -660,7 +660,8 @@ class _RelatedPartChip extends StatelessWidget {
           ),
         ),
         child: InkWell(
-          onTap: controller.busy
+          onTap:
+              controller.busy || controller.production.active?.isEnding == true
               ? null
               : () {
                   FocusScope.of(context).unfocus();
@@ -738,7 +739,7 @@ class _RelatedPartChip extends StatelessWidget {
         ),
       ),
       onSelected: altDemand
-          ? (controller.busy
+          ? (controller.busy || controller.production.active?.isEnding == true
                 ? null
                 : (_) {
                     FocusScope.of(context).unfocus();

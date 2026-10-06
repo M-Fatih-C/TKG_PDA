@@ -84,6 +84,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\018_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\019_robot_alarm_observations.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\020_robot_alarm_observation_state.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\021_production_end_cleanup.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')))

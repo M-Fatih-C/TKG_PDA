@@ -289,6 +289,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             cancellationToken,
             eventContext);
         await CancelWaitingSuccessorsAsync(connection, transaction, request.Id, cancellationToken, eventContext);
+        await AdvanceProductionEndRunAsync(connection, transaction, request.Id, cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
         return new CancelTransportResult(request, WasAlreadyCancelled: false);
@@ -481,6 +482,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 eventContext);
         }
 
+        await AdvanceProductionEndRunAsync(connection, transaction, request.Id, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return request;
     }
@@ -561,6 +563,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         }
 
         await CancelWaitingSuccessorsAsync(connection, transaction, request.Id, cancellationToken, eventContext);
+        await AdvanceProductionEndRunAsync(connection, transaction, request.Id, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return request;
     }

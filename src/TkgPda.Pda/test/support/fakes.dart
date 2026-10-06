@@ -344,6 +344,8 @@ class FakePdaRepository implements PdaDataSource {
   Completer<ProductionSession>? productionStartCompleter;
   Completer<ProductionSession>? productionEndCompleter;
   final List<String> productionEndIds = [];
+  final List<String> productionEndKeys = [];
+  ProductionSession? productionEndSession;
   Completer<ProductionSession?>? productionReadCompleter;
   int productionStartCount = 0, productionEndCount = 0;
   final List<String> productionStartKeys = [];
@@ -380,12 +382,18 @@ class FakePdaRepository implements PdaDataSource {
   Future<ProductionSession> endProduction(
     String machineId,
     String sessionId,
+    String idempotencyKey,
   ) async {
     productionEndCount++;
     productionEndIds.add(sessionId);
+    productionEndKeys.add(idempotencyKey);
     if (productionEndError case final error?) throw error;
     if (productionEndCompleter case final completer?) return completer.future;
     final current = productionValue!;
+    if (productionEndSession case final ending?) {
+      productionValue = ending;
+      return ending;
+    }
     productionValue = null;
     return ProductionSession(
       id: sessionId,
@@ -395,6 +403,7 @@ class FakePdaRepository implements PdaDataSource {
       mainPartId: current.mainPartId,
       startedAt: current.startedAt,
       endedAt: current.startedAt.add(const Duration(hours: 1)),
+      status: 'ENDED',
     );
   }
 

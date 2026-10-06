@@ -61,10 +61,7 @@ void main() {
     final c = await harness(tester, repo);
     await tap(tester, const Key('production-end'));
     expect(repo.productionEndCount, 0);
-    expect(
-      find.textContaining('taşıma görevlerini tamamlamaz'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('sırasıyla kaldırılacaktır'), findsOneWidget);
     await tester.tap(find.text('Vazgeç'));
     await tester.pumpAndSettle();
     expect(c.production.active, isNotNull);

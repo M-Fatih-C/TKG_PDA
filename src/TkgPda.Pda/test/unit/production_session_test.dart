@@ -355,6 +355,40 @@ void main() {
       );
     });
   }
+
+  test('ending status stays an open server-owned session', () {
+    final session = ProductionSession.fromJson({
+      ...sessionJson,
+      'status': 'ENDING',
+    });
+    expect(session.isEnding, isTrue);
+    expect(session.isActive, isTrue);
+    expect(session.endedAt, isNull);
+  });
+
+  test('successful end plan keeps production and reuses one end key', () async {
+    final ending = ProductionSession(
+      id: 'production-1',
+      machineId: testMachine.id,
+      variantId: testVariantV1Id,
+      productGroupId: testProductGroupId,
+      mainPartId: testMainPartId,
+      startedAt: DateTime.utc(2026, 9, 15, 8),
+      status: 'ENDING',
+    );
+    final repo = FakePdaRepository()
+      ..productionValue = productionRecord()
+      ..productionEndSession = ending
+      ..contextValue = testContext();
+    final c = await controller(repo);
+    await c.refreshContext();
+    expect(c.canEndProduction, isTrue);
+    await c.endProduction();
+    expect(c.production.active?.isEnding, isTrue);
+    expect(c.mamulActionsReady, isFalse);
+    expect(repo.productionEndKeys, hasLength(1));
+    expect(repo.productionEndKeys.single, startsWith('production-end:'));
+  });
 }
 
 final sessionJson = <String, dynamic>{

@@ -708,7 +708,10 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                                 WHERE d.successor_request_id = r.id) THEN 'PREPARING_SUCCESSOR'
                        WHEN r.readiness_state = 'WAITING_PREPARATION' THEN 'PREPARING'
                        ELSE NULL
-                   END AS chain_state
+                   END AS chain_state,
+                   EXISTS (
+                       SELECT 1 FROM ops.production_end_run_items pe
+                       WHERE pe.transport_request_id = r.id) AS production_end
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
             JOIN ranked ON ranked.id = r.id
@@ -767,7 +770,8 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 reader.IsDBNull(31) ? null : reader.GetInt32(31),
                 reader.GetInt64(32),
                 reader.IsDBNull(33) ? null : reader.GetInt64(33),
-                NullableString(reader, 34)));
+                NullableString(reader, 34),
+                reader.GetBoolean(35)));
         }
 
         return result;

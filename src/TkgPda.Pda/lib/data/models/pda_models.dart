@@ -693,6 +693,7 @@ class ActiveTransportRequest {
     this.ageSeconds,
     this.executionElapsedSeconds,
     this.chainState,
+    this.productionEnd = false,
   });
 
   final String requestId;
@@ -737,6 +738,9 @@ class ActiveTransportRequest {
   /// PREPARING_SUCCESSOR, PREPARING, or null. Never a robot percentage.
   final String? chainState;
 
+  /// True when the server created this request as part of production-end cleanup.
+  final bool productionEnd;
+
   factory ActiveTransportRequest.fromJson(JsonMap json) =>
       ActiveTransportRequest(
         requestId: json['requestId'] as String,
@@ -771,6 +775,7 @@ class ActiveTransportRequest {
             ? null
             : _integer(json['executionElapsedSeconds']),
         chainState: json['chainState'] as String?,
+        productionEnd: json['productionEnd'] == true,
       );
 }
 

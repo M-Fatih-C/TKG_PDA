@@ -30,7 +30,11 @@ abstract interface class PdaDataSource {
     ProductionStartCommand command,
     String key,
   );
-  Future<ProductionSession> endProduction(String machineId, String sessionId);
+  Future<ProductionSession> endProduction(
+    String machineId,
+    String sessionId,
+    String idempotencyKey,
+  );
   Future<LoginSession> login(String employeeNumber);
   Future<void> heartbeatSession();
   Future<void> logout();
@@ -196,9 +200,11 @@ class PdaRepository implements PdaDataSource {
   Future<ProductionSession> endProduction(
     String machineId,
     String sessionId,
+    String idempotencyKey,
   ) async {
     final response = await _api.post(
       '/api/v1/machines/$machineId/production-sessions/$sessionId/end',
+      idempotencyKey: idempotencyKey,
     );
     return ProductionSession.fromJson(_json(_json(response.body)['session']));
   }
@@ -234,7 +240,9 @@ class PdaRepository implements PdaDataSource {
 
   @override
   Future<DeviceNotificationRegistration> registerDeviceNotification() async {
-    final response = await _api.put('/api/v1/auth/device-notifications/register');
+    final response = await _api.put(
+      '/api/v1/auth/device-notifications/register',
+    );
     return DeviceNotificationRegistration.fromJson(_json(response.body));
   }
 

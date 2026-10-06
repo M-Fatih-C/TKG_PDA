@@ -425,12 +425,16 @@ class _BusinessActionButton extends StatelessWidget {
       position.positionNumber,
       action,
     );
+    final ending = controller.production.active?.isEnding == true;
     final enabled =
         availability.enabled &&
         controller.mutationGate.canMutate &&
-        !submitting;
+        !submitting &&
+        !ending;
 
-    final disabledReason = !controller.mutationGate.canMutate
+    final disabledReason = ending
+        ? 'Üretim bitiriliyor. Yeni mamul işlemi açılamaz.'
+        : !controller.mutationGate.canMutate
         ? (controller.mutationGate.message ?? 'İşlem kilitli')
         : (!availability.enabled
               ? (availability.disabledMessage ??

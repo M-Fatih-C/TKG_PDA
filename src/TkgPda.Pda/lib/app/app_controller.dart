@@ -211,6 +211,7 @@ class AppController extends ChangeNotifier {
       mutationEnabled &&
       production.verified &&
       production.active != null &&
+      production.active?.isEnding != true &&
       !production.hasPending &&
       (_context?.machine.permissions.canOperate ?? false) &&
       (_context?.activeTransportRequests.isEmpty ?? false) &&
@@ -489,6 +490,7 @@ class AppController extends ChangeNotifier {
     if (active == null) return transportActionsReady;
     return production.verified &&
         !production.hasPending &&
+        !active.isEnding &&
         _productionContextError == null &&
         _selectedMainPart?.partId == active.mainPartId &&
         _context?.activeVariantId == active.variantId &&
@@ -1159,6 +1161,14 @@ class AppController extends ChangeNotifier {
   /// chooses a container, load or slot. A repeated tap while the first
   /// request is still in flight reuses the same idempotency key.
   Future<void> requestAltPart(MachineRelatedPart part) async {
+    if (production.active?.isEnding == true) {
+      _notice = const UiNotice(
+        'Üretim bitiriliyor. Yeni alt parça talebi açılamaz.',
+        UiNoticeSeverity.error,
+      );
+      notifyListeners();
+      return;
+    }
     if (_batchMode) {
       if (isAltPartSelected(part.partId)) {
         _selectedAltParts.removeWhere((item) => item.partId == part.partId);
@@ -1218,6 +1228,14 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> submitSelectedAltParts() async {
+    if (production.active?.isEnding == true) {
+      _notice = const UiNotice(
+        'Üretim bitiriliyor. Yeni alt parça talebi açılamaz.',
+        UiNoticeSeverity.error,
+      );
+      notifyListeners();
+      return;
+    }
     final machine = _context?.machine;
     if (machine == null ||
         _selectedAltParts.isEmpty ||
@@ -2276,8 +2294,10 @@ class AppController extends ChangeNotifier {
     await refreshContext();
     _notice = error != null
         ? UiNotice(error, UiNoticeSeverity.error)
-        : const UiNotice(
-            'Üretim durumu güncellendi.',
+        : UiNotice(
+            production.active?.isEnding == true
+                ? 'Üretim bitiriliyor. Paletler sırayla kaldırılacak.'
+                : 'Üretim durumu güncellendi.',
             UiNoticeSeverity.success,
           );
     notifyListeners();

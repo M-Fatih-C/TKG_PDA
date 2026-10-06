@@ -434,7 +434,7 @@ class ProductionSessionPanel extends StatelessWidget {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Üretimi bitir?'),
         content: const Text(
-          'Bu makinenin mevcut üretimi kapatılacak. Bu işlem taşıma görevlerini tamamlamaz veya iptal etmez.',
+          'Üretimi bitirdiğinizde makinedeki mevcut paletler sırasıyla kaldırılacaktır. Tüm kaldırma görevleri tamamlandığında üretim kapanacaktır.',
         ),
         actions: [
           TextButton(
@@ -516,7 +516,7 @@ class _CompactActiveHeader extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'ÜRETİM AKTİF',
+                        active.isEnding ? 'ÜRETİM BİTİRİLİYOR' : 'ÜRETİM AKTİF',
                         style: TextStyle(
                           fontWeight: FontWeight.w900,
                           fontSize: PdaScale.caption(context),
@@ -572,7 +572,7 @@ class _CompactActiveHeader extends StatelessWidget {
                   ),
                 ),
               ),
-            if (openCount > 0)
+            if (openCount > 0 && !active.isEnding)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
@@ -609,7 +609,7 @@ class _CompactActiveHeader extends StatelessWidget {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Üretimi bitir?'),
         content: const Text(
-          'Bu makinenin mevcut üretimi kapatılacak. Bu işlem taşıma görevlerini tamamlamaz veya iptal etmez.',
+          'Üretimi bitirdiğinizde makinedeki mevcut paletler sırasıyla kaldırılacaktır. Tüm kaldırma görevleri tamamlandığında üretim kapanacaktır.',
         ),
         actions: [
           TextButton(

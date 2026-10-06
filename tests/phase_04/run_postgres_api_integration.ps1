@@ -1,7 +1,7 @@
 param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\18\bin',
     [int]$Port = 55439,
-    [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests|FullyQualifiedName~GlobalTaskVisibilityAndCancellationScopeApiTests|FullyQualifiedName~OperationalAuditEventsApiTests|FullyQualifiedName~OperationalAuditContainerActionEventsApiTests|FullyQualifiedName~ActiveTransportProjectionApiTests|FullyQualifiedName~FinishedContainerFlowApiTests|FullyQualifiedName~PartDemandApiTests|FullyQualifiedName~DeviceNotificationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests|FullyQualifiedName~OperationalEvidenceApiTests|FullyQualifiedName~RobotAlarmObservationApiTests|FullyQualifiedName~RdsAlarmObservationWorkerTests'
+    [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~ProductionEndCleanupApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests|FullyQualifiedName~GlobalTaskVisibilityAndCancellationScopeApiTests|FullyQualifiedName~OperationalAuditEventsApiTests|FullyQualifiedName~OperationalAuditContainerActionEventsApiTests|FullyQualifiedName~ActiveTransportProjectionApiTests|FullyQualifiedName~FinishedContainerFlowApiTests|FullyQualifiedName~PartDemandApiTests|FullyQualifiedName~DeviceNotificationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests|FullyQualifiedName~OperationalEvidenceApiTests|FullyQualifiedName~RobotAlarmObservationApiTests|FullyQualifiedName~RdsAlarmObservationWorkerTests'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,6 +68,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\018_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\019_robot_alarm_observations.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\020_robot_alarm_observation_state.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\021_production_end_cleanup.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')))
@@ -87,6 +88,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\018_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\019_robot_alarm_observations.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\020_robot_alarm_observation_state.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\021_production_end_cleanup.sql')))
 
     $connectionString = "Host=127.0.0.1;Port=$Port;Database=$database;Username=postgres;Pooling=true;Maximum Pool Size=50"
     $env:TKG_PDA_API_TEST_CONNECTION_STRING = $connectionString
@@ -127,6 +129,7 @@ SELECT md5(jsonb_build_array(
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\018_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\019_robot_alarm_observations.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\020_robot_alarm_observation_state.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\021_production_end_cleanup.sql')))
     $productionAfter = & $psql @common -Atc $productionDigestSql
     if ($LASTEXITCODE -ne 0 -or $productionBefore -ne $productionAfter) { throw 'Migration replay changed production/transport/audit records' }
 

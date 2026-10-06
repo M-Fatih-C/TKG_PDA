@@ -28,7 +28,7 @@ public sealed partial class PostgresTransportWorkflowStore : IProductionSessionS
             throw new WorkflowRuleException("PRODUCTION_SESSION_CHANGED", "Üretim değişti veya bitirildi. Talep gönderilmedi; durumu yenileyin.");
     }
 
-    private const string ProductionColumns = "id, machine_id, variant_id, product_group_id, main_part_id, started_at, started_by, started_device_id, ended_at, ended_by, ended_device_id";
+    private const string ProductionColumns = "id, machine_id, variant_id, product_group_id, main_part_id, started_at, started_by, started_device_id, ended_at, ended_by, ended_device_id, status";
 
     public async Task<ProductionSessionRecord?> FindActiveAsync(Guid machineId, CancellationToken cancellationToken = default)
     {
@@ -113,34 +113,9 @@ public sealed partial class PostgresTransportWorkflowStore : IProductionSessionS
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         await LockMachineRuntimeAsync(connection, transaction, command.MachineId, cancellationToken);
         await ValidateProductionActorAsync(connection, transaction, command.MachineId, command.ActorUserId, command.DeviceId, cancellationToken);
-        var before = await ReadProductionAsync(connection, transaction, command.MachineId, "id = @value", command.SessionId, cancellationToken)
-            ?? throw new WorkflowRuleException("PRODUCTION_SESSION_NOT_FOUND", "Üretim kaydı bu makinede bulunamadı.");
-        // Retry targets the exact closed session, never a newer active one.
-        if (before.EndedAt is not null)
-        {
-            await transaction.CommitAsync(cancellationToken);
-            return new(before, true);
-        }
-        await EnsureNoProductionTransportAsync(connection, transaction, command.MachineId, cancellationToken);
-        ProductionSessionRecord after;
-        await using (var update = new NpgsqlCommand($"""
-            UPDATE ops.production_sessions
-            SET ended_at = GREATEST(clock_timestamp(), started_at), ended_by = @actor, ended_device_id = @device
-            WHERE id = @id AND machine_id = @machine AND ended_at IS NULL
-            RETURNING {ProductionColumns}
-            """, connection, transaction))
-        {
-            update.Parameters.AddWithValue("id", command.SessionId);
-            update.Parameters.AddWithValue("machine", command.MachineId);
-            update.Parameters.AddWithValue("actor", command.ActorUserId);
-            update.Parameters.AddWithValue("device", command.DeviceId);
-            await using var reader = await update.ExecuteReaderAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
-            after = ReadProduction(reader);
-        }
-        await AuditProductionAsync(connection, transaction, "PRODUCTION_ENDED", command.ActorUserId, command.DeviceId, before, after, cancellationToken);
+        var result = await PlanProductionEndAsync(connection, transaction, command, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return new(after, false);
+        return result;
     }
 
     private static async Task ValidateProductionActorAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
@@ -186,7 +161,10 @@ public sealed partial class PostgresTransportWorkflowStore : IProductionSessionS
 
     private static ProductionSessionRecord ReadProduction(NpgsqlDataReader r) => new(
         r.GetGuid(0), r.GetGuid(1), r.GetGuid(2), r.GetGuid(3), r.GetGuid(4), r.GetFieldValue<DateTimeOffset>(5), r.GetGuid(6), r.GetGuid(7),
-        r.IsDBNull(8) ? null : r.GetFieldValue<DateTimeOffset>(8), r.IsDBNull(9) ? null : r.GetGuid(9), r.IsDBNull(10) ? null : r.GetGuid(10));
+        r.IsDBNull(8) ? null : r.GetFieldValue<DateTimeOffset>(8), r.IsDBNull(9) ? null : r.GetGuid(9), r.IsDBNull(10) ? null : r.GetGuid(10))
+    {
+        Status = r.GetString(11)
+    };
 
     private static async Task AuditProductionAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string action,
         Guid actor, Guid device, ProductionSessionRecord? before, ProductionSessionRecord after, CancellationToken cancellationToken)
@@ -205,10 +183,23 @@ public sealed partial class PostgresTransportWorkflowStore : IProductionSessionS
     }
 
     // Caller holds the machine lock; no session/slot/request lock inversion.
+    private static async Task RejectIfProductionEndingAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid machineId,
+        CancellationToken cancellationToken)
+    {
+        var active = await ReadProductionAsync(connection, transaction, machineId, "ended_at IS NULL", null, cancellationToken);
+        if (active?.Status == "ENDING")
+            throw new WorkflowRuleException("PRODUCTION_ENDING", "Üretim bitiriliyor. Yeni malzeme talebi açılamaz.");
+    }
+
     private static async Task ValidateProductionTransportContextAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         CreateTransportRequest request, CancellationToken cancellationToken)
     {
         var active = await ReadProductionAsync(connection, transaction, request.MachineId, "ended_at IS NULL", null, cancellationToken);
+        if (active?.Status == "ENDING")
+            throw new WorkflowRuleException("PRODUCTION_ENDING", "Üretim bitiriliyor. Yeni malzeme talebi açılamaz.");
         if (active is not null && (active.VariantId != request.VariantId || active.ProductGroupId != request.ProductGroupId || request.PartId is null))
             throw new WorkflowRuleException("PRODUCTION_CONTEXT_MISMATCH", "Taşıma talebi açık üretimin ana ürün bağlamına ait olmalıdır.");
     }

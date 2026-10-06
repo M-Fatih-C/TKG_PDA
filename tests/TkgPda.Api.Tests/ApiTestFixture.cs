@@ -40,11 +40,14 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
 
     public async Task ResetAsync()
     {
+        await ExecuteScriptAsync(MigrationFile("021_production_end_cleanup.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
             """
             TRUNCATE
+                ops.production_end_run_items,
+                ops.production_end_runs,
                 integration.robot_alarm_read_failures,
                 integration.robot_alarm_observations,
                 integration.robot_alarm_observation_state,
@@ -60,6 +63,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
                 ops.machine_runtime_state
             RESTART IDENTITY CASCADE;
             DELETE FROM audit.audit_logs;
+            DELETE FROM master.production_end_priorities;
             DELETE FROM integration.layout_slot_rds_mapping
             WHERE rds_worksite_id IN (
                 SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'P07A-%');
@@ -506,6 +510,19 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
 
     public Task ExecuteScriptAsync(string path) =>
         ExecuteAsync(File.ReadAllText(path));
+
+    public static string MigrationFile(string name)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "db", "migrations", name)))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory is null
+            ? throw new FileNotFoundException($"db/migrations/{name} was not found above the test output directory.")
+            : Path.Combine(directory.FullName, "db", "migrations", name);
+    }
 
     public async Task<T> ScalarAsync<T>(string sql, params (string Name, object? Value)[] parameters)
     {

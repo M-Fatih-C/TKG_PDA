@@ -38,7 +38,8 @@ public static class ProductionSessionEndpoints
         MachineAccessService access, ProductionSessionService service, CancellationToken cancellationToken)
     {
         _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
-        var result = await service.EndAsync(new(machineId, sessionId, context.User.UserId(), DeviceId(context)), cancellationToken);
+        var result = await service.EndAsync(new(machineId, sessionId, context.User.UserId(), DeviceId(context),
+            context.Request.Headers[ApiHeaders.IdempotencyKey].ToString().Trim()), cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         return Results.Ok(result);
     }

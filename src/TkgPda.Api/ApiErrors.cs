@@ -125,6 +125,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
         "PRODUCTION_ACCESS_DENIED" => StatusCodes.Status403Forbidden,
         "PRODUCTION_SESSION_NOT_FOUND" => StatusCodes.Status404NotFound,
         "PRODUCTION_SESSION_ALREADY_ACTIVE" or "PRODUCTION_CONTEXT_MISMATCH" or "PRODUCTION_SESSION_ACTIVE" or "PRODUCTION_SESSION_CHANGED"
+            or "PRODUCTION_ENDING" or "PRODUCTION_END_IN_PROGRESS"
             => StatusCodes.Status409Conflict,
         "REQUEST_NOT_FOUND" or "SLOT_NOT_FOUND" or "PART_NOT_FOUND" or "CONTAINER_NOT_FOUND" or "TASK_TYPE_NOT_FOUND"
             => StatusCodes.Status404NotFound,

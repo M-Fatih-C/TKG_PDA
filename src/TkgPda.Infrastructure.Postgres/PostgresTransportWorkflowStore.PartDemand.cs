@@ -302,7 +302,7 @@ public sealed partial class PostgresTransportWorkflowStore
     {
         await using var command = new NpgsqlCommand(
             """
-            SELECT s.id, s.variant_id, s.product_group_id, m.active_layout_id
+            SELECT s.id, s.variant_id, s.product_group_id, m.active_layout_id, s.status
             FROM ops.production_sessions s
             JOIN ops.machine_runtime_state m ON m.machine_id = s.machine_id
             WHERE s.machine_id = @machine AND s.ended_at IS NULL
@@ -324,6 +324,13 @@ public sealed partial class PostgresTransportWorkflowStore
             throw new WorkflowRuleException(
                 "ACTIVE_LAYOUT_REQUIRED",
                 "Aktif üretim için makine yerleşimi seçili değil.");
+        }
+
+        if (reader.GetString(4) == "ENDING")
+        {
+            throw new WorkflowRuleException(
+                "PRODUCTION_ENDING",
+                "Üretim bitiriliyor. Yeni alt parça talebi açılamaz.");
         }
 
         return new ProductionDemandContext(reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(3), reader.GetGuid(2));

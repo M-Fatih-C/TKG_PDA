@@ -530,7 +530,9 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                       key: const Key('batch-submit'),
                       onPressed: controller.production.active != null
                           ? (controller.selectedAltParts.isNotEmpty &&
-                                    !controller.busy
+                                    !controller.busy &&
+                                    controller.production.active?.isEnding !=
+                                        true
                                 ? controller.submitSelectedAltParts
                                 : null)
                           : controller.canReviewBatch && !controller.busy
