@@ -644,7 +644,12 @@ class FakePdaRepository implements PdaDataSource {
     required String layoutId,
     required String productGroupId,
     required String partId,
-  }) async => containerPositionsValue;
+  }) async {
+    lastContainerPositionPartId = partId;
+    return containerPositionsValue;
+  }
+
+  String? lastContainerPositionPartId;
 
   int partDemandCount = 0;
   int partDemandBatchCount = 0;

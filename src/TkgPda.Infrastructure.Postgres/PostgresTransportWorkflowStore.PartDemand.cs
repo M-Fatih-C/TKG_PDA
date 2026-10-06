@@ -18,13 +18,44 @@ public sealed partial class PostgresTransportWorkflowStore
 
     public async Task<IReadOnlyList<PartDemandResult>> CreateBatchAsync(PartDemandBatchCommand command, CancellationToken cancellationToken = default)
     {
+        var requestedParts = command.PartIds.ToArray();
+        if (requestedParts.Length != requestedParts.Distinct().Count())
+        {
+            throw new WorkflowRuleException("PART_DEMAND_DUPLICATE", "Aynı alt parça toplu talepte bir kez seçilebilir.");
+        }
+
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        var batchId = await InsertPartDemandBatchAsync(connection, transaction, command, cancellationToken);
-        var results = new List<PartDemandResult>(command.PartIds.Count);
-        foreach (var partId in command.PartIds)
+        var key = command.IdempotencyKey.Trim();
+        await LockIdempotencyKeyAsync(connection, transaction, key, cancellationToken);
+        var existing = await FindPartDemandBatchAsync(connection, transaction, key, cancellationToken);
+        Guid batchId;
+        IReadOnlyList<Guid> parts;
+        if (existing is not null)
         {
-            var itemKey = $"{command.IdempotencyKey.Trim()}:{partId:N}";
+            if (!string.Equals(existing.Origin, "API", StringComparison.Ordinal)
+                || existing.RequestedBy != command.ActorUserId
+                || existing.MachineId != command.MachineId
+                || !existing.BringFullPartIds.ToHashSet().SetEquals(requestedParts))
+            {
+                throw new WorkflowRuleException(
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "The part-demand batch key belongs to a different request.");
+            }
+
+            batchId = existing.Id;
+            parts = existing.BringFullPartIds;
+        }
+        else
+        {
+            batchId = await InsertPartDemandBatchAsync(connection, transaction, command, cancellationToken);
+            parts = requestedParts;
+        }
+
+        var results = new List<PartDemandResult>(parts.Count);
+        foreach (var partId in parts)
+        {
+            var itemKey = $"{key}:{partId:N}";
             results.Add(await CreatePartDemandWithinTransactionAsync(
                 connection,
                 transaction,
@@ -35,6 +66,61 @@ public sealed partial class PostgresTransportWorkflowStore
 
         await transaction.CommitAsync(cancellationToken);
         return results;
+    }
+
+    private sealed record StoredPartDemandBatch(Guid Id, string Origin, Guid? RequestedBy, Guid MachineId, IReadOnlyList<Guid> BringFullPartIds);
+
+    private static async Task<StoredPartDemandBatch?> FindPartDemandBatchAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        Guid id;
+        string origin;
+        Guid? requestedBy;
+        Guid machineId;
+        await using (var command = new NpgsqlCommand(
+            """
+            SELECT id, request_origin, requested_by, machine_id
+            FROM ops.transport_batches
+            WHERE idempotency_key = @key
+            """,
+            connection,
+            transaction))
+        {
+            command.Parameters.AddWithValue("key", idempotencyKey);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return null;
+            }
+
+            id = reader.GetGuid(0);
+            origin = reader.GetString(1);
+            requestedBy = reader.IsDBNull(2) ? null : reader.GetGuid(2);
+            machineId = reader.GetGuid(3);
+        }
+
+        var parts = new List<Guid>();
+        await using var items = new NpgsqlCommand(
+            """
+            SELECT r.part_id
+            FROM ops.transport_requests r
+            JOIN master.task_types tt ON tt.id = r.task_type_id
+            WHERE r.batch_id = @batch AND tt.code = 'BRING_FULL' AND r.part_id IS NOT NULL
+            ORDER BY r.request_no
+            """,
+            connection,
+            transaction);
+        items.Parameters.AddWithValue("batch", id);
+        await using var itemReader = await items.ExecuteReaderAsync(cancellationToken);
+        while (await itemReader.ReadAsync(cancellationToken))
+        {
+            parts.Add(itemReader.GetGuid(0));
+        }
+
+        return new StoredPartDemandBatch(id, origin, requestedBy, machineId, parts);
     }
 
     private static async Task<Guid> InsertPartDemandBatchAsync(
@@ -102,7 +188,7 @@ public sealed partial class PostgresTransportWorkflowStore
         }
 
         var area = await LockPartAreaAsync(connection, transaction, session.LayoutId, command.PartId, cancellationToken);
-        var plan = PartDemandRules.Decide(area.Occupancy, area.Load);
+        var plan = area.Plan;
         TransportRequestSnapshot? predecessor = null;
         if (plan.Predecessor is { } removal)
         {
@@ -118,7 +204,7 @@ public sealed partial class PostgresTransportWorkflowStore
                 command.PartId,
                 containerTypeId,
                 removal,
-                removal == TransportTaskType.RemoveEmpty ? area.SlotId : area.SlotId,
+                area.SlotId,
                 null,
                 100,
                 RequiresPreparation: false)
@@ -202,8 +288,6 @@ public sealed partial class PostgresTransportWorkflowStore
     }
 
     private sealed record ProductionDemandContext(Guid SessionId, Guid VariantId, Guid LayoutId, Guid ProductGroupId);
-
-    private sealed record PartArea(Guid SlotId, OccupancyState Occupancy, LoadState Load);
 
     private static async Task<ProductionDemandContext> LockActiveProductionAsync(
         NpgsqlConnection connection,
@@ -300,7 +384,7 @@ public sealed partial class PostgresTransportWorkflowStore
         return value is long number ? number : null;
     }
 
-    private static async Task<PartArea> LockPartAreaAsync(
+    private static async Task<PartDemandSelection> LockPartAreaAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid layoutId,
@@ -309,44 +393,31 @@ public sealed partial class PostgresTransportWorkflowStore
     {
         await using var command = new NpgsqlCommand(
             """
-            SELECT ls.id, rs.occupancy_state, rs.load_state
+            SELECT ls.id, rs.occupancy_state, rs.load_state, rs.current_part_id
             FROM master.layout_slots ls
             JOIN master.layout_slot_parts lsp ON lsp.layout_slot_id = ls.id AND lsp.part_id = @part
             JOIN ops.slot_runtime_state rs ON rs.layout_slot_id = ls.id
             WHERE ls.layout_id = @layout
               AND ls.is_enabled
               AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-            ORDER BY ls.display_order, ls.code
+            ORDER BY ls.display_order, ls.code, ls.id
             FOR UPDATE OF rs
             """,
             connection,
             transaction);
         command.Parameters.AddWithValue("layout", layoutId);
         command.Parameters.AddWithValue("part", partId);
-        var rows = new List<PartArea>();
+        var rows = new List<PartAreaCandidate>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            rows.Add(new PartArea(
+            rows.Add(new PartAreaCandidate(
                 reader.GetGuid(0),
                 WorkflowCode.ParseOccupancy(reader.GetString(1)),
-                WorkflowCode.ParseLoad(reader.GetString(2))));
+                WorkflowCode.ParseLoad(reader.GetString(2)),
+                reader.IsDBNull(3) ? null : reader.GetGuid(3)));
         }
 
-        if (rows.Count == 0)
-        {
-            throw new WorkflowRuleException(
-                "PART_SLOT_NOT_CONFIGURED",
-                "Bu alt parça için makine alanı tanımlı değil.");
-        }
-
-        if (rows.Count(row => row.Occupancy == OccupancyState.Occupied) > 1)
-        {
-            throw new WorkflowRuleException(
-                "PART_AREA_AMBIGUOUS",
-                "Bu alt parça birden fazla dolu alanda duruyor. Hangisinin kaldırılacağı bilinmiyor.");
-        }
-
-        return rows.FirstOrDefault(row => row.Occupancy == OccupancyState.Occupied) ?? rows[0];
+        return PartDemandRules.Select(partId, rows);
     }
 }

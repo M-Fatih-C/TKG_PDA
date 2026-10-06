@@ -40,6 +40,25 @@ void main() {
     expect(repo.lastPartDemandIds, [testAltPartId]);
     expect(repo.containerActionCount, 0);
     expect(c.selectedEffectivePart?.partId, testMainPartId);
+    expect(c.mamulActionsReady, isTrue);
+    expect(repo.lastContainerPositionPartId, testMainPartId);
+  });
+
+  test('alt part batch selection does not retarget mamul kasa', () async {
+    final repo = FakePdaRepository();
+    final c = await controller(repo);
+    await c.selectMainPartOption(testMainPartOption);
+    await c.startProduction();
+    final positions = c.containerPositions;
+    c.enterBatchSelection();
+    await c.requestAltPart(testMainPartOption.relatedParts.first);
+
+    expect(c.batchMode, isTrue);
+    expect(c.batchCart, isEmpty);
+    expect(c.mamulActionsReady, isTrue);
+    expect(c.selectedEffectivePart?.partId, testMainPartId);
+    expect(c.containerPositions, positions);
+    expect(repo.lastContainerPositionPartId, testMainPartId);
   });
 
   test(

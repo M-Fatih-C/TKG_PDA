@@ -296,8 +296,9 @@ class AppController extends ChangeNotifier {
   bool get isAuthenticated => _session.isAuthenticated;
   bool get isAdminOrSupervisor =>
       (user?.roles ?? const []).any((r) => r == 'ADMIN' || r == 'SUPERVISOR');
-  bool get isLineOperator =>
-      (user?.roles ?? const []).any((r) => r == 'LINE_OPERATOR' || r == 'OPERATOR');
+  bool get isLineOperator => (user?.roles ?? const []).any(
+    (r) => r == 'LINE_OPERATOR' || r == 'OPERATOR',
+  );
   bool get isBoundLineTerminalOperator =>
       isLineOperator && !isAdminOrSupervisor && device?.machineId != null;
   List<MachineSummary> get machines => _machines;
@@ -459,6 +460,32 @@ class AppController extends ChangeNotifier {
   bool get transportActionsReady =>
       partSelectionReady && productionTransportReady;
 
+  /// Mamul Kasa follows the active production main product. Alt-part
+  /// selection does not make this true or false.
+  bool get mamulActionsReady {
+    final active = production.active;
+    if (active == null) return transportActionsReady;
+    return production.verified &&
+        !production.hasPending &&
+        _productionContextError == null &&
+        _selectedMainPart?.partId == active.mainPartId &&
+        _context?.activeVariantId == active.variantId &&
+        _resolvedCompatibleVariant?.productGroupId == active.productGroupId &&
+        _context?.activeLayoutId != null;
+  }
+
+  EffectivePartSelection? get _mamulDemandPart {
+    final active = production.active;
+    if (active == null) return _selectedEffectivePart;
+    final main = _selectedMainPart;
+    if (main == null || main.partId != active.mainPartId) return null;
+    return EffectivePartSelection(
+      partId: active.mainPartId,
+      partCode: main.partCode,
+      isMain: true,
+    );
+  }
+
   bool operationInProgress(String operation) =>
       _operationInProgress(operation, _selectedEffectivePart?.partId);
 
@@ -520,10 +547,10 @@ class AppController extends ChangeNotifier {
       final isAdminOrSupervisor =
           roles.contains('ADMIN') || roles.contains('SUPERVISOR');
       final isLegacyWarehouse = roles.contains('WAREHOUSE_OPERATOR');
-      final isSemiFinished =
-          roles.contains('SEMI_FINISHED_WAREHOUSE_OPERATOR');
-      final isFinishedGoods =
-          roles.contains('FINISHED_GOODS_WAREHOUSE_OPERATOR');
+      final isSemiFinished = roles.contains('SEMI_FINISHED_WAREHOUSE_OPERATOR');
+      final isFinishedGoods = roles.contains(
+        'FINISHED_GOODS_WAREHOUSE_OPERATOR',
+      );
       final isLineOperator =
           roles.contains('LINE_OPERATOR') || roles.contains('OPERATOR');
 
@@ -713,7 +740,8 @@ class AppController extends ChangeNotifier {
   Timer? _heartbeatTimer;
 
   /// Whether the session heartbeat keepalive timer is currently running.
-  bool get isHeartbeatActive => _heartbeatTimer != null && _heartbeatTimer!.isActive;
+  bool get isHeartbeatActive =>
+      _heartbeatTimer != null && _heartbeatTimer!.isActive;
 
   /// Technical keepalive interval for field session lease.
   /// Note: This is NOT a business timing; it is a session lease technical keepalive (Section 25).
@@ -1584,13 +1612,18 @@ class AppController extends ChangeNotifier {
 
   Future<void> _loadContainerPositions(int generation) async {
     final current = _context;
-    final part = _selectedEffectivePart;
+    final part = _mamulDemandPart;
     final variant = _resolvedCompatibleVariant;
+    final active = production.active;
     final layoutId = current?.activeLayoutId;
     if (current == null ||
         part == null ||
         variant == null ||
-        layoutId == null) {
+        layoutId == null ||
+        (active != null &&
+            (variant.variantId != active.variantId ||
+                variant.productGroupId != active.productGroupId ||
+                part.partId != active.mainPartId))) {
       _resetContainerPositions();
       return;
     }
@@ -1602,11 +1635,11 @@ class AppController extends ChangeNotifier {
         machineId: current.machine.id,
         variantId: variant.variantId,
         layoutId: layoutId,
-        productGroupId: variant.productGroupId,
+        productGroupId: active?.productGroupId ?? variant.productGroupId,
         partId: part.partId,
       );
       if (generation == _partResolutionGeneration &&
-          _selectedEffectivePart?.partId == part.partId &&
+          _mamulDemandPart?.partId == part.partId &&
           _resolvedCompatibleVariant?.variantId == variant.variantId) {
         _containerPositions = positions;
       }
@@ -1640,9 +1673,9 @@ class AppController extends ChangeNotifier {
     ContainerPosition position,
     String action,
   ) async {
-    if (!productionTransportReady) return;
+    if (!mamulActionsReady) return;
     final current = _context;
-    final part = _selectedEffectivePart;
+    final part = _mamulDemandPart;
     final variant = _resolvedCompatibleVariant;
     final variantId = current?.activeVariantId;
     final layoutId = current?.activeLayoutId;
@@ -1677,7 +1710,7 @@ class AppController extends ChangeNotifier {
       return;
     }
 
-    if (_batchMode) {
+    if (_batchMode && production.active == null) {
       final existingIndex = _batchCart.indexWhere(
         (item) =>
             item.effectivePart.partId == part.partId &&
@@ -1881,7 +1914,8 @@ class AppController extends ChangeNotifier {
   void leaveTasks() {
     if (isMutationInFlight) return;
     _stopQueuePolling();
-    final returnStage = _taskReturnStage ??
+    final returnStage =
+        _taskReturnStage ??
         (isBoundLineTerminalOperator ? AppStage.operation : AppStage.machines);
     _taskReturnStage = null;
     _stage = returnStage;
@@ -1951,8 +1985,6 @@ class AppController extends ChangeNotifier {
     _queuePollTimer?.cancel();
     _queuePollTimer = null;
   }
-
-
 
   Future<void> refreshRobots() async {
     if (!_session.isAuthenticated) return;

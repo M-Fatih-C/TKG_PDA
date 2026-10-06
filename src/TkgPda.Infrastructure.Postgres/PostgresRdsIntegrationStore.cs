@@ -5,7 +5,7 @@ using TkgPda.Application;
 
 namespace TkgPda.Infrastructure.Postgres;
 
-public sealed class PostgresRdsIntegrationStore(NpgsqlDataSource dataSource) : IRdsIntegrationStore
+public sealed partial class PostgresRdsIntegrationStore(NpgsqlDataSource dataSource) : IRdsIntegrationStore
 {
     public async Task<IReadOnlyList<RdsNavigationProfileRecord>> ListNavigationProfilesAsync(CancellationToken cancellationToken = default)
     {

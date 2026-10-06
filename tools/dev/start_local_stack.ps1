@@ -264,7 +264,8 @@ foreach ($migration in @(
     '015_part_demand_dependencies.sql',
     '016_finished_goods_areas.sql',
     '017_internal_device_notifications.sql',
-    '018_production_end_priorities.sql'
+    '018_production_end_priorities.sql',
+    '019_robot_alarm_observations.sql'
 )) {
     Write-Host "Applying migration $migration..." -ForegroundColor Cyan
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot "db\migrations\$migration") | Out-Null
@@ -337,8 +338,6 @@ if (-not [string]::IsNullOrWhiteSpace($Password)) {
 if (-not [string]::IsNullOrWhiteSpace($plainPassword)) {
     $passwordHash = New-Pbkdf2Hash51 $plainPassword
     $passwordHashSql = "'" + $passwordHash.Replace("'", "''") + "'"
-    $fatihPasswordHash = New-Pbkdf2Hash51 '123456789123'
-    $fatihPasswordHashSql = "'" + $fatihPasswordHash.Replace("'", "''") + "'"
     $plainPassword = $null
     $passwordHash = $null
 
@@ -348,8 +347,7 @@ VALUES
   ('dev-admin', __PASSWORD_HASH__, 'Development Administrator', 'DEV-ADM', true),
   ('dev-supervisor', __PASSWORD_HASH__, 'Development Supervisor', 'DEV-SUP', true),
   ('dev-line', __PASSWORD_HASH__, 'Development Line Operator', 'DEV-LINE', true),
-  ('dev-warehouse', __PASSWORD_HASH__, 'Development Warehouse Operator', 'DEV-WH', true),
-  ('fatih', __FATIH_PASSWORD_HASH__, 'Fatih', '11111111', true)
+  ('dev-warehouse', __PASSWORD_HASH__, 'Development Warehouse Operator', 'DEV-WH', true)
 ON CONFLICT (username) DO UPDATE
 SET password_hash = EXCLUDED.password_hash,
     full_name = EXCLUDED.full_name,
@@ -376,12 +374,8 @@ SELECT u.id, r.id FROM auth.users u CROSS JOIN auth.roles r
 WHERE u.username = 'dev-warehouse' AND r.code = 'WAREHOUSE_OPERATOR'
 ON CONFLICT DO NOTHING;
 
-INSERT INTO auth.user_roles (user_id, role_id)
-SELECT u.id, r.id FROM auth.users u CROSS JOIN auth.roles r
-WHERE u.username = 'fatih' AND r.code = 'ADMIN'
-ON CONFLICT DO NOTHING;
 "@
-    $devBootstrapSql = $devBootstrapSql.Replace('__PASSWORD_HASH__', $passwordHashSql).Replace('__FATIH_PASSWORD_HASH__', $fatihPasswordHashSql)
+    $devBootstrapSql = $devBootstrapSql.Replace('__PASSWORD_HASH__', $passwordHashSql)
     $devBootstrapSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Dev user provisioning failed with exit code $LASTEXITCODE" }
 }
@@ -823,7 +817,6 @@ Write-Host "RDS:"
 Write-Host $rdsStatusDisplay
 Write-Host ""
 Write-Host "Accounts:"
-Write-Host "fatih (Password: 123456789123 / Sicil: 11111111 / Role: ADMIN)"
 Write-Host "dev-admin"
 Write-Host "dev-supervisor"
 Write-Host "dev-line"

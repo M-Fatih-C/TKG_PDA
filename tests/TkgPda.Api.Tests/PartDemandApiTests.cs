@@ -174,6 +174,203 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
+    public async Task Occupied_by_a_different_part_uses_a_vacant_slot_without_a_predecessor()
+    {
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var other = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code) VALUES ('P05-OTHER') RETURNING id");
+        await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "FULL", other);
+        var vacant = await NextSlotAsync(setup.Context.LayoutId, setup.Slot);
+        await fixture.ExecuteAsync(
+            "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
+            ("slot", vacant), ("part", setup.AltPart));
+        await fixture.SetSlotAsync(vacant, "VACANT", "UNKNOWN");
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "other-plus-vacant"));
+
+        Assert.Equal("BRING_FULL", body.TaskType);
+        Assert.Null(body.PredecessorRequestNo);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE source_slot_id = @slot OR destination_slot_id = @slot",
+            ("slot", setup.Slot)));
+    }
+
+    [Fact]
+    public async Task Occupied_by_a_different_part_without_a_vacant_slot_creates_nothing()
+    {
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var other = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code) VALUES ('P05-OTHER') RETURNING id");
+        await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "FULL", other);
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var response = await DemandAsync(client, setup, setup.AltPart, "other-blocked");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PART_AREA_OCCUPIED_BY_OTHER_PART", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Occupied_without_a_known_part_creates_nothing()
+    {
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "FULL", null);
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var response = await DemandAsync(client, setup, setup.AltPart, "unknown-part");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PART_AREA_CURRENT_PART_UNKNOWN", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Two_occupied_slots_for_the_same_part_are_ambiguous()
+    {
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var second = await NextSlotAsync(setup.Context.LayoutId, setup.Slot);
+        await fixture.ExecuteAsync(
+            "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
+            ("slot", second), ("part", setup.AltPart));
+        await fixture.SetSlotAsync(second, "OCCUPIED", "EMPTY", setup.AltPart);
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var response = await DemandAsync(client, setup, setup.AltPart, "two-same");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PART_AREA_AMBIGUOUS", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Completed_alt_part_removal_does_not_enter_finished_goods_or_notify()
+    {
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "not-finished-goods"));
+        var predecessorId = await RequestIdAsync(body.PredecessorRequestNo!.Value);
+
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT destination_slot_id IS NULL FROM ops.transport_requests WHERE id = @id",
+            ("id", predecessorId)));
+        await CompleteAsync(predecessorId);
+
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.notification_outbox"));
+    }
+
+    [Fact]
+    public async Task Cancelling_the_predecessor_cancels_the_successor_without_changing_the_slot()
+    {
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "cancel-chain"));
+        var predecessorId = await RequestIdAsync(body.PredecessorRequestNo!.Value);
+        var successorId = await RequestIdAsync(body.RequestNo);
+
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        await store.CancelAsync(predecessorId, setup.Operator.UserId);
+        await store.CancelAsync(predecessorId, setup.Operator.UserId);
+
+        Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", successorId)));
+        Assert.Equal(1L, await CancelledEventsAsync(successorId));
+        Assert.Equal(0L, await EligibleCountAsync(successorId));
+        Assert.Equal(setup.AltPart, await fixture.ScalarAsync<Guid>(
+            "SELECT current_part_id FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+        Assert.Equal("FULL", await fixture.ScalarAsync<string>(
+            "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+    }
+
+    [Fact]
+    public async Task Failing_the_predecessor_cancels_the_successor_once()
+    {
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "fail-chain"));
+        var predecessorId = await RequestIdAsync(body.PredecessorRequestNo!.Value);
+        var successorId = await RequestIdAsync(body.RequestNo);
+
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        await store.RecordExecutionTransitionAsync(predecessorId, TransportRequestStatus.SentToRds);
+        var outcome = new ExecutionOutcome(TransportRequestStatus.Failed, "ROBOT_FAULT", "observed fault", "TEST");
+        await store.RecordExecutionOutcomeAsync(predecessorId, outcome);
+        await store.RecordExecutionOutcomeAsync(predecessorId, outcome);
+
+        Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", successorId)));
+        Assert.Equal(1L, await CancelledEventsAsync(successorId));
+        Assert.Equal(0L, await EligibleCountAsync(successorId));
+        Assert.Equal("OCCUPIED", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+        Assert.Equal(setup.AltPart, await fixture.ScalarAsync<Guid>(
+            "SELECT current_part_id FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+    }
+
+    [Fact]
+    public async Task Batch_key_replays_the_same_part_set_and_rejects_a_different_one()
+    {
+        var setup = await SetupAsync();
+        var second = await AddAltPartAsync(setup, "P05-ALT-B");
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var created = await ReadBatchAsync(await BatchAsync(client, setup, [setup.AltPart, second], "batch-key"));
+        var reversed = await ReadBatchAsync(await BatchAsync(client, setup, [second, setup.AltPart], "batch-key"));
+        Assert.Equal(created.Items.Select(item => item.RequestNo).Order(), reversed.Items.Select(item => item.RequestNo).Order());
+        Assert.True(reversed.IdempotentReplay);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+
+        var added = await BatchAsync(client, setup, [setup.AltPart, second, setup.MainPart], "batch-key");
+        Assert.Equal(HttpStatusCode.Conflict, added.StatusCode);
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", await ApiTestFixture.ErrorCodeAsync(added));
+        var removed = await BatchAsync(client, setup, [setup.AltPart], "batch-key");
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", await ApiTestFixture.ErrorCodeAsync(removed));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+
+        var duplicate = await BatchAsync(client, setup, [setup.AltPart, setup.AltPart], "batch-duplicate");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicate.StatusCode);
+        Assert.Equal("PART_DEMAND_DUPLICATE", await ApiTestFixture.ErrorCodeAsync(duplicate));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+
+        var again = await ReadBatchAsync(await BatchAsync(client, setup, [setup.AltPart, second], "batch-key"));
+        Assert.Equal(2, again.Items.Count);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Batch_key_cannot_be_reused_for_another_machine_or_actor()
+    {
+        var setup = await SetupAsync();
+        var second = await AddAltPartAsync(setup, "P05-ALT-C");
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        Assert.Equal(HttpStatusCode.Created, (await BatchAsync(client, setup, [setup.AltPart, second], "batch-owner")).StatusCode);
+
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        var otherMachine = await Assert.ThrowsAsync<WorkflowRuleException>(() => store.CreateBatchAsync(
+            new PartDemandBatchCommand("batch-owner", setup.Operator.UserId, Guid.NewGuid(), [setup.AltPart, second], null)));
+        var otherActor = await Assert.ThrowsAsync<WorkflowRuleException>(() => store.CreateBatchAsync(
+            new PartDemandBatchCommand("batch-owner", Guid.NewGuid(), setup.Context.MachineId, [second, setup.AltPart], null)));
+
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", otherMachine.Code);
+        Assert.Equal("IDEMPOTENCY_KEY_REUSED", otherActor.Code);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_batches"));
+    }
+
+    [Fact]
     public async Task A_part_outside_the_active_group_is_rejected()
     {
         var setup = await SetupAsync();
@@ -208,7 +405,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         await fixture.ExecuteAsync(
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", slot), ("part", alt));
-        await fixture.SetSlotAsync(slot, occupancy, load);
+        await fixture.SetSlotAsync(slot, occupancy, load, occupancy == "OCCUPIED" ? alt : null);
         var oper = await fixture.SeedIdentityAsync(role: RoleCodes.LineOperator, machineCode: "SH-01-A");
         return new Setup(context, oper, group, main, alt, slot);
     }
@@ -275,6 +472,42 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
 
     private Task<Guid> RequestIdAsync(long requestNo) => fixture.ScalarAsync<Guid>(
         "SELECT id FROM ops.transport_requests WHERE request_no = @no", ("no", requestNo));
+
+    private async Task<Guid> AddAltPartAsync(Setup setup, string code)
+    {
+        var slot = await NextSlotAsync(setup.Context.LayoutId, setup.Slot);
+        var part = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.parts (part_code, description) VALUES (@code, @code) RETURNING id",
+            ("code", code));
+        await fixture.ExecuteAsync(
+            "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
+            ("slot", slot), ("part", part));
+        await fixture.SetSlotAsync(slot, "VACANT", "UNKNOWN");
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO master.product_group_parts (product_group_id, part_id, relation_type, is_active)
+            VALUES (@group, @part, 'ALT_PART', true)
+            """,
+            ("group", setup.Group), ("part", part));
+        return part;
+    }
+
+    private static async Task<PartDemandBatchHttpResponse> ReadBatchAsync(HttpResponseMessage response)
+    {
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(response.IsSuccessStatusCode, body);
+        return System.Text.Json.JsonSerializer.Deserialize<PartDemandBatchHttpResponse>(
+            body,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!;
+    }
+
+    private Task<long> CancelledEventsAsync(Guid requestId) => fixture.ScalarAsync<long>(
+        """
+        SELECT count(*)
+        FROM ops.transport_request_events
+        WHERE transport_request_id = @id AND event_type = 'REQUEST_CANCELLED'
+        """,
+        ("id", requestId));
 
     private Task<long> EligibleCountAsync(Guid requestId) => fixture.ScalarAsync<long>(
         """

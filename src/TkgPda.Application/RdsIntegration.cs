@@ -347,6 +347,24 @@ public interface IRdsIntegrationStore
     Task<RdsSlotMappingRecord> SetSlotMappingAsync(Guid slotId, Guid rdsWorkSiteId, AdminMutationContext context, CancellationToken cancellationToken = default);
     Task RemoveSlotMappingAsync(Guid slotId, AdminMutationContext context, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RdsActiveLockFingerprint>> GetActiveTkgLockFingerprintsAsync(CancellationToken cancellationToken = default);
+
+    Task ObserveAlarmSnapshotAsync(
+        IReadOnlyList<RdsRobotAlarmSnapshot> alarms,
+        Guid correlationId,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    Task ObserveAlarmReadFailureAsync(
+        Guid correlationId,
+        DateTimeOffset observedAt,
+        string errorCode,
+        string message,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    Task<IReadOnlyList<RobotAlarmObservationRecord>> ListAlarmHistoryAsync(
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<RobotAlarmObservationRecord>>([]);
 }
 
 
@@ -455,7 +473,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+        var result = await ReadAlarmSnapshotAsync(correlationId, cancellationToken);
         var robotsById = result.Data.Robots.ToDictionary(robot => robot.RobotId, StringComparer.Ordinal);
         return result.Data.Alarms
             .Select(alarm =>
@@ -479,7 +497,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+        var result = await ReadAlarmSnapshotAsync(correlationId, cancellationToken);
         var alarmsByRobot = result.Data.Alarms
             .GroupBy(a => a.RobotId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, CountBySeverity, StringComparer.Ordinal);
@@ -513,7 +531,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+        var result = await ReadAlarmSnapshotAsync(correlationId, cancellationToken);
         var alarmsByRobot = result.Data.Alarms
             .GroupBy(a => a.RobotId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, CountBySeverity, StringComparer.Ordinal);
@@ -533,6 +551,43 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
                     alarms.Critical > 0);
             })
             .ToList();
+    }
+
+    private async Task<RdsReadResult<RdsRobotAlarmReport>> ReadAlarmSnapshotAsync(
+        Guid correlationId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+            try
+            {
+                await store.ObserveAlarmSnapshotAsync(result.Data.Alarms, correlationId, result.ReadAt, cancellationToken);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                // A history-write failure must not hide the current snapshot or clear alarms.
+            }
+
+            return result;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            try
+            {
+                await store.ObserveAlarmReadFailureAsync(
+                    correlationId,
+                    timeProvider.GetUtcNow(),
+                    error.GetType().Name,
+                    error.Message,
+                    cancellationToken);
+            }
+            catch (Exception persistError) when (persistError is not OperationCanceledException)
+            {
+            }
+
+            throw;
+        }
     }
 
     /// <summary>Velocity below this magnitude is treated as stationary.</summary>
@@ -688,7 +743,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+        var result = await ReadAlarmSnapshotAsync(correlationId, cancellationToken);
         var alarms = result.Data.Alarms;
         var highestSeverity = alarms.Count == 0
             ? null

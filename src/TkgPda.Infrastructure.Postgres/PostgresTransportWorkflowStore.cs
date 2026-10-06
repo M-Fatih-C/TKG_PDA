@@ -1646,6 +1646,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 continue;
             }
 
+            // Status only. The successor was never delivered, so its slot
+            // occupancy, load and current part stay as the predecessor left them.
             var previous = successor.Status;
             successor = await UpdateRequestStatusAsync(connection, transaction, successor, TransportRequestStatus.Cancelled, cancellationToken);
             await InsertEventAsync(

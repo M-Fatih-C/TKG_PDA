@@ -2,7 +2,11 @@ namespace TkgPda.Application;
 
 /// <summary>
 /// Finished-goods delivery copy. The tablet displays these strings; it does
-/// not decide that a container arrived.
+/// not decide that a container arrived. A registration is one active user on
+/// one active device and may keep polling while the UI is backgrounded.
+/// Explicit logout deactivates it. An inactive user, an inactive device, or
+/// loss of an allowed warehouse or admin role stops delivery. Duplicate
+/// event keys stay deduplicated. Android Force Stop is not guaranteed.
 /// </summary>
 public static class FinishedGoodsNotificationCopy
 {

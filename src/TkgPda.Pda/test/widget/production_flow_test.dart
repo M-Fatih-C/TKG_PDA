@@ -114,19 +114,23 @@ void main() {
     },
   );
 
-  testWidgets('active production requests an alt part without retargeting mamul', (
-    tester,
-  ) async {
-    final repo = FakePdaRepository()..productionValue = activeRecord();
-    final c = await harness(tester, repo);
-    expect(c.selectedEffectivePart!.partId, testMainPartId);
-    expect(find.byKey(const Key('related-part-$testRelatedPartId')), findsNothing);
-    await tap(tester, const Key('alt-part-$testAltPartId'));
-    expect(c.selectedEffectivePart!.partId, testMainPartId);
-    expect(repo.partDemandCount, 1);
-    expect(repo.containerActionCount, 0);
-    expect(find.textContaining('Kasam Doldu'), findsWidgets);
-  });
+  testWidgets(
+    'active production requests an alt part without retargeting mamul',
+    (tester) async {
+      final repo = FakePdaRepository()..productionValue = activeRecord();
+      final c = await harness(tester, repo);
+      expect(c.selectedEffectivePart!.partId, testMainPartId);
+      expect(
+        find.byKey(const Key('related-part-$testRelatedPartId')),
+        findsNothing,
+      );
+      await tap(tester, const Key('alt-part-$testAltPartId'));
+      expect(c.selectedEffectivePart!.partId, testMainPartId);
+      expect(repo.partDemandCount, 1);
+      expect(repo.containerActionCount, 0);
+      expect(find.textContaining('Kasam Doldu'), findsWidgets);
+    },
+  );
 
   testWidgets('remote end clears unsent cart instead of offering stale parts', (
     tester,
@@ -134,8 +138,10 @@ void main() {
     final repo = FakePdaRepository()..productionValue = activeRecord();
     final c = await harness(tester, repo);
     c.enterBatchSelection();
-    await c.submitContainerAction(c.containerPositions.first, 'EMPTY');
-    expect(c.batchCart, isNotEmpty);
+    await c.requestAltPart(testMainPartOption.relatedParts.first);
+    expect(c.batchCart, isEmpty);
+    expect(c.mamulActionsReady, isTrue);
+    expect(c.selectedEffectivePart!.partId, testMainPartId);
     repo.productionValue = null;
     await c.refreshContext();
     await tester.pumpAndSettle();

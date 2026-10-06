@@ -305,10 +305,28 @@ public sealed class PostgresFinishedGoodsStoreTests
         ("slot", slotId), ("location", locationId));
 
     private Task<Guid> EnsureActorAsync() => ScalarAsync<Guid>(
-        "SELECT id FROM auth.users WHERE is_active ORDER BY created_at LIMIT 1");
+        """
+        WITH actor AS (
+            INSERT INTO auth.users (username, password_hash, full_name, employee_no, is_active)
+            VALUES ('phase03-store-actor', 'test-only-hash', 'Phase 03 Store Actor', 'PHASE03-ACTOR', true)
+            ON CONFLICT (username) DO UPDATE SET is_active = true
+            RETURNING id
+        )
+        INSERT INTO auth.user_roles (user_id, role_id)
+        SELECT actor.id, roles.id
+        FROM actor
+        JOIN auth.roles AS roles ON roles.code = 'WAREHOUSE_OPERATOR'
+        ON CONFLICT DO NOTHING
+        RETURNING user_id
+        """);
 
     private Task<Guid> EnsureDeviceAsync() => ScalarAsync<Guid>(
-        "SELECT id FROM audit.client_devices WHERE is_active ORDER BY device_code LIMIT 1");
+        """
+        INSERT INTO audit.client_devices (device_code, name, device_type, is_active)
+        VALUES ('PHASE03-STORE', 'Phase 03 store device', 'PDA', true)
+        ON CONFLICT (device_code) DO UPDATE SET is_active = true
+        RETURNING id
+        """);
 
     private async Task<Guid> LayoutDropAsync(Guid layoutId)
     {

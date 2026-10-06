@@ -453,21 +453,25 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         return partId;
     }
 
-    public Task SetSlotAsync(Guid slotId, string occupancy, string load) => ExecuteAsync(
+    public Task SetSlotAsync(Guid slotId, string occupancy, string load) =>
+        SetSlotAsync(slotId, occupancy, load, null);
+
+    public Task SetSlotAsync(Guid slotId, string occupancy, string load, Guid? currentPartId) => ExecuteAsync(
         """
-        INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
-        VALUES (@slot_id, @occupancy, @load)
+        INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state, current_part_id)
+        VALUES (@slot_id, @occupancy, @load, @part_id)
         ON CONFLICT (layout_slot_id) DO UPDATE
         SET occupancy_state = EXCLUDED.occupancy_state,
             load_state = EXCLUDED.load_state,
-            current_part_id = NULL,
+            current_part_id = @part_id,
             current_container_type_id = NULL,
             row_version = ops.slot_runtime_state.row_version + 1,
             updated_at = now()
         """,
         ("slot_id", slotId),
         ("occupancy", occupancy),
-        ("load", load));
+        ("load", load),
+        ("part_id", currentPartId));
 
     public async Task<HttpResponseMessage> SendTransportAsync(
         HttpClient client,

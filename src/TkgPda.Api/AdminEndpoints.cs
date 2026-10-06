@@ -74,6 +74,7 @@ public static class AdminEndpoints
         admin.MapGet("/rds/status", RdsStatusAsync);
         admin.MapGet("/rds/robots", ListRdsRobotsAsync);
         admin.MapGet("/rds/alarms", ListRdsRobotAlarmsAsync);
+        admin.MapGet("/rds/alarm-history", ListRobotAlarmHistoryAsync);
         admin.MapGet("/rds/navigation-profiles", (RdsIntegrationService service, CancellationToken ct) => service.ListNavigationProfilesAsync(ct));
         admin.MapPost("/rds/worksites/sync", SyncRdsWorkSitesAsync);
         admin.MapGet("/rds/worksites", ListRdsWorkSitesAsync);
@@ -116,6 +117,12 @@ public static class AdminEndpoints
 
     private static Task<IReadOnlyList<RdsRobotAlarmAdminRecord>> ListRdsRobotAlarmsAsync(HttpContext context, RdsIntegrationService service, CancellationToken ct) =>
         service.ListRobotAlarmsForAdminAsync(CorrelationId(context), ct);
+
+    private static Task<IReadOnlyList<RobotAlarmObservationRecord>> ListRobotAlarmHistoryAsync(
+        int? limit,
+        IRdsIntegrationStore store,
+        CancellationToken ct) =>
+        store.ListAlarmHistoryAsync(limit ?? 100, ct);
 
     private static async Task<RdsCommissioningCaptureResult> CaptureRdsCommissioningDiscoveryAsync(
         RdsCommissioningCaptureApiRequest request,

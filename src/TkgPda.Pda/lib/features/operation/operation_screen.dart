@@ -225,7 +225,7 @@ class _PartFirstWithBatchSkip extends StatelessWidget {
 
       // Mamul kasa sits with the production workspace. Active transports
       // are under that area and stay scoped to this terminal's machine.
-      final showMamul = controller.transportActionsReady;
+      final showMamul = controller.mamulActionsReady;
       final workspace = PdaScale.isWide(context) && showMamul
           ? Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -259,8 +259,7 @@ class _PartFirstWithBatchSkip extends StatelessWidget {
                 ?skip,
               ],
             );
-      final requests =
-          controller.context?.activeTransportRequests ?? const [];
+      final requests = controller.context?.activeTransportRequests ?? const [];
       final available = constraints.maxHeight;
       final transportHeight = requests.isEmpty
           ? 0.0
@@ -489,7 +488,9 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                                 controller.production.active != null
                                     ? 'Toplu Alt Parça'
                                     : 'Toplu Taşıma Sepeti',
-                                style: const TextStyle(fontWeight: FontWeight.w800),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                               const SizedBox(width: 6),
                               Container(
