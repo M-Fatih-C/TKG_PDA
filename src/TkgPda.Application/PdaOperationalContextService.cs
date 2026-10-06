@@ -311,6 +311,13 @@ public static class PdaOperationalContextPolicy
             request.ContainerTypeId,
             request.Priority,
             request.CreatedAt,
+            request.PartCode,
+            request.PartDescription,
+            request.RelationType,
+            request.ReadinessState,
+            request.QueuePosition,
+            Math.Max(0, request.AgeSeconds),
+            request.ExecutionElapsedSeconds is { } elapsed ? Math.Max(0, elapsed) : null,
             cancellation.Enabled,
             cancellation.DisabledCode,
             cancellation.DisabledMessage,
@@ -332,13 +339,13 @@ public static class PdaOperationalContextPolicy
             return Disabled("CANCEL", "MACHINE_OPERATION_NOT_PERMITTED", "Bu makinede operasyon yetkiniz bulunmuyor.");
         }
 
-        var elevated = actor.Roles.Contains(KnownRoleCodes.Admin)
+        // WP-05: the machine-scoped cancel endpoint requires PolicyNames.ProductionOperator
+        // (ADMIN, SUPERVISOR, LINE_OPERATOR). No warehouse role may cancel, not even its
+        // own delivery, so the UI must not offer a button that the endpoint refuses.
+        var mayCancel = actor.Roles.Contains(KnownRoleCodes.Admin)
             || actor.Roles.Contains(KnownRoleCodes.Supervisor)
             || actor.Roles.Contains(KnownRoleCodes.LineOperator);
-        var warehouseOwnBring = actor.Roles.Contains(KnownRoleCodes.WarehouseOperator)
-            && TransportRules.DeliversToMachine(request.Operation)
-            && request.IsMine;
-        if (!elevated && !warehouseOwnBring)
+        if (!mayCancel)
         {
             return Disabled("CANCEL", "CANCELLATION_NOT_ALLOWED_FOR_ROLE", "Bu talebi iptal etme yetkiniz bulunmuyor.");
         }

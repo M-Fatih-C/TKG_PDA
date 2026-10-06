@@ -654,6 +654,22 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
         var result = new List<ActiveTransportDataRecord>();
         await using var command = new NpgsqlCommand(
             """
+            -- WP-07: queue_position is TKG's deterministic ordering of this machine's
+            -- active requests (same status order as the global operator queue). It is
+            -- not an RDS queue position and says nothing about robot location.
+            WITH ranked AS (
+                SELECT q.id,
+                       (row_number() OVER (
+                           ORDER BY CASE q.status
+                                        WHEN 'RUNNING' THEN 0
+                                        WHEN 'SENT_TO_RDS' THEN 1
+                                        WHEN 'QUEUED' THEN 2
+                                        ELSE 3 END,
+                                    q.created_at, q.request_no))::integer AS queue_position
+                FROM ops.transport_requests q
+                WHERE q.machine_id = @machine_id
+                  AND q.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')
+            )
             SELECT r.id, r.request_no, tt.code, r.status,
                    r.requested_by, u.username,
                    r.source_slot_id, r.destination_slot_id,
@@ -662,10 +678,27 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                    r.correlation_id,
                    rt.id, rt.rds_task_record_id, rt.rds_task_label,
                    rt.out_order_no, rt.agv_id, rt.rds_status, rt.ended_reason,
-                   rt.sent_at, rt.started_at, rt.ended_at, rt.last_sync_at
+                   rt.sent_at, rt.started_at, rt.ended_at, rt.last_sync_at,
+                   p.part_code, p.description,
+                   CASE
+                       WHEN r.part_id IS NULL OR r.product_group_id IS NULL THEN NULL
+                       WHEN pg.main_part_id = r.part_id THEN 'MAIN_PART'
+                       ELSE pgp.relation_type
+                   END AS relation_type,
+                   r.readiness_state,
+                   ranked.queue_position,
+                   GREATEST(0, floor(extract(epoch FROM (clock_timestamp() - r.created_at))))::bigint AS age_seconds,
+                   CASE WHEN rt.started_at IS NULL THEN NULL
+                        ELSE GREATEST(0, floor(extract(epoch FROM (COALESCE(rt.ended_at, clock_timestamp()) - rt.started_at))))::bigint
+                   END AS execution_elapsed_seconds
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
+            JOIN ranked ON ranked.id = r.id
             LEFT JOIN auth.users u ON u.id = r.requested_by
+            LEFT JOIN master.parts p ON p.id = r.part_id
+            LEFT JOIN master.product_groups pg ON pg.id = r.product_group_id
+            LEFT JOIN master.product_group_parts pgp
+                   ON pgp.product_group_id = r.product_group_id AND pgp.part_id = r.part_id
             LEFT JOIN integration.rds_tasks rt ON rt.transport_request_id = r.id
             WHERE r.machine_id = @machine_id
               AND r.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')
@@ -708,7 +741,14 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 NullableString(reader, 13),
                 NullableString(reader, 14),
                 reader.GetGuid(15),
-                rdsTask));
+                rdsTask,
+                NullableString(reader, 27),
+                NullableString(reader, 28),
+                NullableString(reader, 29),
+                reader.GetString(30),
+                reader.IsDBNull(31) ? null : reader.GetInt32(31),
+                reader.GetInt64(32),
+                reader.IsDBNull(33) ? null : reader.GetInt64(33)));
         }
 
         return result;

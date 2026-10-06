@@ -88,6 +88,9 @@ class _TransportCard extends StatelessWidget {
                 Chip(label: Text(executionStateLabel(execution.state))),
               ],
             ),
+            const SizedBox(height: 6),
+            ..._partLines(),
+            ..._statusLines(),
             if (execution.failureCode != null)
               Text(
                 failureLabel(execution.failureCode, execution.operatorMessage),
@@ -112,6 +115,77 @@ class _TransportCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Part identity exactly as the server resolved it from master data. No
+  /// identifier is ever shown; a missing part falls back to a short note.
+  List<Widget> _partLines() {
+    final code = request.partCode?.trim() ?? '';
+    final description = request.partDescription?.trim() ?? '';
+    return [
+      if (isAltPartRelation(request.relationType))
+        const Padding(
+          padding: EdgeInsets.only(bottom: 4),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Chip(
+              key: Key('alt-part-badge'),
+              avatar: Icon(Icons.swap_horiz, size: 18),
+              label: Text(
+                'Alt Parça',
+                style: TextStyle(fontWeight: FontWeight.w900),
+              ),
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+        ),
+      if (code.isEmpty)
+        const Text('Parça bilgisi yok', key: Key('active-part-missing'))
+      else
+        Text(
+          'Parça: $code',
+          key: const Key('active-part-code'),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+        ),
+      if (description.isNotEmpty)
+        Text(
+          'Açıklama: $description',
+          key: const Key('active-part-description'),
+        ),
+    ];
+  }
+
+  /// Status rows. Every number is a server value: the TKG request order and
+  /// the server-measured durations. There is deliberately no progress
+  /// percentage, bar or distance: nothing here is a robot estimate.
+  List<Widget> _statusLines() {
+    final readiness = requestReadinessLabel(request.readinessState);
+    final queuePosition = request.queuePosition;
+    final age = request.ageSeconds;
+    final robotElapsed = request.executionElapsedSeconds;
+    return [
+      const SizedBox(height: 4),
+      if (queuePosition != null)
+        Tooltip(
+          message: 'TKG aktif talep sırası',
+          child: Text(
+            'Talep Sırası: $queuePosition',
+            key: const Key('active-queue-position'),
+          ),
+        ),
+      if (readiness != null)
+        Text('Hazırlık: $readiness', key: const Key('active-readiness')),
+      if (age != null)
+        Text(
+          'Talep süresi: ${formatServerDuration(age)}',
+          key: const Key('active-age'),
+        ),
+      if (robotElapsed != null)
+        Text(
+          'Robot çalışma süresi: ${formatServerDuration(robotElapsed)}',
+          key: const Key('active-robot-elapsed'),
+        ),
+    ];
   }
 
   Future<void> _confirmCancel(BuildContext context) async {

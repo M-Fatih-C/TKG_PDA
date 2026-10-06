@@ -685,6 +685,13 @@ class ActiveTransportRequest {
     required this.cancelDisabledCode,
     required this.cancelDisabledMessage,
     required this.execution,
+    this.partCode,
+    this.partDescription,
+    this.relationType,
+    this.readinessState = 'NOT_REQUIRED',
+    this.queuePosition,
+    this.ageSeconds,
+    this.executionElapsedSeconds,
   });
 
   final String requestId;
@@ -706,6 +713,25 @@ class ActiveTransportRequest {
   final String? cancelDisabledMessage;
   final ExecutionProjection execution;
 
+  /// WP-07 server-derived display values. The client never infers any of them.
+  final String? partCode;
+  final String? partDescription;
+
+  /// MAIN_PART, ALT_PART, RELATED, CONSUMABLE, OTHER, or null when the server
+  /// has no master-data evidence.
+  final String? relationType;
+  final String readinessState;
+
+  /// TKG's ordering of this machine's active requests. Not an RDS queue
+  /// position and not a robot position.
+  final int? queuePosition;
+
+  /// Seconds since creation, measured by the server clock at read time.
+  final int? ageSeconds;
+
+  /// Seconds since RDS reported execution start; null without start evidence.
+  final int? executionElapsedSeconds;
+
   factory ActiveTransportRequest.fromJson(JsonMap json) =>
       ActiveTransportRequest(
         requestId: json['requestId'] as String,
@@ -726,6 +752,19 @@ class ActiveTransportRequest {
         cancelDisabledCode: json['cancelDisabledCode'] as String?,
         cancelDisabledMessage: json['cancelDisabledMessage'] as String?,
         execution: ExecutionProjection.fromJson(_map(json['execution'])),
+        partCode: json['partCode'] as String?,
+        partDescription: json['partDescription'] as String?,
+        relationType: json['relationType'] as String?,
+        readinessState: json['readinessState'] as String? ?? 'NOT_REQUIRED',
+        queuePosition: json['queuePosition'] == null
+            ? null
+            : _integer(json['queuePosition']),
+        ageSeconds: json['ageSeconds'] == null
+            ? null
+            : _integer(json['ageSeconds']),
+        executionElapsedSeconds: json['executionElapsedSeconds'] == null
+            ? null
+            : _integer(json['executionElapsedSeconds']),
       );
 }
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 String actionLabel(String action) => switch (action) {
   'BRING_EMPTY' => 'Boş Kasa Getir',
+  'BRING_FULL' => 'Dolu Kasa Getir',
   'REMOVE_FULL' => 'Dolu Kasayı Kaldır',
   'REMOVE_EMPTY' => 'Boş Kasayı Kaldır',
   _ => action,
@@ -33,6 +34,31 @@ String executionStateLabel(String state) => switch (state) {
   'TERMINATED' => 'Sonlandırıldı',
   _ => 'Durum güncelleniyor',
 };
+
+/// Warehouse readiness of a request, kept apart from its execution state.
+String? requestReadinessLabel(String state) => switch (state) {
+  'WAITING_PREPARATION' => 'Depo hazırlığı bekleniyor',
+  'READY' => 'Hazır',
+  'NOT_REQUIRED' => 'Hazırlık gerekmiyor',
+  _ => null,
+};
+
+/// Friendly label for a server-derived part relation. Only ALT_PART is
+/// surfaced as a badge; the other relations are never printed as enum text.
+bool isAltPartRelation(String? relationType) => relationType == 'ALT_PART';
+
+/// Formats a server-measured duration. The client never reads its own clock
+/// for this: the value only changes when a newer server projection arrives.
+String formatServerDuration(int seconds) {
+  final total = seconds < 0 ? 0 : seconds;
+  final hours = total ~/ 3600;
+  final minutes = (total % 3600) ~/ 60;
+  final secs = total % 60;
+  String two(int value) => value.toString().padLeft(2, '0');
+  return hours > 0
+      ? '$hours:${two(minutes)}:${two(secs)}'
+      : '${two(minutes)}:${two(secs)}';
+}
 
 String occupancyLabel(String state) => switch (state) {
   'VACANT' => 'Boş konum',

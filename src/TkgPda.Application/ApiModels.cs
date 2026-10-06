@@ -227,7 +227,20 @@ public sealed record ActiveTransportDataRecord(
     string? FailureCode,
     string? FailureMessage,
     Guid CorrelationId,
-    RdsTaskDataRecord? RdsTask);
+    RdsTaskDataRecord? RdsTask,
+    // WP-07 projection-only values. Everything below is derived server-side from
+    // PostgreSQL (master data, request row, server clock); none of it is persisted.
+    string? PartCode = null,
+    string? PartDescription = null,
+    // MAIN_PART, ALT_PART, RELATED, CONSUMABLE, OTHER, or null when master data
+    // gives no evidence. Never guessed.
+    string? RelationType = null,
+    string ReadinessState = "NOT_REQUIRED",
+    // TKG's deterministic ordering of this machine's active requests (1-based).
+    // It is not an RDS queue position and not a robot position.
+    int? QueuePosition = null,
+    long AgeSeconds = 0,
+    long? ExecutionElapsedSeconds = null);
 
 /// <summary>
 /// Business execution view for the PDA. Raw RDS identifiers — taskRecordId,
@@ -270,6 +283,13 @@ public sealed record ActiveTransportRequestRecord(
     Guid? ContainerTypeId,
     int Priority,
     DateTimeOffset CreatedAt,
+    string? PartCode,
+    string? PartDescription,
+    string? RelationType,
+    string ReadinessState,
+    int? QueuePosition,
+    long AgeSeconds,
+    long? ExecutionElapsedSeconds,
     bool CanCancel,
     string? CancelDisabledCode,
     string? CancelDisabledMessage,
