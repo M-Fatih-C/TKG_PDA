@@ -91,6 +91,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         Guid? reservationOwnedByRequestId = null)
     {
         await LockIdempotencyKeyAsync(connection, transaction, request.IdempotencyKey, cancellationToken);
+        request = await InheritActiveNavigationAsync(connection, transaction, request, cancellationToken);
         var existing = await FindByIdempotencyKeyAsync(connection, transaction, request.IdempotencyKey, cancellationToken);
         if (existing is not null)
         {
@@ -677,6 +678,14 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
         await LockMachineRuntimeAsync(connection, transaction, selection.MachineId, cancellationToken);
+        var navigationProfileId = await ResolvePublishedNavigationAsync(
+            connection,
+            transaction,
+            selection.MachineId,
+            selection.VariantId,
+            selection.NavigationProfileId,
+            cancellationToken);
+        selection = selection with { NavigationProfileId = navigationProfileId };
         await GuardProductionVariantSwitchAsync(connection, transaction, selection, cancellationToken);
 
         await using (var active = new NpgsqlCommand(
@@ -917,6 +926,89 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         return await taskType.ExecuteScalarAsync(cancellationToken) is Guid id
             ? id
             : throw new WorkflowRuleException("TASK_TYPE_NOT_FOUND", "The requested logistics task type is not configured.");
+    }
+
+    private static async Task<CreateTransportRequest> InheritActiveNavigationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        CreateTransportRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.NavigationProfileId.HasValue)
+        {
+            return request;
+        }
+
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT active_navigation_id
+            FROM ops.machine_runtime_state
+            WHERE machine_id = @machine_id
+            FOR UPDATE
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("machine_id", request.MachineId);
+        return await command.ExecuteScalarAsync(cancellationToken) is Guid navigationId
+            ? request with { NavigationProfileId = navigationId }
+            : request;
+    }
+
+    private static async Task<Guid?> ResolvePublishedNavigationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid machineId,
+        Guid variantId,
+        Guid? requestedNavigationProfileId,
+        CancellationToken cancellationToken)
+    {
+        if (requestedNavigationProfileId.HasValue)
+        {
+            return requestedNavigationProfileId;
+        }
+
+        var published = new List<(Guid Id, bool IsDefault)>();
+        await using (var command = new NpgsqlCommand(
+                         """
+                         SELECT p.id, a.is_default
+                         FROM master.variant_navigation_profile_assignments a
+                         JOIN master.navigation_profiles p
+                           ON p.id = a.navigation_profile_id AND p.machine_id = a.machine_id
+                         WHERE a.variant_id = @variant_id
+                           AND a.machine_id = @machine_id
+                           AND p.status = 'PUBLISHED'
+                         """,
+                         connection,
+                         transaction))
+        {
+            command.Parameters.AddWithValue("machine_id", machineId);
+            command.Parameters.AddWithValue("variant_id", variantId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                published.Add((reader.GetGuid(0), reader.GetBoolean(1)));
+            }
+        }
+
+        if (published.Count == 0)
+        {
+            return null;
+        }
+
+        if (published.Count == 1)
+        {
+            return published[0].Id;
+        }
+
+        var defaults = published.Where(row => row.IsDefault).ToArray();
+        if (defaults.Length == 1)
+        {
+            return defaults[0].Id;
+        }
+
+        throw new WorkflowRuleException(
+            "NAVIGATION_PROFILE_AMBIGUOUS",
+            "More than one published navigation profile is assigned, and no single default identifies the map.");
     }
 
     private static async Task ValidateVariantLayoutAssignmentAsync(

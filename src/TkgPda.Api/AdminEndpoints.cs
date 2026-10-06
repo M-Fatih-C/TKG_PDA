@@ -84,6 +84,7 @@ public static class AdminEndpoints
         admin.MapGet("/rds/task-templates", (IRdsExecutionStore store, CancellationToken ct) => store.ListTaskTemplatesAsync(ct));
         admin.MapPost("/rds/task-templates/validate", ValidateRdsTaskTemplateAsync);
         admin.MapPost("/rds/commissioning/capture", CaptureRdsCommissioningDiscoveryAsync);
+        admin.MapCommissioningActivation();
         admin.MapOperationalEvidence();
 
         return endpoints;

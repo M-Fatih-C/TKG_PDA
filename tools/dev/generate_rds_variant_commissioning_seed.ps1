@@ -26,7 +26,7 @@ $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine('-- Generated from config/commissioning/tkg_rds_variant_map_naming.json.')
 [void]$sb.AppendLine('-- Do not rename customer machines, variants, or parts in this file.')
 [void]$sb.AppendLine('-- Planned WorkSite names are reserved here. They are not live RDS WorkSites.')
-[void]$sb.AppendLine('-- Replay keeps an advanced commissioning_state and does not publish the profile.')
+[void]$sb.AppendLine('-- Replay refreshes static names. It does not publish a profile, and it never moves MAPPED, VERIFIED, or COMMISSIONED backwards or clears geometryVerified.')
 [void]$sb.AppendLine('BEGIN;')
 [void]$sb.AppendLine('')
 
@@ -68,8 +68,21 @@ ON CONFLICT (machine_id, code, version) DO UPDATE SET
     robot_map_name = EXCLUDED.robot_map_name,
     route_profile_name = EXCLUDED.route_profile_name,
     stitch_profile_name = EXCLUDED.stitch_profile_name,
-    config_json = master.navigation_profiles.config_json || EXCLUDED.config_json
-WHERE master.navigation_profiles.status = 'DRAFT';
+    config_json = jsonb_set(
+        jsonb_set(
+            master.navigation_profiles.config_json || (EXCLUDED.config_json - 'commissioningState' - 'geometryVerified'),
+            '{commissioningState}',
+            to_jsonb(CASE
+                WHEN master.navigation_profiles.config_json ->> 'commissioningState' IN ('MAPPED', 'VERIFIED', 'COMMISSIONED')
+                THEN master.navigation_profiles.config_json ->> 'commissioningState'
+                ELSE EXCLUDED.config_json ->> 'commissioningState'
+            END)),
+        '{geometryVerified}',
+        to_jsonb(CASE
+            WHEN coalesce((master.navigation_profiles.config_json ->> 'geometryVerified')::boolean, false)
+            THEN true
+            ELSE coalesce((EXCLUDED.config_json ->> 'geometryVerified')::boolean, false)
+        END));
 
 INSERT INTO master.variant_navigation_profile_assignments (
     variant_id, machine_id, navigation_profile_id, is_default)
@@ -101,6 +114,7 @@ ON CONFLICT (navigation_profile_id, planned_rds_site_id) DO UPDATE SET
     object_family = EXCLUDED.object_family,
     ordinal = EXCLUDED.ordinal,
     updated_at = now();
+-- commissioning_state and geometry_verified stay at their operational values.
 "@)
         }
     }
@@ -129,7 +143,11 @@ ON CONFLICT (layout_slot_id, navigation_profile_id) DO UPDATE SET
     logical_slot_code = EXCLUDED.logical_slot_code,
     business_role = EXCLUDED.business_role,
     source_layout_code = EXCLUDED.source_layout_code,
-    metadata_json = EXCLUDED.metadata_json,
+    metadata_json = EXCLUDED.metadata_json || CASE
+        WHEN coalesce((integration.layout_slot_rds_plan_bindings.metadata_json ->> 'geometryVerified')::boolean, false)
+        THEN jsonb_build_object('geometryVerified', true)
+        ELSE '{}'::jsonb
+    END,
     updated_at = now();
 "@)
     }

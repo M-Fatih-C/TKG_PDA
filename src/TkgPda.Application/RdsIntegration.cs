@@ -340,6 +340,57 @@ public sealed record OperatorRobotSummaryRecord(
     double? BatteryLevel,
     bool HasActiveAlarm);
 
+public sealed record RdsProfileSlotMappingRecord(
+    Guid SlotId,
+    Guid NavigationProfileId,
+    Guid RdsWorkSiteId,
+    string RdsSiteId);
+
+public sealed record VariantCommissioningReport(
+    string MachineCode,
+    string VariantCode,
+    string? AreaName,
+    string? MapName,
+    string NavigationCode,
+    Guid NavigationProfileId,
+    string ProfileStatus,
+    string CommissioningState,
+    bool GeometryVerified,
+    string? LayoutBindingState,
+    int PlannedWorkSites,
+    int MappedWorkSites,
+    int VerifiedBindings,
+    int MissingBindings,
+    bool IsDefault,
+    bool Ready,
+    int ActiveTaskTemplates,
+    int CrossMachineMappings,
+    int CrossProfileMappings,
+    string? ActiveNavigationCode,
+    string? ProductionSessionStatus);
+
+public sealed record WorkSiteNameDiff(
+    string MachineCode,
+    string VariantCode,
+    string NavigationCode,
+    int PlannedCount,
+    int ActualCount,
+    int ExactMatchCount,
+    int MappedStateCount,
+    IReadOnlyList<string> MissingNames,
+    IReadOnlyList<string> UnexpectedNames);
+
+public sealed record CommissioningDecision(
+    bool Applied,
+    string MachineCode,
+    string VariantCode,
+    string NavigationCode,
+    string ProfileStatus,
+    string CommissioningState,
+    bool GeometryVerified,
+    bool IsDefault,
+    IReadOnlyList<string> Blockers);
+
 public interface IRdsIntegrationStore
 {
     Task<IReadOnlyList<RdsNavigationProfileRecord>> ListNavigationProfilesAsync(CancellationToken cancellationToken = default);
@@ -348,6 +399,34 @@ public interface IRdsIntegrationStore
     Task<IReadOnlyList<RdsSlotMappingRecord>> ListSlotMappingsAsync(Guid? layoutId, CancellationToken cancellationToken = default);
     Task<RdsSlotMappingRecord> SetSlotMappingAsync(Guid slotId, Guid rdsWorkSiteId, AdminMutationContext context, CancellationToken cancellationToken = default);
     Task RemoveSlotMappingAsync(Guid slotId, AdminMutationContext context, CancellationToken cancellationToken = default);
+
+    Task<RdsProfileSlotMappingRecord> SetProfileSlotMappingAsync(
+        Guid slotId,
+        Guid navigationProfileId,
+        Guid rdsWorkSiteId,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<IReadOnlyList<VariantCommissioningReport>> ListVariantCommissioningAsync(CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<WorkSiteNameDiff> ReadWorkSiteNameDiffAsync(string machineCode, string variantCode, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<CommissioningDecision> VerifyVariantCommissioningAsync(
+        string machineCode,
+        string variantCode,
+        bool apply,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<CommissioningDecision> PromoteVariantCommissioningAsync(
+        string machineCode,
+        string variantCode,
+        bool apply,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
     Task<IReadOnlyList<RdsActiveLockFingerprint>> GetActiveTkgLockFingerprintsAsync(CancellationToken cancellationToken = default);
 
     Task ObserveAlarmSnapshotAsync(

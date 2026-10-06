@@ -268,7 +268,8 @@ foreach ($migration in @(
     '019_robot_alarm_observations.sql',
     '020_robot_alarm_observation_state.sql',
     '021_production_end_cleanup.sql',
-    '022_variant_scoped_rds_worksite_commissioning.sql'
+    '022_variant_scoped_rds_worksite_commissioning.sql',
+    '023_rds_variant_commissioning_hardening.sql'
 )) {
     Write-Host "Applying migration $migration..." -ForegroundColor Cyan
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot "db\migrations\$migration") | Out-Null

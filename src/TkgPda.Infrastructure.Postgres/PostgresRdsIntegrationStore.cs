@@ -109,6 +109,7 @@ public sealed partial class PostgresRdsIntegrationStore(NpgsqlDataSource dataSou
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        await MarkExactPlanMatchesMappedAsync(connection, transaction, navigationProfileId, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         var updated = normalized.Count(site => existing.Contains(site.SiteId));
         return (normalized.Length - updated, updated);
@@ -328,20 +329,22 @@ public sealed partial class PostgresRdsIntegrationStore(NpgsqlDataSource dataSou
         Guid slotId,
         object? before,
         object? after,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string entityType = "LAYOUT_SLOT_RDS_MAPPING")
     {
         await using var command = new NpgsqlCommand(
             """
             INSERT INTO audit.audit_logs (
                 actor_user_id, action, entity_type, entity_id, before_json, after_json,
                 ip_address, user_agent, correlation_id)
-            VALUES (@actor, @action, 'LAYOUT_SLOT_RDS_MAPPING', @entity_id, @before, @after,
+            VALUES (@actor, @action, @entity_type, @entity_id, @before, @after,
                     CAST(@ip AS inet), @agent, @correlation)
             """,
             connection,
             transaction);
         command.Parameters.AddWithValue("actor", context.ActorUserId);
         command.Parameters.AddWithValue("action", action);
+        command.Parameters.AddWithValue("entity_type", entityType);
         command.Parameters.AddWithValue("entity_id", slotId.ToString());
         AddJson(command, "before", before);
         AddJson(command, "after", after);

@@ -42,6 +42,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     {
         await ExecuteScriptAsync(MigrationFile("021_production_end_cleanup.sql"));
         await ExecuteScriptAsync(MigrationFile("022_variant_scoped_rds_worksite_commissioning.sql"));
+        await ExecuteScriptAsync(MigrationFile("023_rds_variant_commissioning_hardening.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -84,6 +85,48 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             WHERE rds_worksite_id IN (
                 SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-SCOPE-%');
             DELETE FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-SCOPE-%';
+            DELETE FROM integration.layout_slot_rds_profile_mapping
+            WHERE navigation_profile_id IN (
+                SELECT id FROM master.navigation_profiles WHERE code LIKE 'TEST-NAV-ACT-%')
+               OR rds_worksite_id IN (
+                    SELECT w.id
+                    FROM integration.rds_worksites w
+                    JOIN integration.rds_worksite_plans p
+                      ON p.navigation_profile_id = w.navigation_profile_id
+                     AND p.planned_rds_site_id = w.rds_site_id);
+            DELETE FROM integration.layout_slot_rds_profile_mapping
+            WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-ACT-%');
+            DELETE FROM integration.layout_slot_rds_mapping
+            WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-ACT-%');
+            DELETE FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-ACT-%';
+            DELETE FROM integration.rds_worksites w
+            USING integration.rds_worksite_plans p
+            WHERE p.navigation_profile_id = w.navigation_profile_id
+              AND p.planned_rds_site_id = w.rds_site_id;
+            DELETE FROM master.variant_navigation_profile_assignments a
+            USING master.navigation_profiles p
+            WHERE p.id = a.navigation_profile_id AND p.code LIKE 'TEST-NAV-ACT-%';
+            DELETE FROM master.navigation_profiles WHERE code LIKE 'TEST-NAV-ACT-%';
+            UPDATE master.variant_navigation_profile_assignments a
+            SET is_default = false
+            FROM master.navigation_profiles p
+            WHERE p.id = a.navigation_profile_id
+              AND p.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
+            UPDATE master.navigation_profiles
+            SET status = 'DRAFT',
+                published_at = NULL,
+                config_json = jsonb_set(
+                    jsonb_set(config_json, '{commissioningState}', '"PLANNED"'::jsonb),
+                    '{geometryVerified}', 'false'::jsonb)
+            WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
+            UPDATE integration.rds_worksite_plans p
+            SET commissioning_state = 'PLANNED',
+                geometry_verified = false
+            FROM master.navigation_profiles n
+            WHERE p.navigation_profile_id = n.id
+              AND n.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'DEV-RDS-SIM-%';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'P08A-%';
             DELETE FROM master.task_templates

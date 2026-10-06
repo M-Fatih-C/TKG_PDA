@@ -1,4 +1,5 @@
 using Npgsql;
+using NpgsqlTypes;
 using TkgPda.Application;
 using TkgPda.Domain;
 
@@ -116,6 +117,7 @@ public sealed class PostgresOperationalEvidenceStore(NpgsqlDataSource dataSource
                 connection);
             delete.Parameters.AddWithValue("code", code);
             await delete.ExecuteNonQueryAsync(cancellationToken);
+            await InsertPriorityAuditAsync(connection, code, null, actorUserId, cancellationToken);
             return;
         }
 
@@ -133,6 +135,27 @@ public sealed class PostgresOperationalEvidenceStore(NpgsqlDataSource dataSource
         upsert.Parameters.AddWithValue("priority", priority.Value);
         upsert.Parameters.AddWithValue("actor", actorUserId);
         await upsert.ExecuteNonQueryAsync(cancellationToken);
+        await InsertPriorityAuditAsync(connection, code, priority, actorUserId, cancellationToken);
+    }
+
+    private static async Task InsertPriorityAuditAsync(
+        NpgsqlConnection connection,
+        string operationCode,
+        int? priority,
+        Guid actorUserId,
+        CancellationToken cancellationToken)
+    {
+        await using var audit = new NpgsqlCommand(
+            """
+            INSERT INTO audit.audit_logs (actor_user_id, action, entity_type, entity_id, after_json)
+            VALUES (@actor, 'PRODUCTION_END_PRIORITY_SET', 'PRODUCTION_END_PRIORITY', @code,
+                    jsonb_build_object('operationCode', @code, 'priority', to_jsonb(@priority)))
+            """,
+            connection);
+        audit.Parameters.AddWithValue("actor", actorUserId);
+        audit.Parameters.AddWithValue("code", operationCode);
+        audit.Parameters.Add("priority", NpgsqlDbType.Integer).Value = priority.HasValue ? priority.Value : DBNull.Value;
+        await audit.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<int> RequireProductionEndPriorityAsync(string operationCode, CancellationToken cancellationToken)

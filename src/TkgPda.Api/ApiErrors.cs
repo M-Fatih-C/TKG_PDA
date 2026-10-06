@@ -42,6 +42,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
                 : error.Code is "NAVIGATION_PROFILE_REQUIRED" or "ID_REQUIRED"
                     ? StatusCodes.Status400BadRequest
                     : error.Code is "MACHINE_REGION_MAPPING_FORBIDDEN" or "RDS_WORKSITE_NOT_PHYSICAL"
+                        or "RDS_WORKSITE_PLAN_NAME_MISMATCH" or "SLOT_NOT_TRANSPORT_ELIGIBLE"
                         ? StatusCodes.Status422UnprocessableEntity
                         : StatusCodes.Status409Conflict;
             await ApiErrorWriter.WriteAsync(context, status, error.Code, error.Message);
@@ -138,7 +139,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
             => StatusCodes.Status400BadRequest,
         "IDEMPOTENCY_KEY_REUSED" or "SLOT_ALREADY_RESERVED" or "ACTIVE_TRANSPORT_EXISTS" or "PART_REQUEST_ALREADY_ACTIVE"
             or "RUNTIME_CONTEXT_MISMATCH" or "NAVIGATION_CONTEXT_MISMATCH" or "VARIANT_LAYOUT_CONFLICT"
-            or "NAVIGATION_PROFILE_CONFLICT" or "PRODUCT_GROUP_CONFLICT" or "PART_CONFLICT"
+            or "NAVIGATION_PROFILE_CONFLICT" or "NAVIGATION_PROFILE_AMBIGUOUS" or "PRODUCT_GROUP_CONFLICT" or "PART_CONFLICT"
             or "CONTAINER_CONFLICT" or "INVALID_SLOT_STATE" or "ILLEGAL_STATUS_TRANSITION"
             or "CANCELLATION_AFTER_EXECUTION_DEFERRED" or "REQUEST_LOCK_SCOPE_CHANGED" or "CANCELLATION_NOT_ALLOWED"
             or "SLOT_NOT_IN_ACTIVE_LAYOUT" or "OCCUPIED_SLOT_REQUIRED" or "SLOT_BUSY"
