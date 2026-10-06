@@ -9,7 +9,7 @@ import '../features/tasks/operator_queue_screen.dart';
 import '../features/warehouse/preparation_areas_screen.dart';
 import '../features/warehouse/store_screen.dart';
 import '../features/warehouse/warehouse_home_screen.dart';
-import '../features/warehouse/warehouse_preparation_screen.dart';
+import '../data/models/pda_models.dart';
 import 'app_controller.dart';
 
 GoRouter buildRouter(AppController controller) => GoRouter(
@@ -29,8 +29,7 @@ GoRouter buildRouter(AppController controller) => GoRouter(
         !controller.canAccessFinishedGoodsWarehouse) {
       return controller.canAccessAnyWarehouse ? '/warehouse' : '/machines';
     }
-    if (stage == AppStage.warehouseHome &&
-        !controller.canAccessAnyWarehouse) {
+    if (stage == AppStage.warehouseHome && !controller.canAccessAnyWarehouse) {
       return '/machines';
     }
 
@@ -44,7 +43,7 @@ GoRouter buildRouter(AppController controller) => GoRouter(
             ? '/machines'
             : '/machines/${controller.selectedMachine!.id}',
       AppStage.tasks => '/tasks',
-      AppStage.warehousePreparation => '/warehouse-preparation',
+      AppStage.warehousePreparation => '/warehouse/preparation-areas',
       AppStage.warehouseHome => '/warehouse',
       AppStage.preparationAreas => '/warehouse/preparation-areas',
       AppStage.finishedGoodsStore => '/warehouse/store',
@@ -79,8 +78,7 @@ GoRouter buildRouter(AppController controller) => GoRouter(
     ),
     GoRoute(
       path: '/warehouse-preparation',
-      builder: (context, state) =>
-          WarehousePreparationScreen(controller: controller),
+      redirect: (context, state) => '/warehouse/preparation-areas',
     ),
     GoRoute(
       path: '/warehouse',
@@ -105,6 +103,7 @@ GoRouter buildRouter(AppController controller) => GoRouter(
       path: '/warehouse/preparation-areas',
       builder: (context, state) => PreparationAreasScreen(
         coordinator: controller.preparation,
+        operatorLabel: _operatorLabel(controller.user),
         onBack: controller.leavePreparationAreas,
         onNavigate: (stage) {
           if (stage == AppStage.tasks) {
@@ -118,3 +117,12 @@ GoRouter buildRouter(AppController controller) => GoRouter(
     ),
   ],
 );
+
+String? _operatorLabel(AuthenticatedUser? user) {
+  if (user == null) return null;
+  final name = user.fullName.trim().isNotEmpty ? user.fullName : user.username;
+  final sicil = user.employeeNo?.trim().isNotEmpty == true
+      ? user.employeeNo!
+      : '—';
+  return '$name (Sicil: $sicil)';
+}

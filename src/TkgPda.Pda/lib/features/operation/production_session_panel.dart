@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
+import '../../data/models/production_session.dart';
+import 'production_coordinator.dart';
 
 /// Production lifecycle is independent of transport execution. These controls
 /// never cancel a request or instruct a robot.
@@ -14,6 +16,15 @@ class ProductionSessionPanel extends StatelessWidget {
     final active = state.active;
     final openCount = controller.context?.activeTransportRequests.length ?? 0;
     final error = controller.productionContextError ?? state.error;
+    if (active != null) {
+      return _CompactActiveHeader(
+        controller: controller,
+        active: active,
+        error: error,
+        openCount: openCount,
+        state: state,
+      );
+    }
     return Card(
       key: const Key('production-panel'),
       elevation: 2,
@@ -78,7 +89,10 @@ class ProductionSessionPanel extends StatelessWidget {
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: active != null
                         ? const Color(0xFF16835D).withValues(alpha: 0.12)
@@ -146,16 +160,28 @@ class ProductionSessionPanel extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.inventory_2_outlined, size: 18, color: Color(0xFF0B4F6C)),
+                        const Icon(
+                          Icons.inventory_2_outlined,
+                          size: 18,
+                          color: Color(0xFF0B4F6C),
+                        ),
                         const SizedBox(width: 8),
                         const Text(
                           'Ana ürün: ',
-                          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Color(0xFF475569)),
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                            color: Color(0xFF475569),
+                          ),
                         ),
                         Expanded(
                           child: Text(
-                            controller.selectedMainPart?.partCode ?? 'Doğrulanıyor…',
-                            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+                            controller.selectedMainPart?.partCode ??
+                                'Doğrulanıyor…',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 15,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -164,16 +190,28 @@ class ProductionSessionPanel extends StatelessWidget {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        const Icon(Icons.alt_route_rounded, size: 18, color: Color(0xFF0B4F6C)),
+                        const Icon(
+                          Icons.alt_route_rounded,
+                          size: 18,
+                          color: Color(0xFF0B4F6C),
+                        ),
                         const SizedBox(width: 8),
                         const Text(
                           'Varyant: ',
-                          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Color(0xFF475569)),
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                            color: Color(0xFF475569),
+                          ),
                         ),
                         Expanded(
                           child: Text(
-                            controller.context?.activeVariantCode ?? 'Doğrulanıyor…',
-                            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+                            controller.context?.activeVariantCode ??
+                                'Doğrulanıyor…',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 15,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -182,16 +220,27 @@ class ProductionSessionPanel extends StatelessWidget {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        const Icon(Icons.schedule_rounded, size: 18, color: Color(0xFF0B4F6C)),
+                        const Icon(
+                          Icons.schedule_rounded,
+                          size: 18,
+                          color: Color(0xFF0B4F6C),
+                        ),
                         const SizedBox(width: 8),
                         const Text(
                           'Başlangıç: ',
-                          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: Color(0xFF475569)),
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                            color: Color(0xFF475569),
+                          ),
                         ),
                         Expanded(
                           child: Text(
                             _time(active.startedAt.toLocal()),
-                            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 14,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -203,7 +252,11 @@ class ProductionSessionPanel extends StatelessWidget {
               const SizedBox(height: 8),
               const Text(
                 'Ana ürün ve varyant üretim bitene kadar sabittir.',
-                style: TextStyle(fontSize: 12, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF64748B),
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ] else
               Container(
@@ -215,12 +268,20 @@ class ProductionSessionPanel extends StatelessWidget {
                 ),
                 child: const Row(
                   children: [
-                    Icon(Icons.info_outline, size: 20, color: Color(0xFF0B4F6C)),
+                    Icon(
+                      Icons.info_outline,
+                      size: 20,
+                      color: Color(0xFF0B4F6C),
+                    ),
                     SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         'Ana ürünü ve uyumlu varyantı seçip üretimi başlatın. Taşıma taleplerini ardından oluşturabilirsiniz.',
-                        style: TextStyle(fontSize: 13, color: Color(0xFF334155), fontWeight: FontWeight.w500),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Color(0xFF334155),
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                     ),
                   ],
@@ -238,7 +299,11 @@ class ProductionSessionPanel extends StatelessWidget {
                 child: Text(
                   error,
                   key: const Key('production-error'),
-                  style: const TextStyle(color: Color(0xFFB91C1C), fontWeight: FontWeight.w600, fontSize: 13),
+                  style: const TextStyle(
+                    color: Color(0xFFB91C1C),
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                  ),
                 ),
               ),
             ],
@@ -246,7 +311,11 @@ class ProductionSessionPanel extends StatelessWidget {
               const SizedBox(height: 10),
               Text(
                 '${state.pendingLabel} sonucu kesinleşmedi. Yeniden deneme aynı işlemi doğrular; yeni üretim oluşturmaz.',
-                style: const TextStyle(fontSize: 13, color: Color(0xFFC26D16), fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFFC26D16),
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -264,8 +333,13 @@ class ProductionSessionPanel extends StatelessWidget {
                 style: FilledButton.styleFrom(
                   minimumSize: const Size(0, 52),
                   backgroundColor: const Color(0xFF16835D),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 onPressed: controller.canStartProduction
                     ? controller.startProduction
@@ -277,7 +351,11 @@ class ProductionSessionPanel extends StatelessWidget {
                 const SizedBox(height: 6),
                 const Text(
                   'Yeni üretim için açık taşıma taleplerinin tamamlanmasını bekleyin veya talepleri ayrıca iptal edin.',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF9A3412), fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF9A3412),
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ] else ...[
@@ -288,8 +366,13 @@ class ProductionSessionPanel extends StatelessWidget {
                   minimumSize: const Size(0, 52),
                   foregroundColor: const Color(0xFFB91C1C),
                   side: const BorderSide(color: Color(0xFFEF4444)),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 onPressed: controller.canEndProduction
                     ? () => _confirmEnd(context)
@@ -302,7 +385,11 @@ class ProductionSessionPanel extends StatelessWidget {
                 Text(
                   '$openCount açık taşıma var. Üretimi bitirmek için tamamlanmalarını bekleyin veya talepleri ayrıca iptal edin.',
                   key: const Key('production-open-transports'),
-                  style: const TextStyle(fontSize: 12, color: Color(0xFF9A3412), fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF9A3412),
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
               if (controller.batchCart.isNotEmpty) ...[
@@ -372,5 +459,174 @@ class ProductionSessionPanel extends StatelessWidget {
   static String _time(DateTime value) {
     String two(int number) => number.toString().padLeft(2, '0');
     return '${two(value.day)}.${two(value.month)}.${value.year} ${two(value.hour)}:${two(value.minute)}';
+  }
+
+  static String _clock(DateTime value) {
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${two(value.hour)}:${two(value.minute)}';
+  }
+}
+
+class _CompactActiveHeader extends StatelessWidget {
+  const _CompactActiveHeader({
+    required this.controller,
+    required this.active,
+    required this.error,
+    required this.openCount,
+    required this.state,
+  });
+
+  final AppController controller;
+  final ProductionSession active;
+  final String? error;
+  final int openCount;
+  final ProductionCoordinator state;
+
+  @override
+  Widget build(BuildContext context) {
+    final part = controller.selectedMainPart;
+    final code = part?.partCode ?? 'Doğrulanıyor';
+    final name = part?.description?.trim();
+    final variant = controller.context?.activeVariantCode ?? 'Doğrulanıyor';
+    return Card(
+      key: const Key('production-panel'),
+      margin: EdgeInsets.zero,
+      elevation: 0,
+      color: const Color(0xFFF0FDF4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: Color(0xFF86EFAC)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.play_circle_filled_rounded,
+                  color: Color(0xFF16835D),
+                  size: 22,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'ÜRETİM AKTİF',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 13,
+                          letterSpacing: 0.4,
+                        ),
+                      ),
+                      Text(
+                        name == null || name.isEmpty ? code : '$code · $name',
+                        key: const Key('active-production-product'),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 16,
+                        ),
+                      ),
+                      Text(
+                        'Varyant $variant · Başlangıç ${ProductionSessionPanel._clock(active.startedAt.toLocal())}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Color(0xFF334155),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                OutlinedButton(
+                  key: const Key('production-end'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(48, 48),
+                    foregroundColor: const Color(0xFFB91C1C),
+                    side: const BorderSide(color: Color(0xFFEF4444)),
+                  ),
+                  onPressed: controller.canEndProduction
+                      ? () => _confirmEnd(context)
+                      : null,
+                  child: const Text('Üretimi Bitir'),
+                ),
+              ],
+            ),
+            if (state.loading || state.inFlight)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: LinearProgressIndicator(minHeight: 3),
+              ),
+            if (error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  error!,
+                  key: const Key('production-error'),
+                  style: const TextStyle(
+                    color: Color(0xFFB91C1C),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            if (openCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  '$openCount açık taşıma var. Üretimi bitirmek için tamamlanmalarını bekleyin veya talepleri ayrıca iptal edin.',
+                  key: const Key('production-open-transports'),
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: Color(0xFF9A3412),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            if (state.hasPending)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  key: const Key('production-retry'),
+                  onPressed: controller.isMutationInFlight
+                      ? null
+                      : controller.retryProduction,
+                  child: const Text('Aynı İşlemi Yeniden Dene'),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmEnd(BuildContext context) async {
+    final sessionId = active.id;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Üretimi bitir?'),
+        content: const Text(
+          'Bu makinenin mevcut üretimi kapatılacak. Bu işlem taşıma görevlerini tamamlamaz veya iptal etmez.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Vazgeç'),
+          ),
+          FilledButton(
+            key: const Key('confirm-production-end'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Üretimi Bitir'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true &&
+        context.mounted &&
+        sessionId == controller.production.active?.id) {
+      await controller.endProduction();
+    }
   }
 }

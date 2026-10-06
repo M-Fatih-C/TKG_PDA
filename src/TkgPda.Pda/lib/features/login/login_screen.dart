@@ -37,16 +37,18 @@ class _LoginScreenState extends State<LoginScreen> {
       appBar: AppBar(
         title: const Text('TKG Operatör Girişi'),
         actions: [
-          TextButton.icon(
-            key: const Key('change-device-code'),
-            onPressed: widget.controller.busy ? null : _confirmDeviceChange,
-            icon: const Icon(Icons.settings, color: Colors.white70, size: 20),
-            label: const Text(
-              'Cihazı Değiştir',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-            ),
+          PopupMenuButton<String>(
+            tooltip: 'Diğer',
+            onSelected: (value) {
+              if (value == 'device') _confirmDeviceChange();
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'device',
+                child: Text('Cihazı Değiştir', key: Key('change-device-code')),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
         ],
       ),
       body: SafeArea(
@@ -82,10 +84,14 @@ class _LoginScreenState extends State<LoginScreen> {
                                   width: 64,
                                   height: 64,
                                   decoration: BoxDecoration(
-                                    color: const Color(0xFF0B4F6C).withValues(alpha: 0.08),
+                                    color: const Color(
+                                      0xFF0B4F6C,
+                                    ).withValues(alpha: 0.08),
                                     shape: BoxShape.circle,
                                     border: Border.all(
-                                      color: const Color(0xFF0B4F6C).withValues(alpha: 0.2),
+                                      color: const Color(
+                                        0xFF0B4F6C,
+                                      ).withValues(alpha: 0.2),
                                       width: 2,
                                     ),
                                   ),
@@ -233,7 +239,10 @@ class _LoginScreenState extends State<LoginScreen> {
                                             color: Colors.white,
                                           ),
                                         )
-                                      : const Icon(Icons.login_rounded, size: 22),
+                                      : const Icon(
+                                          Icons.login_rounded,
+                                          size: 22,
+                                        ),
                                   label: const Text('Giriş Yap'),
                                 ),
                               ),

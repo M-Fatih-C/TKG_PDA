@@ -68,7 +68,9 @@ class StoreUnit {
     machineCode: json['machineCode'] as String?,
     deliveredAt: _time(json['deliveredAt']),
     rowVersion: _integer(json['rowVersion']),
-    loadState: json['loadState'] as String? ?? 'FULL',
+    loadState: json['loadState'] is String
+        ? json['loadState'] as String
+        : 'UNKNOWN',
   );
 }
 

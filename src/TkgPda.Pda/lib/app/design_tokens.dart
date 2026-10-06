@@ -20,14 +20,24 @@ class PdaScale {
   /// Below this width the compact (handheld PDA) type scale applies.
   static const double compactBreakpoint = 1024;
 
+  /// A 1024×600 industrial terminal is short even though its width is not
+  /// below [compactBreakpoint]. Height and the shortest side decide that.
+  static bool isShortTerminal(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    return size.height <= 640 || size.shortestSide <= 600;
+  }
+
   /// True on the line terminal, where the operator reads from a distance and
   /// the screen can carry two columns at once.
   static bool isWide(BuildContext context) =>
-      MediaQuery.sizeOf(context).width >= twoColumnBreakpoint;
+      MediaQuery.sizeOf(context).width >= twoColumnBreakpoint &&
+      !isShortTerminal(context);
 
-  /// True on a handheld PDA, where the same content must survive one column.
-  static bool isCompact(BuildContext context) =>
-      MediaQuery.sizeOf(context).width < compactBreakpoint;
+  /// True on a handheld or short industrial terminal.
+  static bool isCompact(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    return size.width < compactBreakpoint || isShortTerminal(context);
+  }
 
   // --- Type scale -------------------------------------------------------
   // Terminal values first, handheld values after the slash in the comment.
@@ -52,11 +62,14 @@ class PdaScale {
   static double secondaryActionHeight(BuildContext context) =>
       isCompact(context) ? 52 : 72;
 
-  /// Hard ceiling for the stacked status banners. They used to have none, so a
-  /// bad shift (offline + error + robot alarm + active transport + ambiguous
-  /// submission) could take half the screen away from the actual work.
-  static double statusRegionMaxHeight(BuildContext context) =>
-      MediaQuery.sizeOf(context).height * 0.32;
+  /// Hard ceiling for stacked status banners. A 600px terminal must keep the
+  /// production workspace visible, so this stays well under a third of the
+  /// screen. Extra messages scroll inside the cap.
+  static double statusRegionMaxHeight(BuildContext context) {
+    final height = MediaQuery.sizeOf(context).height;
+    final fraction = height * (isShortTerminal(context) ? 0.16 : 0.22);
+    return fraction.clamp(72, 160);
+  }
 
   /// Height of the docked container panel. The cards flex into whatever this
   /// gives them, so the panel can grow when it moves into a two-column layout

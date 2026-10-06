@@ -243,51 +243,54 @@ class _PositionCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-            Row(
-              children: [
-                // The logical container number leads: it is what the operator
-                // was told on the line, and what the action keys are built on.
-                Container(
-                  width: PdaScale.isCompact(context) ? 34 : 46,
-                  height: PdaScale.isCompact(context) ? 34 : 46,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.primary,
-                    borderRadius: BorderRadius.circular(11),
-                  ),
-                  child: Text(
-                    '${position.positionNumber}',
-                    style: TextStyle(
-                      color: theme.colorScheme.onPrimary,
-                      fontSize: PdaScale.title(context) * 0.86,
-                      fontWeight: FontWeight.w800,
+                    Row(
+                      children: [
+                        // The logical container number leads: it is what the operator
+                        // was told on the line, and what the action keys are built on.
+                        Container(
+                          width: PdaScale.isCompact(context) ? 34 : 46,
+                          height: PdaScale.isCompact(context) ? 34 : 46,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary,
+                            borderRadius: BorderRadius.circular(11),
+                          ),
+                          child: Text(
+                            '${position.positionNumber}',
+                            style: TextStyle(
+                              color: theme.colorScheme.onPrimary,
+                              fontSize: PdaScale.title(context) * 0.86,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        SizedBox(width: pad * 0.6),
+                        Expanded(
+                          flex: 3,
+                          child: Text(
+                            total > 1
+                                ? '${position.label} (${position.positionNumber} / $total)'
+                                : position.label,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w800,
+                              fontSize: PdaScale.title(context) * 0.8,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        SizedBox(width: pad * 0.4),
+                        // The state rides in the header rather than on its own row:
+                        // every fixed block above the actions is height the buttons
+                        // lose when the panel is squeezed by status banners.
+                        Flexible(
+                          flex: 2,
+                          child: _StateBadge(position: position),
+                        ),
+                      ],
                     ),
-                  ),
-                ),
-                SizedBox(width: pad * 0.6),
-                Expanded(
-                  flex: 3,
-                  child: Text(
-                    total > 1
-                        ? '${position.label} (${position.positionNumber} / $total)'
-                        : position.label,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w800,
-                      fontSize: PdaScale.title(context) * 0.8,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                SizedBox(width: pad * 0.4),
-                // The state rides in the header rather than on its own row:
-                // every fixed block above the actions is height the buttons
-                // lose when the panel is squeezed by status banners.
-                Flexible(flex: 2, child: _StateBadge(position: position)),
-              ],
-            ),
-            SizedBox(height: pad * 0.5),
-            SizedBox(height: actionHeight, child: _actions(context)),
+                    SizedBox(height: pad * 0.5),
+                    SizedBox(height: actionHeight, child: _actions(context)),
                   ],
                 ),
               ),
@@ -303,11 +306,21 @@ class _PositionCard extends StatelessWidget {
   Widget _actions(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final gap = PdaScale.gutter(context) * 0.45;
+      final submittingFull = controller.isSubmittingContainerAction(
+        position.positionNumber,
+        'FULL',
+      );
+      final submittingEmpty = controller.isSubmittingContainerAction(
+        position.positionNumber,
+        'EMPTY',
+      );
+      final fullReady = position.fullAction.enabled || submittingFull;
+      final emptyReady = position.emptyAction.enabled || submittingEmpty;
       final full = _BusinessActionButton(
         controller: controller,
         position: position,
         action: 'FULL',
-        label: '${position.positionNumber}. Kasam Doldu',
+        label: 'Kasam Doldu',
         availability: position.fullAction,
         icon: Icons.inventory,
       );
@@ -315,10 +328,29 @@ class _PositionCard extends StatelessWidget {
         controller: controller,
         position: position,
         action: 'EMPTY',
-        label: '${position.positionNumber}. Alan Boş',
+        label: 'Alan Boş',
         availability: position.emptyAction,
         icon: Icons.move_to_inbox_outlined,
       );
+      if (!fullReady && !emptyReady) {
+        final reason =
+            position.fullAction.disabledMessage ??
+            position.emptyAction.disabledMessage ??
+            'Bu kasa için işlem uygun değil';
+        return Center(
+          child: Text(
+            reason,
+            key: Key('container-unavailable-${position.positionNumber}'),
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: PdaScale.caption(context),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        );
+      }
+      if (fullReady && !emptyReady) return full;
+      if (emptyReady && !fullReady) return empty;
 
       if (constraints.maxHeight < PdaScale.stackedActionsMinHeight(context)) {
         return Row(
@@ -330,12 +362,6 @@ class _PositionCard extends StatelessWidget {
         );
       }
 
-      // With room to stack, the action this container can actually accept gets
-      // the larger share — the two used to carry identical weight, so which one
-      // was the right press did not read at a glance.
-      final gate = controller.mutationGate.canMutate;
-      final fullReady = gate && position.fullAction.enabled;
-      final emptyReady = gate && position.emptyAction.enabled;
       return Column(
         children: [
           Expanded(flex: fullReady && !emptyReady ? 3 : 2, child: full),
@@ -419,8 +445,8 @@ class _BusinessActionButton extends StatelessWidget {
                     minimumSize: Size.zero,
                     backgroundColor: enabled
                         ? (action == 'FULL'
-                            ? const Color(0xFFC2410C)
-                            : const Color(0xFF0B4F6C))
+                              ? const Color(0xFFC2410C)
+                              : const Color(0xFF0B4F6C))
                         : null,
                     foregroundColor: enabled ? Colors.white : null,
                     elevation: enabled ? 2 : 0,
@@ -506,69 +532,21 @@ class _BusinessActionButton extends StatelessWidget {
   }
 }
 
-
-class _StateBadge extends StatefulWidget {
+class _StateBadge extends StatelessWidget {
   const _StateBadge({required this.position});
 
   final ContainerPosition position;
 
   @override
-  State<_StateBadge> createState() => _StateBadgeState();
-}
-
-class _StateBadgeState extends State<_StateBadge>
-    with SingleTickerProviderStateMixin {
-  AnimationController? _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _syncAnimation();
-  }
-
-  @override
-  void didUpdateWidget(_StateBadge old) {
-    super.didUpdateWidget(old);
-    if (old.position.transportState != widget.position.transportState) {
-      _syncAnimation();
-    }
-  }
-
-  void _syncAnimation() {
-    final state = widget.position.transportState;
-    final shouldAnimate =
-        state == 'REQUESTED' || state == 'IN_PROGRESS' || state == 'QUEUED';
-    if (!shouldAnimate) {
-      _controller?.dispose();
-      _controller = null;
-      return;
-    }
-    _controller ??= AnimationController(vsync: this);
-    _controller!
-      ..duration = state == 'REQUESTED'
-          ? const Duration(milliseconds: 1200)
-          : const Duration(milliseconds: 2400)
-      ..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _controller?.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final state = widget.position.transportState;
-    final queue = widget.position.queuePosition == null
+    final state = position.transportState;
+    final queue = position.queuePosition == null
         ? ''
-        : ' · #${widget.position.queuePosition}';
-    // "Is it stuck or just slow?" is the question a waiting operator actually
-    // has. The projection already carries an ETA; it was only ever shown on
-    // the separate queue screen, so the card left them guessing.
-    final eta = _etaSuffix(widget.position);
+        : ' · #${position.queuePosition}';
+    final eta = _etaSuffix(position);
     final suffix = '$queue${eta == null ? '' : ' · $eta'}';
-    final disableAnimations = MediaQuery.of(context).disableAnimations;
+    final moving =
+        state == 'REQUESTED' || state == 'IN_PROGRESS' || state == 'QUEUED';
     // Severity has to read from across the line. Every state used to render in
     // the same neutral chip, so "Hazır" and "Hata" looked identical.
     final colour = PdaStatusColors.of(state);
@@ -585,11 +563,13 @@ class _StateBadgeState extends State<_StateBadge>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(color: colour, shape: BoxShape.circle),
-          ),
+          if (moving)
+            SizedBox.square(
+              dimension: 12,
+              child: CircularProgressIndicator(strokeWidth: 2, color: colour),
+            )
+          else
+            Icon(Icons.circle, size: 10, color: colour),
           SizedBox(width: PdaScale.gutter(context) * 0.45),
           Flexible(
             child: Text(
@@ -607,18 +587,9 @@ class _StateBadgeState extends State<_StateBadge>
       ),
     );
 
-    final aligned = Align(alignment: Alignment.centerLeft, child: chip);
-    if (_controller == null || disableAnimations) {
-      return Semantics(label: 'Taşıma durumu $state$suffix', child: aligned);
-    }
     return Semantics(
-      label: 'Taşıma durumu $state$suffix',
-      child: FadeTransition(
-        opacity: Tween<double>(begin: 0.45, end: 1.0).animate(
-          CurvedAnimation(parent: _controller!, curve: Curves.easeInOut),
-        ),
-        child: aligned,
-      ),
+      label: 'Taşıma durumu ${_stateLabel(state)}$suffix',
+      child: Align(alignment: Alignment.centerLeft, child: chip),
     );
   }
 }

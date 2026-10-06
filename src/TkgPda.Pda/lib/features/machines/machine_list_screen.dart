@@ -46,20 +46,14 @@ class MachineListScreen extends StatelessWidget {
               icon: const Icon(Icons.warehouse_outlined),
             ),
           ],
-          if (controller.canAccessSemiFinishedWarehouse) ...[
-            IconButton(
-              key: const Key('open-warehouse-preparation'),
-              tooltip: 'Depo Hazırlık',
-              onPressed: controller.busy
-                  ? null
-                  : controller.enterWarehousePreparation,
-              icon: const Icon(Icons.inventory_2_outlined),
-            ),
-          ],
-          IconButton(
-            tooltip: 'Yenile',
-            onPressed: controller.busy ? null : controller.reloadMachines,
-            icon: const Icon(Icons.refresh),
+          PopupMenuButton<String>(
+            tooltip: 'Diğer',
+            onSelected: (value) {
+              if (value == 'refresh') controller.reloadMachines();
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'refresh', child: Text('Yenile')),
+            ],
           ),
           TextButton.icon(
             key: const Key('logout-button'),
@@ -75,8 +69,8 @@ class MachineListScreen extends StatelessWidget {
             if (controller.offline) const OfflineBanner(),
             if (controller.problem case final problem?)
               ProblemBanner(problem: problem),
-            if (controller.notice case final notice?)
-              NoticeBanner(message: notice),
+            if (controller.uiNotice case final notice?)
+              if (notice.persistent) NoticeBanner(notice: notice),
             Expanded(
               child: controller.busy && controller.machines.isEmpty
                   ? const Center(child: CircularProgressIndicator())
@@ -122,7 +116,8 @@ class MachineListScreen extends StatelessWidget {
                               vertical: 20,
                             ),
                             itemCount: controller.machines.length,
-                            separatorBuilder: (_, _) => const SizedBox(height: 14),
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 14),
                             itemBuilder: (context, index) => _MachineCard(
                               machine: controller.machines[index],
                               enabled: !controller.busy,
@@ -182,7 +177,9 @@ class _MachineCard extends StatelessWidget {
                   boxShadow: canOperate
                       ? [
                           BoxShadow(
-                            color: const Color(0xFF0B4F6C).withValues(alpha: 0.25),
+                            color: const Color(
+                              0xFF0B4F6C,
+                            ).withValues(alpha: 0.25),
                             blurRadius: 8,
                             offset: const Offset(0, 3),
                           ),
@@ -223,13 +220,21 @@ class _MachineCard extends StatelessWidget {
                           ),
                           decoration: BoxDecoration(
                             color: canOperate
-                                ? const Color(0xFF16835D).withValues(alpha: 0.12)
-                                : const Color(0xFFC26D16).withValues(alpha: 0.12),
+                                ? const Color(
+                                    0xFF16835D,
+                                  ).withValues(alpha: 0.12)
+                                : const Color(
+                                    0xFFC26D16,
+                                  ).withValues(alpha: 0.12),
                             borderRadius: BorderRadius.circular(6),
                             border: Border.all(
                               color: canOperate
-                                  ? const Color(0xFF16835D).withValues(alpha: 0.3)
-                                  : const Color(0xFFC26D16).withValues(alpha: 0.3),
+                                  ? const Color(
+                                      0xFF16835D,
+                                    ).withValues(alpha: 0.3)
+                                  : const Color(
+                                      0xFFC26D16,
+                                    ).withValues(alpha: 0.3),
                             ),
                           ),
                           child: Text(
@@ -267,7 +272,9 @@ class _MachineCard extends StatelessWidget {
                           Expanded(
                             child: Text(
                               'Bu makinede taşıma işlemi yapamazsınız.',
-                              key: Key('machine-unavailable-reason-${machine.id}'),
+                              key: Key(
+                                'machine-unavailable-reason-${machine.id}',
+                              ),
                               style: const TextStyle(
                                 color: Color(0xFF9A3412),
                                 fontWeight: FontWeight.w700,

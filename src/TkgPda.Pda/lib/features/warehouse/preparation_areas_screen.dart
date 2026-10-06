@@ -19,6 +19,7 @@ class PreparationAreasScreen extends StatelessWidget {
     required this.coordinator,
     required this.onBack,
     this.onNavigate,
+    this.operatorLabel,
     this.title = 'Yarı Mamul Hazırlık',
     super.key,
   });
@@ -26,6 +27,7 @@ class PreparationAreasScreen extends StatelessWidget {
   final PreparationCoordinator coordinator;
   final VoidCallback onBack;
   final void Function(AppStage stage)? onNavigate;
+  final String? operatorLabel;
   final String title;
 
   @override
@@ -47,6 +49,16 @@ class PreparationAreasScreen extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(title),
+              if (operatorLabel case final label?)
+                Text(
+                  label,
+                  key: const Key('operator-user-banner'),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.normal,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
               if (coordinator.lastSuccessfulRefresh case final last?)
                 Text(
                   coordinator.error != null
@@ -332,7 +344,10 @@ class _PalletSummary extends StatelessWidget {
             children: [
               if (pallet.targetMachineCode case final machine?)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 1,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFF0B4F6C).withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(4),
@@ -390,13 +405,16 @@ class _AreaActions extends StatelessWidget {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
-            textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+            textStyle: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+            ),
           ),
           onPressed: coordinator.inFlight
               ? null
               : () => _openDemandPicker(context),
           icon: const Icon(Icons.add_circle_outline, size: 20),
-          label: const Text('Doldur'),
+          label: const Text('Talep Seç'),
         ),
       );
     }
@@ -441,7 +459,7 @@ class _AreaActions extends StatelessWidget {
               onPressed: coordinator.inFlight
                   ? null
                   : () => coordinator.release(pallet, 'WITHDRAWN'),
-              child: const Text('Geri Al'),
+              child: const Text('Hazırlığı Geri Al'),
             ),
           ),
         ],
@@ -470,7 +488,7 @@ class _AreaActions extends StatelessWidget {
                   ? null
                   : () => coordinator.release(pallet, 'COLLECTED'),
               icon: const Icon(Icons.local_shipping_outlined, size: 20),
-              label: const Text('Robot Aldı'),
+              label: const Text('Palet Robot Tarafından Alındı'),
             ),
           ),
         ),
@@ -487,7 +505,7 @@ class _AreaActions extends StatelessWidget {
             onPressed: coordinator.inFlight
                 ? null
                 : () => coordinator.release(pallet, 'WITHDRAWN'),
-            child: const Text('Geri Al'),
+            child: const Text('Hazırlığı Geri Al'),
           ),
         ),
       ],

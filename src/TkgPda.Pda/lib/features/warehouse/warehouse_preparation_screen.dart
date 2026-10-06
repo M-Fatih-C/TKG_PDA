@@ -67,8 +67,8 @@ class WarehousePreparationScreen extends StatelessWidget {
             if (controller.offline) const OfflineBanner(),
             if (controller.problem case final problem?)
               ProblemBanner(problem: problem),
-            if (controller.notice case final notice?)
-              NoticeBanner(message: notice),
+            if (controller.uiNotice case final notice?)
+              if (notice.persistent) NoticeBanner(notice: notice),
             Expanded(child: _Body(controller: controller)),
           ],
         ),

@@ -56,122 +56,117 @@ class WarehouseNotificationBanner extends StatelessWidget {
           ),
           child: Material(
             color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(14),
-              onTap: () {
-                coordinator.dismissActiveBanner();
-                coordinator.markRead(banner.id);
-                onNavigate(banner.targetStage);
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(icon, color: color, size: 24),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: color,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  tag,
-                                  style: const TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.white,
-                                    letterSpacing: 0.4,
-                                  ),
-                                ),
+                    child: Icon(icon, color: color, size: 24),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
                               ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  banner.title,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 14,
-                                    color: Color(0xFF0F172A),
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                              decoration: BoxDecoration(
+                                color: color,
+                                borderRadius: BorderRadius.circular(4),
                               ),
-                              Text(
-                                DateFormat('HH:mm:ss').format(banner.timestamp),
+                              child: Text(
+                                tag,
                                 style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFF64748B),
-                                  fontWeight: FontWeight.w500,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                  letterSpacing: 0.4,
                                 ),
                               ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            banner.message,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              color: Color(0xFF334155),
-                              fontWeight: FontWeight.w500,
                             ),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                banner.title,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 14,
+                                  color: Color(0xFF0F172A),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Text(
+                              DateFormat('HH:mm:ss').format(banner.timestamp),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF64748B),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          banner.message,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: Color(0xFF334155),
+                            fontWeight: FontWeight.w500,
                           ),
-                        ],
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  FilledButton(
+                    key: const Key('warehouse-notification-action'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: color,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      textStyle: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    FilledButton(
-                      key: const Key('warehouse-notification-action'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: color,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        textStyle: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      onPressed: () {
-                        coordinator.dismissActiveBanner();
-                        coordinator.markRead(banner.id);
-                        onNavigate(banner.targetStage);
-                      },
-                      child: const Text('Görüntüle'),
-                    ),
-                    const SizedBox(width: 4),
-                    IconButton(
-                      key: const Key('warehouse-notification-dismiss'),
-                      tooltip: 'Kapat',
-                      iconSize: 20,
-                      color: const Color(0xFF94A3B8),
-                      onPressed: coordinator.dismissActiveBanner,
-                      icon: const Icon(Icons.close),
-                    ),
-                  ],
-                ),
+                    onPressed: () {
+                      coordinator.dismissActiveBanner();
+                      coordinator.markRead(banner.id);
+                      onNavigate(banner.targetStage);
+                    },
+                    child: const Text('Aç'),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    key: const Key('warehouse-notification-dismiss'),
+                    tooltip: 'Kapat',
+                    iconSize: 20,
+                    color: const Color(0xFF94A3B8),
+                    onPressed: coordinator.dismissActiveBanner,
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
               ),
             ),
           ),
@@ -323,7 +318,10 @@ class WarehouseNotificationSheet extends StatelessWidget {
                   )
                 : ListView.separated(
                     key: const Key('warehouse-notification-list'),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
                     itemCount: coordinator.notifications.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, index) => _NotificationTile(
@@ -366,24 +364,6 @@ class _Header extends StatelessWidget {
             color: Color(0xFF0F172A),
           ),
         ),
-        if (coordinator.unreadCount > 0) ...[
-          const SizedBox(width: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: const Color(0xFFDC2626),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Text(
-              '${coordinator.unreadCount} yeni',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
         const Spacer(),
         IconButton(
           key: const Key('warehouse-notification-sound-toggle'),
@@ -431,23 +411,23 @@ class _Header extends StatelessWidget {
 }
 
 class _NotificationTile extends StatelessWidget {
-  const _NotificationTile({
-    required this.notification,
-    required this.onTap,
-  });
+  const _NotificationTile({required this.notification, required this.onTap});
 
   final WarehouseNotification notification;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final (color, icon, tag) =
-        WarehouseNotificationBanner._styleFor(notification.type);
+    final (color, icon, tag) = WarehouseNotificationBanner._styleFor(
+      notification.type,
+    );
     final isUnread = !notification.isRead;
 
     return Container(
       decoration: BoxDecoration(
-        color: isUnread ? color.withValues(alpha: 0.04) : const Color(0xFFF8FAFC),
+        color: isUnread
+            ? color.withValues(alpha: 0.04)
+            : const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: isUnread
@@ -478,7 +458,7 @@ class _NotificationTile extends StatelessWidget {
               child: Text(
                 tag,
                 style: const TextStyle(
-                  fontSize: 9,
+                  fontSize: 12,
                   fontWeight: FontWeight.w800,
                   color: Colors.white,
                 ),
@@ -501,10 +481,7 @@ class _NotificationTile extends StatelessWidget {
                 width: 8,
                 height: 8,
                 margin: const EdgeInsets.only(left: 6),
-                decoration: BoxDecoration(
-                  color: color,
-                  shape: BoxShape.circle,
-                ),
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
               ),
           ],
         ),
@@ -546,7 +523,10 @@ class _NotificationTile extends StatelessWidget {
             ),
           ),
           onPressed: onTap,
-          child: const Text('Git', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+          child: const Text(
+            'Git',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+          ),
         ),
       ),
     );

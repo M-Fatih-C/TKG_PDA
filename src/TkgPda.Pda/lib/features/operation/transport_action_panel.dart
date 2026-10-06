@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
+import '../../app/design_tokens.dart';
 import '../../data/models/pda_models.dart';
 import '../../shared/presentation.dart';
 
@@ -249,12 +250,9 @@ class _LifecycleBar extends StatelessWidget {
         request.readinessState == 'WAITING_PREPARATION' ||
             request.readinessState == 'READY',
       ),
-      (
-        'ROBOT GÖREVİ',
-        request.status == 'SENT_TO_RDS' || request.status == 'RUNNING',
-      ),
-      ('TAŞINIYOR', request.status == 'RUNNING'),
-      ('TAMAMLANDI', request.status == 'COMPLETED'),
+      ('ROBOT', request.status == 'SENT_TO_RDS' || request.status == 'RUNNING'),
+      ('TAŞIMA', request.status == 'RUNNING'),
+      ('TAMAM', request.status == 'COMPLETED'),
     ];
     return Row(
       key: const Key('transport-lifecycle-bar'),
@@ -276,7 +274,7 @@ class _LifecycleBar extends StatelessWidget {
                     stage.$1,
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      fontSize: 9,
+                      fontSize: PdaScale.caption(context),
                       fontWeight: FontWeight.w800,
                       color: stage.$2
                           ? const Color(0xFF0F172A)

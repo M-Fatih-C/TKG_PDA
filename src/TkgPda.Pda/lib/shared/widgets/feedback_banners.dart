@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../app/app_controller.dart';
 import '../../core/errors/api_problem.dart';
 import '../../data/models/pda_models.dart';
 
@@ -149,25 +150,34 @@ class RobotAlarmBanner extends StatelessWidget {
 }
 
 class NoticeBanner extends StatelessWidget {
-  const NoticeBanner({required this.message, super.key});
+  const NoticeBanner({required this.notice, super.key});
 
-  final String message;
+  final UiNotice notice;
 
   @override
   Widget build(BuildContext context) {
-    final isSuccess = message.contains('oluşturuldu') ||
-        message.contains('güncellendi') ||
-        message.contains('başladı') ||
-        message.contains('doğrulandı') ||
-        message.contains('temizlendi') ||
-        message.contains('iptal edildi');
-    final bgColor =
-        isSuccess ? const Color(0xFFDCFCE7) : const Color(0xFFDBEAFE);
-    final fgColor =
-        isSuccess ? const Color(0xFF14532D) : const Color(0xFF1E40AF);
-    final icon = isSuccess
-        ? Icons.check_circle_outline_rounded
-        : Icons.info_outline_rounded;
+    final (bgColor, fgColor, icon) = switch (notice.severity) {
+      UiNoticeSeverity.error => (
+        const Color(0xFFFEE2E2),
+        const Color(0xFF991B1B),
+        Icons.error_outline_rounded,
+      ),
+      UiNoticeSeverity.warning => (
+        const Color(0xFFFFEDD5),
+        const Color(0xFF9A3412),
+        Icons.warning_amber_rounded,
+      ),
+      UiNoticeSeverity.info => (
+        const Color(0xFFDBEAFE),
+        const Color(0xFF1E40AF),
+        Icons.info_outline_rounded,
+      ),
+      UiNoticeSeverity.success => (
+        const Color(0xFFDCFCE7),
+        const Color(0xFF14532D),
+        Icons.check_circle_outline_rounded,
+      ),
+    };
 
     return Container(
       key: const Key('notice-banner'),
@@ -180,7 +190,7 @@ class NoticeBanner extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              message,
+              notice.message,
               style: TextStyle(
                 color: fgColor,
                 fontWeight: FontWeight.w700,
@@ -192,4 +202,59 @@ class NoticeBanner extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Success and ordinary information leave the top of the screen. Warnings and
+/// errors stay until the operator's next action clears them.
+class TransientNoticeHost extends StatefulWidget {
+  const TransientNoticeHost({
+    required this.controller,
+    required this.child,
+    super.key,
+  });
+
+  final AppController controller;
+  final Widget child;
+
+  @override
+  State<TransientNoticeHost> createState() => _TransientNoticeHostState();
+}
+
+class _TransientNoticeHostState extends State<TransientNoticeHost> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_present);
+  }
+
+  @override
+  void didUpdateWidget(TransientNoticeHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_present);
+      widget.controller.addListener(_present);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_present);
+    super.dispose();
+  }
+
+  void _present() {
+    final notice = widget.controller.uiNotice;
+    if (notice == null || notice.persistent) return;
+    final message = notice.message;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+      );
+      widget.controller.acknowledgeTransientNotice();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

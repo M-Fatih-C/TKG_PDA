@@ -57,15 +57,6 @@ class WarehouseHomeScreen extends StatelessWidget {
             onPressed: controller.busy ? null : controller.enterTasks,
             icon: const Icon(Icons.assignment_outlined),
           ),
-          if (controller.canAccessSemiFinishedWarehouse)
-            IconButton(
-              key: const Key('open-warehouse-preparation'),
-              tooltip: 'Depo Hazırlık Konsolu',
-              onPressed: controller.busy
-                  ? null
-                  : controller.enterWarehousePreparation,
-              icon: const Icon(Icons.inventory_2_outlined),
-            ),
           IconButton(
             key: const Key('logout-button'),
             tooltip: 'Çıkış',
@@ -177,7 +168,9 @@ class _HomeTile extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
         side: BorderSide(
-          color: enabled ? color.withValues(alpha: 0.4) : const Color(0xFFCBD5E1),
+          color: enabled
+              ? color.withValues(alpha: 0.4)
+              : const Color(0xFFCBD5E1),
           width: enabled ? 2 : 1,
         ),
       ),

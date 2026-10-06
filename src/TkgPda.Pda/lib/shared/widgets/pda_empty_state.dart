@@ -23,7 +23,7 @@ class PdaEmptyState extends StatelessWidget {
   final Key? textKey;
 
   @override
-  Widget build(BuildContext context) => Center(
+  Widget build(BuildContext context) => SingleChildScrollView(
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
       child: Column(
@@ -36,16 +36,9 @@ class PdaEmptyState extends StatelessWidget {
             decoration: BoxDecoration(
               color: const Color(0xFFF1F5F9),
               shape: BoxShape.circle,
-              border: Border.all(
-                color: const Color(0xFFCBD5E1),
-                width: 1.5,
-              ),
+              border: Border.all(color: const Color(0xFFCBD5E1), width: 1.5),
             ),
-            child: Icon(
-              icon,
-              size: 36,
-              color: const Color(0xFF64748B),
-            ),
+            child: Icon(icon, size: 36, color: const Color(0xFF64748B)),
           ),
           const SizedBox(height: 16),
           Text(
@@ -73,10 +66,7 @@ class PdaEmptyState extends StatelessWidget {
               ),
             ),
           ],
-          if (action case final act?) ...[
-            const SizedBox(height: 20),
-            act,
-          ],
+          if (action case final act?) ...[const SizedBox(height: 20), act],
         ],
       ),
     ),
