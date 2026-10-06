@@ -84,4 +84,86 @@ public sealed class RobotAlarmObservationApiTests(ApiTestFixture fixture) : ICla
         Assert.Equal(before, await fixture.ScalarAsync<string>(
             "SELECT COALESCE(string_agg(occupancy_state || '/' || load_state || '/' || COALESCE(current_part_id::text, ''), ',' ORDER BY layout_slot_id::text), '') FROM ops.slot_runtime_state"));
     }
+
+    [Fact]
+    public async Task Newer_empty_snapshot_blocks_an_older_alarm()
+    {
+        var store = await FreshStoreAsync();
+        var ten = At("10:00:00Z");
+        await store.ObserveAlarmSnapshotAsync([], Guid.NewGuid(), ten);
+        await store.ObserveAlarmSnapshotAsync([Alarm("A")], Guid.NewGuid(), At("09:59:00Z"));
+
+        Assert.Equal(0L, await OpenCountAsync());
+        Assert.Equal(ten, await WatermarkAsync());
+    }
+
+    [Fact]
+    public async Task Newer_alarm_survives_an_older_empty_snapshot()
+    {
+        var store = await FreshStoreAsync();
+        var ten = At("10:00:00Z");
+        await store.ObserveAlarmSnapshotAsync([Alarm("A")], Guid.NewGuid(), ten);
+        await store.ObserveAlarmSnapshotAsync([], Guid.NewGuid(), At("09:59:00Z"));
+
+        Assert.Equal(1L, await OpenCountAsync());
+        Assert.Equal(ten, await WatermarkAsync());
+    }
+
+    [Fact]
+    public async Task Newer_empty_snapshot_clears_an_older_alarm()
+    {
+        var store = await FreshStoreAsync();
+        var ten = At("10:00:00Z");
+        await store.ObserveAlarmSnapshotAsync([Alarm("A")], Guid.NewGuid(), At("09:59:00Z"));
+        await store.ObserveAlarmSnapshotAsync([], Guid.NewGuid(), ten);
+
+        Assert.Equal(0L, await OpenCountAsync());
+        Assert.Equal(ten, await fixture.ScalarAsync<DateTimeOffset>(
+            "SELECT cleared_at FROM integration.robot_alarm_observations"));
+        Assert.Equal(ten, await WatermarkAsync());
+    }
+
+    [Fact]
+    public async Task The_same_snapshot_timestamp_is_idempotent()
+    {
+        var store = await FreshStoreAsync();
+        var ten = At("10:00:00Z");
+        var alarm = Alarm("A");
+        await store.ObserveAlarmSnapshotAsync([alarm], Guid.NewGuid(), ten);
+        await store.ObserveAlarmSnapshotAsync([alarm], Guid.NewGuid(), ten);
+
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.robot_alarm_observations"));
+        Assert.Equal(1L, await OpenCountAsync());
+        Assert.Equal(ten, await WatermarkAsync());
+    }
+
+    [Fact]
+    public async Task A_failed_read_does_not_advance_the_successful_watermark()
+    {
+        var store = await FreshStoreAsync();
+        var ten = At("10:00:00Z");
+        await store.ObserveAlarmSnapshotAsync([Alarm("A")], Guid.NewGuid(), ten);
+        await store.ObserveAlarmReadFailureAsync(Guid.NewGuid(), At("10:01:00Z"), "RDS_UNAVAILABLE", "read failed");
+
+        Assert.Equal(1L, await OpenCountAsync());
+        Assert.Equal(ten, await WatermarkAsync());
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.robot_alarm_read_failures"));
+    }
+
+    private async Task<PostgresRdsIntegrationStore> FreshStoreAsync()
+    {
+        await fixture.ResetAsync();
+        return new PostgresRdsIntegrationStore(NpgsqlDataSource.Create(fixture.ConnectionString));
+    }
+
+    private static DateTimeOffset At(string clock) => DateTimeOffset.Parse($"2026-10-06T{clock}");
+
+    private static RdsRobotAlarmSnapshot Alarm(string code) =>
+        new("robot-watermark", "error", code, "estop", "2026-10-06T10:00:00Z", 1);
+
+    private Task<long> OpenCountAsync() => fixture.ScalarAsync<long>(
+        "SELECT count(*) FROM integration.robot_alarm_observations WHERE cleared_at IS NULL");
+
+    private Task<DateTimeOffset> WatermarkAsync() => fixture.ScalarAsync<DateTimeOffset>(
+        "SELECT last_successful_snapshot_at FROM integration.robot_alarm_observation_state");
 }

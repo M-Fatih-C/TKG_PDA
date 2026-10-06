@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using TkgPda.Api;
 using TkgPda.Application;
@@ -93,11 +94,56 @@ public sealed class RdsAlarmObservationWorkerTests
         Assert.True(completed.IsCompletedSuccessfully);
     }
 
+    [Fact]
+    public async Task Read_failure_persists_the_rds_code_and_other_exceptions_use_the_type_name()
+    {
+        var client = new ScriptedClient(Alarm()) { FailNext = true };
+        var store = new MemoryObservationStore();
+        var service = Service(client, store);
+        var correlation = Guid.NewGuid();
+        await Assert.ThrowsAsync<RdsReadException>(() => service.ObserveCurrentAlarmsAsync(correlation, CancellationToken.None));
+        Assert.Equal("RDS_UNAVAILABLE", store.LastErrorCode);
+
+        client.FailWith = new InvalidOperationException("not an rds read");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ObserveCurrentAlarmsAsync(Guid.NewGuid(), CancellationToken.None));
+        Assert.Equal(nameof(InvalidOperationException), store.LastErrorCode);
+    }
+
+    [Fact]
+    public async Task History_write_failure_keeps_the_live_snapshot_and_the_worker_continues()
+    {
+        var alarm = Alarm();
+        var client = new ScriptedClient(alarm);
+        var store = new MemoryObservationStore { ThrowOnNextSnapshot = true };
+        var logs = new CaptureLogger();
+        var correlation = Guid.NewGuid();
+        var service = Service(client, store, logs);
+        var result = await service.ObserveCurrentAlarmsAsync(correlation, CancellationToken.None);
+
+        Assert.Equal(alarm.Code, Assert.Single(result.Data.Alarms).Code);
+        Assert.Equal(0, store.OpenCount);
+        Assert.Contains(logs.Warnings, line =>
+            line.Contains(correlation.ToString(), StringComparison.Ordinal)
+            && line.Contains(nameof(InvalidOperationException), StringComparison.Ordinal)
+            && !line.Contains("Host=", StringComparison.Ordinal));
+
+        store.ThrowOnNextSnapshot = false;
+        var worker = new RdsAlarmObservationWorker(service, Options(true), NullLogger<RdsAlarmObservationWorker>.Instance);
+        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        await worker.StartAsync(lifetime.Token);
+        await WaitUntilAsync(() => store.OpenCount == 1, TimeSpan.FromSeconds(7));
+        await worker.StopAsync(CancellationToken.None);
+        Assert.Equal(1, store.OpenCount);
+    }
+
     private static RdsAlarmObservationWorker Worker(ScriptedClient client, MemoryObservationStore store, bool enabled) =>
         new(Service(client, store), Options(enabled), NullLogger<RdsAlarmObservationWorker>.Instance);
 
-    private static RdsIntegrationService Service(ScriptedClient client, MemoryObservationStore store) =>
-        new(client, store, TimeProvider.System);
+    private static RdsIntegrationService Service(
+        ScriptedClient client,
+        MemoryObservationStore store,
+        ILogger<RdsIntegrationService>? logger = null) =>
+        new(client, store, TimeProvider.System, logger);
 
     private static RdsOptions Options(bool enabled) =>
         new(enabled, enabled ? "http://127.0.0.1:8080" : null, 5, AlarmObservationIntervalSeconds: 5);
@@ -120,6 +166,7 @@ public sealed class RdsAlarmObservationWorkerTests
     {
         public IReadOnlyList<RdsRobotAlarmSnapshot> NextAlarms { get; set; } = [alarm];
         public bool FailNext { get; set; }
+        public Exception? FailWith { get; set; }
         public bool WaitForCancellation { get; set; }
         public int Calls { get; private set; }
         public bool Enabled => true;
@@ -138,6 +185,13 @@ public sealed class RdsAlarmObservationWorkerTests
             if (WaitForCancellation)
             {
                 await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+
+            if (FailWith is not null)
+            {
+                var error = FailWith;
+                FailWith = null;
+                throw error;
             }
 
             if (FailNext)
@@ -161,6 +215,8 @@ public sealed class RdsAlarmObservationWorkerTests
         private readonly List<RobotAlarmObservationRecord> rows = [];
         public int Failures { get; private set; }
         public int SlotMutations { get; private set; }
+        public string? LastErrorCode { get; private set; }
+        public bool ThrowOnNextSnapshot { get; set; }
         public int OpenCount => rows.Count(row => row.ClearedAt is null);
         public int Rows => rows.Count;
 
@@ -170,6 +226,12 @@ public sealed class RdsAlarmObservationWorkerTests
             DateTimeOffset observedAt,
             CancellationToken cancellationToken = default)
         {
+            if (ThrowOnNextSnapshot)
+            {
+                ThrowOnNextSnapshot = false;
+                throw new InvalidOperationException("history store unavailable");
+            }
+
             var open = rows.Where(row => row.ClearedAt is null).ToArray();
             var plan = RobotAlarmObservationRules.Reconcile(open, alarms, observedAt, correlationId);
             foreach (var item in plan.Upserts)
@@ -205,6 +267,7 @@ public sealed class RdsAlarmObservationWorkerTests
             CancellationToken cancellationToken = default)
         {
             Failures++;
+            LastErrorCode = errorCode;
             return Task.CompletedTask;
         }
 
@@ -234,5 +297,28 @@ public sealed class RdsAlarmObservationWorkerTests
 
         public Task<IReadOnlyList<RdsActiveLockFingerprint>> GetActiveTkgLockFingerprintsAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<RdsActiveLockFingerprint>>([]);
+    }
+
+    private sealed class CaptureLogger : ILogger<RdsIntegrationService>
+    {
+        public List<string> Warnings { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+            {
+                Warnings.Add(formatter(state, exception));
+            }
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+            public void Dispose() { }
+        }
     }
 }

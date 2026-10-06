@@ -67,6 +67,7 @@ try {
         'db\migrations\017_internal_device_notifications.sql',
         'db\migrations\018_production_end_priorities.sql',
         'db\migrations\019_robot_alarm_observations.sql',
+        'db\migrations\020_robot_alarm_observation_state.sql',
         'db\seeds\generated\002a_customer_textual_master_data.sql',
         'db\seeds\generated\002b_customer_physical_layouts.sql',
         'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'

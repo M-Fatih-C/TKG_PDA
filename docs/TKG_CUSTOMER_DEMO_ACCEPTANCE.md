@@ -6,7 +6,7 @@ Branch: `agent/tkg-final-demo-hardening`
 
 Implementation: `dba31e5c4769f6efcc0b35543ca277548a0f1878` and the internal-consistency follow-up on that branch.
 
-Statuses: PASS, PARTIAL, CUSTOMER DATA REQUIRED, VENDOR API REQUIRED, CUSTOMER CONFIRMATION REQUIRED.
+Statuses: PASS, PARTIAL, CUSTOMER DATA REQUIRED, VENDOR API REQUIRED, CUSTOMER CONFIRMATION REQUIRED, IMPLEMENTED — PHYSICAL DEVICE VALIDATION REQUIRED.
 
 | Item | Status | Implementation | Tests | Remaining dependency |
 | --- | --- | --- | --- | --- |

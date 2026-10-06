@@ -21,10 +21,12 @@ public sealed partial class PostgresRdsIntegrationStore
             await gate.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        if (await LatestObservationAtAsync(connection, transaction, cancellationToken) is { } latest && latest > observedAt)
+        if (await ReadSuccessfulSnapshotAtAsync(connection, transaction, cancellationToken) is { } latest
+            && observedAt <= latest)
         {
-            // A newer successful snapshot already won. An older overlapping read must not
-            // clear or reopen what that snapshot proved.
+            // A newer or identical successful snapshot already won, including an empty one.
+            // Do not upsert, clear, reopen, or move the watermark backwards.
+            await transaction.CommitAsync(cancellationToken);
             return;
         }
 
@@ -77,6 +79,25 @@ public sealed partial class PostgresRdsIntegrationStore
             await clear.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        await using (var mark = new NpgsqlCommand(
+            """
+            INSERT INTO integration.robot_alarm_observation_state
+                (singleton_key, last_successful_snapshot_at, last_correlation_id, updated_at)
+            VALUES (true, @seen, @correlation, now())
+            ON CONFLICT (singleton_key) DO UPDATE
+            SET last_successful_snapshot_at = EXCLUDED.last_successful_snapshot_at,
+                last_correlation_id = EXCLUDED.last_correlation_id,
+                updated_at = now()
+            WHERE robot_alarm_observation_state.last_successful_snapshot_at < EXCLUDED.last_successful_snapshot_at
+            """,
+            connection,
+            transaction))
+        {
+            mark.Parameters.AddWithValue("seen", observedAt);
+            mark.Parameters.AddWithValue("correlation", correlationId);
+            await mark.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -123,19 +144,17 @@ public sealed partial class PostgresRdsIntegrationStore
         return rows;
     }
 
-    private static async Task<DateTimeOffset?> LatestObservationAtAsync(
+    private static async Task<DateTimeOffset?> ReadSuccessfulSnapshotAtAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
             """
-            SELECT max(ts)
-            FROM (
-                SELECT last_seen_at AS ts FROM integration.robot_alarm_observations
-                UNION ALL
-                SELECT cleared_at FROM integration.robot_alarm_observations WHERE cleared_at IS NOT NULL
-            ) marks
+            SELECT last_successful_snapshot_at
+            FROM integration.robot_alarm_observation_state
+            WHERE singleton_key
+            FOR UPDATE
             """,
             connection,
             transaction);

@@ -47,6 +47,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             TRUNCATE
                 integration.robot_alarm_read_failures,
                 integration.robot_alarm_observations,
+                integration.robot_alarm_observation_state,
                 integration.notification_outbox,
                 integration.device_notification_registrations,
                 ops.store_events,

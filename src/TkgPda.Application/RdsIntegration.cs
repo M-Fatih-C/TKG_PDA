@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace TkgPda.Application;
 
@@ -376,9 +378,14 @@ public interface IRdsWorkSiteReconciler
         CancellationToken cancellationToken = default);
 }
 
-public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegrationStore store, TimeProvider timeProvider) : IRdsWorkSiteReconciler
+public sealed class RdsIntegrationService(
+    IRdsReadClient client,
+    IRdsIntegrationStore store,
+    TimeProvider timeProvider,
+    ILogger<RdsIntegrationService>? logger = null) : IRdsWorkSiteReconciler
 {
     private readonly SemaphoreSlim syncGate = new(1, 1);
+    private readonly ILogger<RdsIntegrationService> alarmLogger = logger ?? NullLogger<RdsIntegrationService>.Instance;
 
     public async Task<RdsConnectionStatusRecord> GetStatusAsync(Guid correlationId, CancellationToken cancellationToken = default)
     {
@@ -572,7 +579,11 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                // A history-write failure must not hide the current snapshot or clear alarms.
+                // The live snapshot stays usable. History is not cleared or invented.
+                alarmLogger.LogWarning(
+                    "Robot alarm snapshot was read successfully but history persistence failed for correlation {CorrelationId} with {ExceptionType}.",
+                    correlationId,
+                    error.GetType().Name);
             }
 
             return result;
@@ -584,12 +595,16 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
                 await store.ObserveAlarmReadFailureAsync(
                     correlationId,
                     timeProvider.GetUtcNow(),
-                    error.GetType().Name,
+                    error is RdsReadException read ? read.Code : error.GetType().Name,
                     error.Message,
                     cancellationToken);
             }
             catch (Exception persistError) when (persistError is not OperationCanceledException)
             {
+                alarmLogger.LogWarning(
+                    "Robot alarm read failure could not be recorded for correlation {CorrelationId} with {ExceptionType}.",
+                    correlationId,
+                    persistError.GetType().Name);
             }
 
             throw;

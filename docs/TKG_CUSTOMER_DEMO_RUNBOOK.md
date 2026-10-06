@@ -14,7 +14,7 @@ RDS dispatch is a valid production capability. This runbook does not turn it off
 
 ## Before the floor
 
-1. Apply migrations through `019_robot_alarm_observations.sql`. The supported path is `tools/dev/start_local_stack.ps1`, which applies every file in `db/migrations` in filename order and then seeds `002a`, `002b`, and `002c`.
+1. Apply migrations through `020_robot_alarm_observation_state.sql`. The supported path is `tools/dev/start_local_stack.ps1`, which applies every file in `db/migrations` in filename order and then seeds `002a`, `002b`, and `002c`.
 2. Leave RDS read integration enabled when the floor should observe robot alarms. `RdsAlarmObservationWorker` polls `GET /api/agv-report/core` on the server. The default interval is 10 seconds (`Rds:AlarmObservationIntervalSeconds`, allowed range 5–300). Dispatch stays available for valid queued work. Do not disable it merely to walk through this path.
 3. Sign in a `LINE_OPERATOR` on a device that is already bound to one machine.
 4. Sign in a semi-finished warehouse operator and a finished-goods operator on their own devices.
@@ -49,8 +49,8 @@ RDS dispatch is a valid production capability. This runbook does not turn it off
 - `dotnet build TKG.Pda.slnx --configuration Release`: succeeded, 0 warnings, 0 errors.
 - Domain tests: 146 passed. Application tests: 318 passed. Auth tests: 15 passed.
 - `tests/phase_03/run_postgres_integration.ps1`: 78 passed.
-- `tests/phase_04/run_postgres_api_integration.ps1`: 237 passed. Migration replay digest stayed UNCHANGED. This includes part-demand ownership, finished-container actions, the 19 areas, self-hosted notification delivery, production-end priority configuration, and continuous alarm observation.
-- `RdsAlarmObservationWorkerTests`: 6 passed, included in the phase 04 count. No live RDS connection was used.
+- `tests/phase_04/run_postgres_api_integration.ps1`: 244 passed. Migration replay digest stayed UNCHANGED. This includes part-demand ownership, finished-container actions, the 19 areas, self-hosted notification delivery, production-end priority configuration, and continuous alarm observation.
+- `RdsAlarmObservationWorkerTests`: 8 passed, included in the phase 04 count. No live RDS connection was used.
 - Flutter `flutter analyze`: no issues. `flutter test`: 251 passed.
 - Admin Web source did not change, so its npm suite was not re-run.
 
