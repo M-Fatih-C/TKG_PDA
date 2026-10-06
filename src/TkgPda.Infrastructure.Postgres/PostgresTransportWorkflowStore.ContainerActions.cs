@@ -132,7 +132,7 @@ public sealed partial class PostgresTransportWorkflowStore
         }
 
         var request = BuildTransportRequest(command, resolution.Operation, slot.Id, resolution.RequiresPreparation);
-        var created = await CreateAndQueueWithinTransactionAsync(connection, transaction, request, batchId: null, cancellationToken);
+        var created = await CreateAndQueueWithinTransactionAsync(connection, transaction, request, batchId: null, command.EventContext, cancellationToken);
         if (resolution.MarkFullBeforeCreate)
         {
             await InsertEventAsync(
@@ -145,7 +145,8 @@ public sealed partial class PostgresTransportWorkflowStore
                 created.Request.Status,
                 "Operator reported the selected logical container position FULL before REMOVE_FULL creation.",
                 new { logical_position = command.PositionNumber },
-                cancellationToken);
+                cancellationToken,
+                command.EventContext);
         }
 
         await transaction.CommitAsync(cancellationToken);
@@ -298,7 +299,7 @@ public sealed partial class PostgresTransportWorkflowStore
         var children = new List<TransportRequestSnapshot>(items.Count);
         foreach (var item in items)
         {
-            var child = await CreateAndQueueWithinTransactionAsync(connection, transaction, item, batchId, cancellationToken);
+            var child = await CreateAndQueueWithinTransactionAsync(connection, transaction, item, batchId, command.EventContext, cancellationToken);
             children.Add(child.Request);
         }
 
@@ -489,6 +490,7 @@ public sealed partial class PostgresTransportWorkflowStore
                 transaction,
                 entry.Request,
                 batchId,
+                command.EventContext,
                 cancellationToken);
             children.Add(child.Request);
             if (entry.MarkFull)
@@ -503,7 +505,8 @@ public sealed partial class PostgresTransportWorkflowStore
                     child.Request.Status,
                     "Operator reported the logical container position FULL as part of a container-action batch.",
                     new { logical_position = entry.PositionNumber },
-                    cancellationToken);
+                    cancellationToken,
+                    command.EventContext);
             }
         }
 

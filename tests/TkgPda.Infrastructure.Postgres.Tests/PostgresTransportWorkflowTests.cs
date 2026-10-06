@@ -76,7 +76,7 @@ public sealed class PostgresTransportWorkflowTests
         Assert.Equal(
             "QUEUED>CANCELLED",
             await ScalarAsync<string>(
-                "SELECT old_status || '>' || new_status FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'REQUEST_CANCELLED_AND_RESERVATION_RELEASED'",
+                "SELECT old_status || '>' || new_status FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'REQUEST_CANCELLED'",
                 ("id", created.Request.Id)));
     }
 

@@ -55,7 +55,8 @@ public static class WarehousePreparationEndpoints
                 request.TransportRequestId,
                 context.User.UserId(),
                 DeviceId(context),
-                context.Request.Headers[ApiHeaders.IdempotencyKey].ToString().Trim()),
+                context.Request.Headers[ApiHeaders.IdempotencyKey].ToString().Trim(),
+                CorrelationId(context)),
             cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         return Results.Json(result.Pallet,
@@ -66,7 +67,7 @@ public static class WarehousePreparationEndpoints
         Guid palletId, PalletVersionHttpRequest request, HttpContext context,
         WarehousePreparationService service, CancellationToken cancellationToken) =>
         Results.Ok(await service.MarkReadyAsync(
-            new MarkPalletReadyCommand(palletId, request.ExpectedRowVersion, context.User.UserId(), DeviceId(context)),
+            new MarkPalletReadyCommand(palletId, request.ExpectedRowVersion, context.User.UserId(), DeviceId(context), CorrelationId(context)),
             cancellationToken));
 
     private static async Task<IResult> ReleaseAsync(
@@ -93,4 +94,7 @@ public static class WarehousePreparationEndpoints
             ? device.Id
             : throw new ApiException(
                 StatusCodes.Status401Unauthorized, "DEVICE_CONTEXT_REQUIRED", "Yetkilendirilmiş cihaz gereklidir.");
+
+    private static Guid CorrelationId(HttpContext context) =>
+        context.Items.TryGetValue(ApiContextKeys.CorrelationId, out var value) && value is Guid id ? id : Guid.NewGuid();
 }

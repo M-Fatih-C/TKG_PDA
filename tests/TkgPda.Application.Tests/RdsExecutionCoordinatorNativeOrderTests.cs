@@ -1857,17 +1857,17 @@ public sealed class RdsExecutionCoordinatorNativeOrderTests
         public List<TransportRequestStatus> Transitions { get; } = [];
         public List<ExecutionOutcome> Outcomes { get; } = [];
 
-        public Task<CreateTransportResult> CreateAndQueueAsync(CreateTransportRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<TransportBatchResult> CreateBatchAndQueueAsync(CreateTransportBatchRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<CancelTransportResult> CancelAsync(Guid requestId, Guid? actorUserId, CancellationToken cancellationToken = default) =>
+        public Task<CreateTransportResult> CreateAndQueueAsync(CreateTransportRequest request, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<TransportBatchResult> CreateBatchAndQueueAsync(CreateTransportBatchRequest request, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<CancelTransportResult> CancelAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CancelTransportResult(initial with { Status = TransportRequestStatus.Cancelled }, initial.Status == TransportRequestStatus.Cancelled));
-        public Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(Guid requestId, TransportRequestStatus nextStatus, CancellationToken cancellationToken = default)
+        public Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(Guid requestId, TransportRequestStatus nextStatus, OperationalEventContext? eventContext, CancellationToken cancellationToken = default)
         {
             Transitions.Add(nextStatus);
             return Task.FromResult(initial with { Status = nextStatus });
         }
-        public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(Guid requestId, ExecutionOutcome outcome, CancellationToken cancellationToken = default)
+        public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(Guid requestId, ExecutionOutcome outcome, OperationalEventContext? eventContext, CancellationToken cancellationToken = default)
         {
             Outcomes.Add(outcome);
             return Task.FromResult(initial with { Status = outcome.Status });

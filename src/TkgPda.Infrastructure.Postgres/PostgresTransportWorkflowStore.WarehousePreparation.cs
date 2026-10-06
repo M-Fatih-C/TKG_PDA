@@ -138,6 +138,12 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await EnsureAreaEnabledAsync(connection, transaction, command.AreaId, cancellationToken);
         if (command.TransportRequestId is { } requestId)
         {
+            // WP-06: the request row lock is what serialises the first-only
+            // WAREHOUSE_PREPARATION_STARTED decision below. It is taken in the same
+            // request-then-pallet order MarkReadyAsync uses, before any pallet row
+            // is touched, so concurrent placements for one request cannot both
+            // observe "no STARTED event yet".
+            await LockRequestAsync(connection, transaction, requestId, cancellationToken);
             await ValidateDemandAsync(connection, transaction, requestId, command, cancellationToken);
         }
 
@@ -175,6 +181,36 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await InsertPreparationEventAsync(connection, transaction, command.AreaId, pallet.Id, "PALLET_PLACED",
             command.PartId, command.ContainerTypeId, command.TransportRequestId,
             command.ActorUserId, command.DeviceId, new { load = command.Load.ToDatabase() }, cancellationToken);
+
+        // WAREHOUSE_PREPARATION_STARTED is a once-per-request lifecycle boundary.
+        // A release followed by a replacement pallet is another physical attempt,
+        // recorded above as PALLET_PLACED in ops.preparation_events, not a second
+        // lifecycle start. The request row is locked, so this check cannot race.
+        if (command.TransportRequestId is { } boundRequestId
+            && !await HasTransportEventAsync(
+                connection, transaction, boundRequestId, TransportEventTypes.WarehousePreparationStarted, cancellationToken))
+        {
+            await InsertEventAsync(
+                connection,
+                transaction,
+                boundRequestId,
+                command.ActorUserId,
+                TransportEventTypes.WarehousePreparationStarted,
+                null,
+                null,
+                "Warehouse preparation started for transport request.",
+                new
+                {
+                    preparation_area_id = command.AreaId,
+                    preparation_pallet_id = pallet.Id,
+                    part_id = command.PartId,
+                    container_type_id = command.ContainerTypeId,
+                    load_state = command.Load.ToDatabase()
+                },
+                cancellationToken,
+                OperationalEventContext.ForUser(command.ActorUserId, command.DeviceId, command.CorrelationId));
+        }
+
         await transaction.CommitAsync(cancellationToken);
         return new PreparationPalletResult(pallet, WasIdempotentReplay: false);
     }
@@ -244,9 +280,19 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         // The request's readiness moves in the SAME transaction. A separate
         // call could leave a request dispatchable with nothing prepared, or a
         // pallet ready for a request that never opened.
-        await MarkRequestReadyInTransactionAsync(
-            connection, transaction, pallet.TransportRequestId.Value, command.ActorUserId, cancellationToken);
         var readyAreaId = await ReadPalletAreaIdAsync(connection, transaction, command.PalletId, cancellationToken);
+        var eventContext = OperationalEventContext.ForUser(command.ActorUserId, command.DeviceId, command.CorrelationId);
+        await MarkRequestReadyInTransactionAsync(
+            connection,
+            transaction,
+            pallet.TransportRequestId.Value,
+            command.ActorUserId,
+            readyAreaId,
+            updated.Id,
+            updated.PartId,
+            updated.ContainerTypeId,
+            cancellationToken,
+            eventContext);
         await InsertPreparationEventAsync(connection, transaction, readyAreaId,
             updated.Id, "PALLET_MARKED_READY", updated.PartId, updated.ContainerTypeId, updated.TransportRequestId,
             command.ActorUserId, command.DeviceId, new { }, cancellationToken);
@@ -448,8 +494,16 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
     }
 
     private static async Task MarkRequestReadyInTransactionAsync(
-        NpgsqlConnection connection, NpgsqlTransaction transaction, Guid requestId,
-        Guid actorUserId, CancellationToken cancellationToken)
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        Guid actorUserId,
+        Guid areaId,
+        Guid palletId,
+        Guid? partId,
+        Guid? containerTypeId,
+        CancellationToken cancellationToken,
+        OperationalEventContext? eventContext = null)
     {
         var readyAt = DateTimeOffset.UtcNow;
         await using (var update = new NpgsqlCommand("""
@@ -469,10 +523,25 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             }
         }
 
-        await InsertEventAsync(connection, transaction, requestId, actorUserId,
-            "READINESS_MARKED_READY", null, null,
+        await InsertEventAsync(
+            connection,
+            transaction,
+            requestId,
+            actorUserId,
+            TransportEventTypes.WarehousePreparationReady,
+            null,
+            null,
             "Warehouse preparation completed in a preparation area; request marked READY.",
-            new { ready_at = readyAt }, cancellationToken);
+            new
+            {
+                preparation_area_id = areaId,
+                preparation_pallet_id = palletId,
+                part_id = partId,
+                container_type_id = containerTypeId,
+                ready_at = readyAt
+            },
+            cancellationToken,
+            eventContext);
     }
 
     private static async Task ValidateWarehouseActorAsync(
@@ -493,6 +562,20 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             throw new WorkflowRuleException(
                 "PREPARATION_ACCESS_DENIED", "Kullanıcı veya cihaz depo hazırlığı yapmaya yetkili değil.");
         }
+    }
+
+    private static async Task<bool> HasTransportEventAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, Guid requestId,
+        string eventType, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT 1 FROM ops.transport_request_events
+            WHERE transport_request_id = @request AND event_type = @type
+            LIMIT 1
+            """, connection, transaction);
+        command.Parameters.AddWithValue("request", requestId);
+        command.Parameters.AddWithValue("type", eventType);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     private static async Task InsertPreparationEventAsync(

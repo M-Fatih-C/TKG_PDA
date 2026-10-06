@@ -517,7 +517,7 @@ public sealed class RdsExecutionCoordinator(
         }
 
         await store.RecordTaskStatusAsync(requestId, exact[0], query.ReadAt, cancellationToken);
-        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, cancellationToken);
+        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, OperationalEventContext.System(correlationId), cancellationToken);
         await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_CONFIRMED", "RDS_TASK_OBSERVED", "RDS task existence was proven by taskRecordId.", correlationId, cancellationToken);
         return new(requestId, taskRecordId, true, createResult?.IdempotentReplay ?? true, "RDS_TASK_OBSERVED", "RDS task existence was proven by taskRecordId.");
     }
@@ -550,7 +550,7 @@ public sealed class RdsExecutionCoordinator(
                         projection.TaskRecordId,
                         details.Raw,
                         details.State.Raw);
-                    await ApplyTaskStatusAsync(projection, task, timeProvider.GetUtcNow(), "NATIVE_RECONCILIATION", cancellationToken);
+                    await ApplyTaskStatusAsync(projection, task, timeProvider.GetUtcNow(), "NATIVE_RECONCILIATION", cancellationToken, correlationId);
                     if (IsTerminalRdsStatus(status))
                     {
                         await RefreshRelevantWorkSitesAsync(projection.TransportRequestId, correlationId, cancellationToken);
@@ -562,7 +562,7 @@ public sealed class RdsExecutionCoordinator(
                     var exact = query.Data.Tasks.Where(task => string.Equals(task.TaskRecordId, projection.TaskRecordId, StringComparison.Ordinal)).ToArray();
                     if (exact.Length == 1)
                     {
-                        await ApplyTaskStatusAsync(projection, exact[0], query.ReadAt, "RECONCILIATION", cancellationToken);
+                        await ApplyTaskStatusAsync(projection, exact[0], query.ReadAt, "RECONCILIATION", cancellationToken, correlationId);
                         if (IsTerminalRdsStatus(exact[0].Status))
                         {
                             await RefreshRelevantWorkSitesAsync(projection.TransportRequestId, correlationId, cancellationToken);
@@ -1188,13 +1188,21 @@ public sealed class RdsExecutionCoordinator(
     private const int MinRdsPriority = 0;
     private const int MaxRdsPriority = 1000;
 
-    public async Task<RdsCancellationResult> CancelAsync(Guid requestId, Guid? actorUserId, Guid correlationId, CancellationToken cancellationToken = default)
+    public Task<RdsCancellationResult> CancelAsync(Guid requestId, Guid? actorUserId, Guid correlationId, CancellationToken cancellationToken = default) =>
+        CancelAsync(requestId, actorUserId, correlationId, null, cancellationToken);
+
+    public async Task<RdsCancellationResult> CancelAsync(
+        Guid requestId,
+        Guid? actorUserId,
+        Guid correlationId,
+        OperationalEventContext? eventContext,
+        CancellationToken cancellationToken = default)
     {
         var request = await store.FindRequestAsync(requestId, cancellationToken)
             ?? throw new WorkflowRuleException("REQUEST_NOT_FOUND", "The transport request does not exist.");
         if (TransportStateMachine.CanCancelBeforeExecution(request.Status) || request.Status == TransportRequestStatus.Cancelled)
         {
-            var local = await workflow.CancelAsync(requestId, actorUserId, cancellationToken);
+            var local = await workflow.CancelAsync(requestId, actorUserId, eventContext, cancellationToken);
             return new(local.Request, false, local.WasAlreadyCancelled);
         }
 
@@ -1246,6 +1254,7 @@ public sealed class RdsExecutionCoordinator(
                 var cancelled = await workflow.RecordExecutionOutcomeAsync(
                     requestId,
                     new(TransportRequestStatus.Cancelled, EvidenceType: "RDSCORE_TERMINATE"),
+                    eventContext ?? OperationalEventContext.System(correlationId),
                     cancellationToken);
                 return new(cancelled, false, false);
             }
@@ -1277,6 +1286,7 @@ public sealed class RdsExecutionCoordinator(
             var cancelled = await workflow.RecordExecutionOutcomeAsync(
                 requestId,
                 new(TransportRequestStatus.Cancelled, EvidenceType: "RDS_QUERY_AFTER_STOP"),
+                eventContext ?? OperationalEventContext.System(correlationId),
                 cancellationToken);
             return new(cancelled, false, false);
         }
@@ -1787,10 +1797,10 @@ public sealed class RdsExecutionCoordinator(
             details.State.Raw);
 
         await store.RecordTaskStatusAsync(requestId, taskSnapshot, timeProvider.GetUtcNow(), cancellationToken);
-        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, cancellationToken);
+        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, OperationalEventContext.System(correlationId), cancellationToken);
         if (details.State.Known == RdsCoreKnownOrderState.Running)
         {
-            await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running, cancellationToken);
+            await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running, OperationalEventContext.System(correlationId), cancellationToken);
         }
         await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_CONFIRMED", "RDS_NATIVE_ORDER_OBSERVED", "RDS native order existence was proven by taskRecordId.", correlationId, cancellationToken);
         return new(requestId, taskRecordId, true, setResult?.DuplicateOrderId ?? true, "RDS_TASK_OBSERVED", "RDS native order existence was proven by taskRecordId.");
@@ -1874,13 +1884,14 @@ public sealed class RdsExecutionCoordinator(
             FindText(callback.RawPayload, "outOrderNo"),
             callback.RawPayload.Clone(),
             FindText(callback.RawPayload, "endedReason"));
-        await ApplyTaskStatusAsync(projection, task, timeProvider.GetUtcNow(), $"CALLBACK_{eventType}", cancellationToken);
+        var callbackCorrelationId = Guid.NewGuid();
+        await ApplyTaskStatusAsync(projection, task, timeProvider.GetUtcNow(), $"CALLBACK_{eventType}", cancellationToken, callbackCorrelationId);
         await store.WriteExecutionAuditAsync(
             projection.TransportRequestId,
             "RDS_CALLBACK_APPLIED",
             eventType,
             "Authenticated RDS callback evidence was applied idempotently.",
-            Guid.NewGuid(),
+            callbackCorrelationId,
             cancellationToken);
         return new(true, true, "RDS_EVENT_APPLIED", "The callback was applied idempotently.", taskRecordId);
     }
@@ -1918,15 +1929,17 @@ public sealed class RdsExecutionCoordinator(
         RdsWindTaskSnapshot task,
         DateTimeOffset syncedAt,
         string evidence,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? correlationId = null)
     {
+        var eventContext = OperationalEventContext.System(correlationId ?? Guid.NewGuid());
         await store.RecordTaskStatusAsync(projection.TransportRequestId, task, syncedAt, cancellationToken);
         switch (task.Status)
         {
             case 1000:
                 if (projection.RequestStatus == TransportRequestStatus.SentToRds)
                 {
-                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Running, cancellationToken);
+                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Running, eventContext, cancellationToken);
                 }
                 break;
             case 1002:
@@ -1934,11 +1947,11 @@ public sealed class RdsExecutionCoordinator(
             case 1003:
                 if (projection.RequestStatus == TransportRequestStatus.SentToRds)
                 {
-                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Running, cancellationToken);
+                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Running, eventContext, cancellationToken);
                 }
                 if (projection.RequestStatus is TransportRequestStatus.SentToRds or TransportRequestStatus.Running)
                 {
-                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Completed, cancellationToken);
+                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Completed, eventContext, cancellationToken);
                 }
                 break;
             case 1001:
@@ -1947,6 +1960,7 @@ public sealed class RdsExecutionCoordinator(
                     projection.CancellationRequested
                         ? new(TransportRequestStatus.Cancelled, EvidenceType: evidence)
                         : new(TransportRequestStatus.Failed, "RDS_TASK_TERMINATED", task.EndedReason, evidence),
+                    eventContext,
                     cancellationToken);
                 break;
             case 1004:
@@ -1955,6 +1969,7 @@ public sealed class RdsExecutionCoordinator(
                 await workflow.RecordExecutionOutcomeAsync(
                     projection.TransportRequestId,
                     new(TransportRequestStatus.Failed, $"RDS_TASK_STATUS_{task.Status}", task.EndedReason, evidence),
+                    eventContext,
                     cancellationToken);
                 break;
         }

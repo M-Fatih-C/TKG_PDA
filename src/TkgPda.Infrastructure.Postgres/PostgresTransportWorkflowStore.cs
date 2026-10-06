@@ -24,8 +24,14 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         _ownsDataSource = ownsDataSource;
     }
 
+    public Task<CreateTransportResult> CreateAndQueueAsync(
+        CreateTransportRequest request,
+        CancellationToken cancellationToken = default) =>
+        CreateAndQueueAsync(request, null, cancellationToken);
+
     public async Task<CreateTransportResult> CreateAndQueueAsync(
         CreateTransportRequest request,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -33,13 +39,19 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
 
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        var result = await CreateAndQueueWithinTransactionAsync(connection, transaction, request, batchId: null, cancellationToken);
+        var result = await CreateAndQueueWithinTransactionAsync(connection, transaction, request, batchId: null, eventContext, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return result;
     }
 
+    public Task<TransportBatchResult> CreateBatchAndQueueAsync(
+        CreateTransportBatchRequest request,
+        CancellationToken cancellationToken = default) =>
+        CreateBatchAndQueueAsync(request, null, cancellationToken);
+
     public async Task<TransportBatchResult> CreateBatchAndQueueAsync(
         CreateTransportBatchRequest request,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -61,7 +73,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         var children = new List<TransportRequestSnapshot>(request.Items.Count);
         foreach (var item in request.Items)
         {
-            var childResult = await CreateAndQueueWithinTransactionAsync(connection, transaction, item, batchId, cancellationToken);
+            var childResult = await CreateAndQueueWithinTransactionAsync(connection, transaction, item, batchId, eventContext, cancellationToken);
             children.Add(childResult.Request);
         }
 
@@ -74,6 +86,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         NpgsqlTransaction transaction,
         CreateTransportRequest request,
         Guid? batchId,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken)
     {
         await LockIdempotencyKeyAsync(connection, transaction, request.IdempotencyKey, cancellationToken);
@@ -154,12 +167,19 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             transaction,
             created.Id,
             request.RequestedBy,
-            "REQUEST_CREATED",
+            TransportEventTypes.RequestCreated,
             null,
             TransportRequestStatus.Created,
             "Transport request created by Phase 03 workflow engine.",
-            new { idempotency_key = request.IdempotencyKey, batch_id = batchId },
-            cancellationToken);
+            new
+            {
+                idempotency_key = request.IdempotencyKey,
+                batch_id = batchId,
+                request_origin = request.Origin.ToDatabase(),
+                task_type = request.TaskType.ToDatabase()
+            },
+            cancellationToken,
+            eventContext);
 
         created = await TransitionAsync(
             connection,
@@ -168,7 +188,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             TransportRequestStatus.Validating,
             request.RequestedBy,
             "VALIDATION_STARTED",
-            cancellationToken);
+            cancellationToken,
+            eventContext: eventContext);
 
         created = await TransitionAsync(
             connection,
@@ -184,14 +205,22 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 reservation_kind = TransportRules.DeliversToMachine(request.TaskType) ? "DESTINATION" : "SOURCE",
                 machine_slot_id = request.ReservedSlotId,
                 empty_storage_slot_id = bufferSlotId
-            });
+            },
+            eventContext: eventContext);
 
         return new CreateTransportResult(created, WasIdempotentReplay: false);
     }
 
+    public Task<CancelTransportResult> CancelAsync(
+        Guid requestId,
+        Guid? actorUserId,
+        CancellationToken cancellationToken = default) =>
+        CancelAsync(requestId, actorUserId, null, cancellationToken);
+
     public async Task<CancelTransportResult> CancelAsync(
         Guid requestId,
         Guid? actorUserId,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -217,7 +246,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         var slotId = ReservedSlotId(request);
         var slot = lockedWorkflow.Slots[slotId];
         var restored = TransportRules.CancellationState(request.TaskType, slot.State);
-        await UpdateSlotStateAsync(connection, transaction, slotId, restored, actorUserId, cancellationToken);
+        var resolvedActor = actorUserId ?? eventContext?.ActorUserId;
+        await UpdateSlotStateAsync(connection, transaction, slotId, restored, resolvedActor, cancellationToken);
 
         request = await UpdateRequestStatusAsync(
             connection,
@@ -229,26 +259,36 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             connection,
             transaction,
             request.Id,
-            actorUserId,
-            "REQUEST_CANCELLED_AND_RESERVATION_RELEASED",
+            resolvedActor,
+            TransportEventTypes.RequestCancelled,
             previousStatus,
             TransportRequestStatus.Cancelled,
             "Pre-execution cancellation restored the deterministic slot state.",
             new
             {
+                cancellation_source = "PRE_EXECUTION",
+                evidence_type = "OPERATOR_COMMAND",
                 restored_slot_id = slotId,
                 occupancy_state = restored.Occupancy.ToDatabase(),
                 load_state = restored.Load.ToDatabase()
             },
-            cancellationToken);
+            cancellationToken,
+            eventContext);
 
         await transaction.CommitAsync(cancellationToken);
         return new CancelTransportResult(request, WasAlreadyCancelled: false);
     }
 
+    public Task<TransportRequestSnapshot> MarkReadyAsync(
+        Guid requestId,
+        Guid? actorUserId,
+        CancellationToken cancellationToken = default) =>
+        MarkReadyAsync(requestId, actorUserId, null, cancellationToken);
+
     public async Task<TransportRequestSnapshot> MarkReadyAsync(
         Guid requestId,
         Guid? actorUserId,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
@@ -301,21 +341,29 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             connection,
             transaction,
             requestId,
-            actorUserId,
-            "READINESS_MARKED_READY",
+            actorUserId ?? eventContext?.ActorUserId,
+            TransportEventTypes.WarehousePreparationReady,
             null,
             null,
             "Warehouse preparation completed; request marked READY.",
             new { ready_at = readyAt },
-            cancellationToken);
+            cancellationToken,
+            eventContext);
 
         await transaction.CommitAsync(cancellationToken);
         return request with { ReadinessState = TransportReadinessState.Ready, ReadyAt = readyAt };
     }
 
+    public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(
+        Guid requestId,
+        TransportRequestStatus nextStatus,
+        CancellationToken cancellationToken = default) =>
+        RecordExecutionTransitionAsync(requestId, nextStatus, null, cancellationToken);
+
     public async Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(
         Guid requestId,
         TransportRequestStatus nextStatus,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         if (nextStatus is not (TransportRequestStatus.SentToRds or TransportRequestStatus.Running or TransportRequestStatus.Completed))
@@ -358,25 +406,80 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         }
 
         request = await UpdateRequestStatusAsync(connection, transaction, request, nextStatus, cancellationToken);
-        await InsertEventAsync(
-            connection,
-            transaction,
-            request.Id,
-            actorUserId: null,
-            nextStatus == TransportRequestStatus.Completed ? "REQUEST_COMPLETED" : "EXECUTION_STATUS_RECORDED",
-            previousStatus,
-            nextStatus,
-            "Execution status recorded by the Phase 03 future-executor port.",
-            new { executor_http_called = false },
-            cancellationToken);
+
+        if (nextStatus == TransportRequestStatus.SentToRds)
+        {
+            await InsertEventAsync(
+                connection,
+                transaction,
+                request.Id,
+                actorUserId: null,
+                TransportEventTypes.RobotTaskDispatched,
+                previousStatus,
+                nextStatus,
+                "RDS task dispatched and confirmed.",
+                new { executor_http_called = true },
+                cancellationToken,
+                eventContext);
+        }
+        else if (nextStatus == TransportRequestStatus.Running)
+        {
+            await InsertEventAsync(
+                connection,
+                transaction,
+                request.Id,
+                actorUserId: null,
+                TransportEventTypes.RobotTaskStarted,
+                previousStatus,
+                nextStatus,
+                "RDS task execution started.",
+                new { executor_http_called = false },
+                cancellationToken,
+                eventContext);
+        }
+        else if (nextStatus == TransportRequestStatus.Completed)
+        {
+            await InsertEventAsync(
+                connection,
+                transaction,
+                request.Id,
+                actorUserId: null,
+                TransportEventTypes.RobotTaskCompleted,
+                previousStatus,
+                nextStatus,
+                "RDS task execution completed.",
+                new { executor_http_called = false },
+                cancellationToken,
+                eventContext);
+
+            await InsertEventAsync(
+                connection,
+                transaction,
+                request.Id,
+                actorUserId: null,
+                TransportEventTypes.RequestCompleted,
+                previousStatus,
+                nextStatus,
+                "Transport request completed.",
+                new { executor_http_called = false },
+                cancellationToken,
+                eventContext);
+        }
 
         await transaction.CommitAsync(cancellationToken);
         return request;
     }
 
+    public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(
+        Guid requestId,
+        ExecutionOutcome outcome,
+        CancellationToken cancellationToken = default) =>
+        RecordExecutionOutcomeAsync(requestId, outcome, null, cancellationToken);
+
     public async Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(
         Guid requestId,
         ExecutionOutcome outcome,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(outcome);
@@ -399,24 +502,48 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         TransportStateMachine.EnsureTransition(request.Status, outcome.Status);
         var previousStatus = request.Status;
         request = await UpdateRequestOutcomeAsync(connection, transaction, request, outcome, cancellationToken);
-        await InsertEventAsync(
-            connection,
-            transaction,
-            request.Id,
-            actorUserId: null,
-            outcome.Status == TransportRequestStatus.Cancelled ? "RDS_CANCELLATION_CONFIRMED" : "RDS_EXECUTION_FAILED",
-            previousStatus,
-            outcome.Status,
-            outcome.Status == TransportRequestStatus.Cancelled
-                ? "RDS confirmed that execution was stopped."
-                : "RDS reported a terminal execution failure.",
-            new
-            {
-                outcome.FailureCode,
-                outcome.FailureMessage,
-                outcome.EvidenceType
-            },
-            cancellationToken);
+
+        if (outcome.Status == TransportRequestStatus.Cancelled)
+        {
+            await InsertEventAsync(
+                connection,
+                transaction,
+                request.Id,
+                actorUserId: null,
+                TransportEventTypes.RequestCancelled,
+                previousStatus,
+                outcome.Status,
+                "RDS confirmed that execution was stopped.",
+                new
+                {
+                    cancellation_source = "RDS_CONFIRMED",
+                    evidence_type = outcome.EvidenceType,
+                    failure_code = outcome.FailureCode,
+                    failure_message = outcome.FailureMessage
+                },
+                cancellationToken,
+                eventContext);
+        }
+        else
+        {
+            await InsertEventAsync(
+                connection,
+                transaction,
+                request.Id,
+                actorUserId: null,
+                TransportEventTypes.RequestFailed,
+                previousStatus,
+                outcome.Status,
+                "RDS reported a terminal execution failure.",
+                new
+                {
+                    failure_code = outcome.FailureCode,
+                    failure_message = outcome.FailureMessage,
+                    evidence_type = outcome.EvidenceType
+                },
+                cancellationToken,
+                eventContext);
+        }
 
         await transaction.CommitAsync(cancellationToken);
         return request;
@@ -1322,7 +1449,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         Guid? actorUserId,
         string eventType,
         CancellationToken cancellationToken,
-        object? data = null)
+        object? data = null,
+        OperationalEventContext? eventContext = null)
     {
         var previousStatus = request.Status;
         TransportStateMachine.EnsureTransition(previousStatus, nextStatus);
@@ -1331,13 +1459,14 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             connection,
             transaction,
             request.Id,
-            actorUserId,
+            actorUserId ?? eventContext?.ActorUserId,
             eventType,
             previousStatus,
             nextStatus,
             $"Status changed from {previousStatus.ToDatabase()} to {nextStatus.ToDatabase()}.",
             data,
-            cancellationToken);
+            cancellationToken,
+            eventContext);
         return updated;
     }
 
@@ -1435,20 +1564,27 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         TransportRequestStatus? newStatus,
         string message,
         object? data,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        OperationalEventContext? eventContext = null)
     {
+        var resolvedActor = actorUserId ?? eventContext?.ActorUserId;
+        var deviceId = eventContext?.DeviceId;
+        var correlationId = eventContext?.CorrelationId;
+
         await using var command = new NpgsqlCommand(
             """
             INSERT INTO ops.transport_request_events (
-                transport_request_id, actor_user_id, event_type,
-                old_status, new_status, message, data_json)
-            VALUES (@request_id, @actor_user_id, @event_type,
-                    @old_status, @new_status, @message, @data_json)
+                transport_request_id, actor_user_id, device_id, correlation_id, event_type,
+                old_status, new_status, message, data_json, created_at)
+            VALUES (@request_id, @actor_user_id, @device_id, @correlation_id, @event_type,
+                    @old_status, @new_status, @message, @data_json, clock_timestamp())
             """,
             connection,
             transaction);
         command.Parameters.AddWithValue("request_id", requestId);
-        AddNullableUuid(command, "actor_user_id", actorUserId);
+        AddNullableUuid(command, "actor_user_id", resolvedActor);
+        AddNullableUuid(command, "device_id", deviceId);
+        AddNullableUuid(command, "correlation_id", correlationId);
         command.Parameters.AddWithValue("event_type", eventType);
         AddNullableText(command, "old_status", oldStatus?.ToDatabase());
         AddNullableText(command, "new_status", newStatus?.ToDatabase());

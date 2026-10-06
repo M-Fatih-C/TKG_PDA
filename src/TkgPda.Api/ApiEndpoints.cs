@@ -565,7 +565,7 @@ public static class ApiEndpoints
             null,
             request.Priority,
             request.RequiresPreparation);
-        var result = await workflow.CreateAsync(command, cancellationToken);
+        var result = await workflow.CreateAsync(command, OperationalContext(context), cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         context.Response.Headers.Location = $"/api/v1/transport-requests/{result.Request.Id}";
         await WriteAuditAsync(
@@ -636,7 +636,8 @@ public static class ApiEndpoints
                 request.PositionNumber,
                 action,
                 request.Priority,
-                request.ProductionSessionId),
+                request.ProductionSessionId,
+                EventContext: OperationalContext(context)),
             cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         await WriteAuditAsync(
@@ -686,7 +687,8 @@ public static class ApiEndpoints
                 request.LayoutId,
                 request.NavigationProfileId,
                 request.Priority,
-                request.ProductionSessionId),
+                request.ProductionSessionId,
+                EventContext: OperationalContext(context)),
             cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.Batch.WasIdempotentReplay ? "true" : "false";
         await WriteAuditAsync(
@@ -742,7 +744,8 @@ public static class ApiEndpoints
                 request.NavigationProfileId,
                 items,
                 request.Priority,
-                request.ProductionSessionId),
+                request.ProductionSessionId,
+                EventContext: OperationalContext(context)),
             cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         await WriteAuditAsync(
@@ -815,7 +818,7 @@ public static class ApiEndpoints
             context.User.UserId(),
             request.MachineId,
             items);
-        var result = await workflow.CreateBatchAsync(batchCommand, cancellationToken);
+        var result = await workflow.CreateBatchAsync(batchCommand, OperationalContext(context), cancellationToken);
 
         await WriteAuditAsync(
             dataStore,
@@ -871,6 +874,7 @@ public static class ApiEndpoints
             requestId,
             context.User.UserId(),
             CorrelationId(context),
+            OperationalContext(context),
             cancellationToken);
         await WriteAuditAsync(
             dataStore,
@@ -905,7 +909,7 @@ public static class ApiEndpoints
                     "The user does not have permission for this machine.");
             }
         }
-        var updated = await workflow.MarkReadyAsync(requestId, context.User.UserId(), cancellationToken);
+        var updated = await workflow.MarkReadyAsync(requestId, context.User.UserId(), OperationalContext(context), cancellationToken);
         await WriteAuditAsync(
             dataStore,
             context,
@@ -1380,6 +1384,9 @@ public static class ApiEndpoints
 
     private static Guid CorrelationId(HttpContext context) =>
         context.Items.TryGetValue(ApiContextKeys.CorrelationId, out var value) && value is Guid id ? id : Guid.NewGuid();
+
+    private static OperationalEventContext OperationalContext(HttpContext context) =>
+        OperationalEventContext.ForUser(context.User.UserId(), Device(context).Id, CorrelationId(context));
 
     private static async Task WriteAuditAsync(
         IApiDataStore dataStore,
