@@ -144,6 +144,8 @@ builder.Services.AddSingleton<IProductionSessionStore>(services => services.GetR
 builder.Services.AddSingleton<ProductionSessionService>();
 builder.Services.AddSingleton<IWarehousePreparationStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<WarehousePreparationService>();
+builder.Services.Configure<DeviceNotificationOptions>(builder.Configuration.GetSection("DeviceNotifications"));
+builder.Services.AddSingleton<IDeviceNotificationStore, PostgresDeviceNotificationStore>();
 builder.Services.AddSingleton<IFinishedGoodsStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<FinishedGoodsStoreService>();
 builder.Services.AddSingleton<ContainerActionService>();
@@ -296,6 +298,7 @@ app.MapTkgPdaApi();
 app.MapProductionSessions();
 app.MapWarehousePreparation();
 app.MapFinishedGoodsStore();
+app.MapDeviceNotifications();
 app.MapTkgPdaAdminApi();
 app.MapTkgPdaRdsIntegrationApi();
 

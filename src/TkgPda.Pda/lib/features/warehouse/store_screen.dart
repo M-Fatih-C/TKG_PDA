@@ -219,8 +219,25 @@ class _LocationCard extends StatelessWidget {
                 _OccupancyChip(location: location),
               ],
             ),
+            Text(
+              location.code,
+              key: Key('store-code-${location.code}'),
+              style: TextStyle(
+                fontSize: PdaScale.caption(context),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            SizedBox(height: PdaScale.gutter(context) / 4),
+            Text(
+              location.presenceLabel,
+              key: Key('store-presence-${location.code}'),
+              style: TextStyle(
+                fontSize: PdaScale.body(context),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
             SizedBox(height: PdaScale.gutter(context) / 2),
-            if (location.isEmpty)
+            if (location.isEnabled && location.isEmpty)
               Text(
                 'Bu alan boş.',
                 style: TextStyle(fontSize: PdaScale.body(context)),

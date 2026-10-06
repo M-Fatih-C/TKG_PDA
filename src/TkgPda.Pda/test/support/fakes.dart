@@ -515,6 +515,22 @@ class FakePdaRepository implements PdaDataSource {
     if (logoutError case final error?) throw error;
   }
 
+  int notificationRegistrationCount = 0;
+  Object? notificationRegistrationError;
+  DeviceNotificationRegistration notificationRegistration =
+      const DeviceNotificationRegistration(
+        registrationId: 'reg-1',
+        credential: 'test-credential',
+        pollIntervalSeconds: 5,
+      );
+
+  @override
+  Future<DeviceNotificationRegistration> registerDeviceNotification() async {
+    notificationRegistrationCount++;
+    if (notificationRegistrationError case final error?) throw error;
+    return notificationRegistration;
+  }
+
   @override
   Future<AuthenticatedUser> me() async {
     meCount++;

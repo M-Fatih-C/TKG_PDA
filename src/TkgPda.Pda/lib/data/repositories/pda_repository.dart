@@ -3,6 +3,27 @@ import '../models/pda_models.dart';
 import '../models/preparation_area.dart';
 import '../models/store_location.dart';
 
+class DeviceNotificationRegistration {
+  const DeviceNotificationRegistration({
+    required this.registrationId,
+    required this.credential,
+    required this.pollIntervalSeconds,
+  });
+
+  final String registrationId;
+  final String credential;
+  final int pollIntervalSeconds;
+
+  factory DeviceNotificationRegistration.fromJson(Map<String, dynamic> json) =>
+      DeviceNotificationRegistration(
+        registrationId: json['registrationId'] as String? ?? '',
+        credential: json['credential'] as String? ?? '',
+        pollIntervalSeconds: json['pollIntervalSeconds'] is int
+            ? json['pollIntervalSeconds'] as int
+            : 5,
+      );
+}
+
 abstract interface class PdaDataSource {
   Future<ProductionSession?> activeProduction(String machineId);
   Future<ProductionSession> startProduction(
@@ -13,6 +34,7 @@ abstract interface class PdaDataSource {
   Future<LoginSession> login(String employeeNumber);
   Future<void> heartbeatSession();
   Future<void> logout();
+  Future<DeviceNotificationRegistration> registerDeviceNotification();
   Future<AuthenticatedUser> me();
   Future<List<MachineSummary>> machines();
   Future<OperationalContext> operationalContext(String machineId);
@@ -194,6 +216,12 @@ class PdaRepository implements PdaDataSource {
   @override
   Future<void> logout() async {
     await _api.post('/api/v1/auth/logout');
+  }
+
+  @override
+  Future<DeviceNotificationRegistration> registerDeviceNotification() async {
+    final response = await _api.put('/api/v1/auth/device-notifications/register');
+    return DeviceNotificationRegistration.fromJson(_json(response.body));
   }
 
   @override

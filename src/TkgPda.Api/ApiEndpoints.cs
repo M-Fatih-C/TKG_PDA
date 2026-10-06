@@ -20,6 +20,9 @@ public static class ApiEndpoints
         endpoints.MapPost("/api/v1/auth/logout", LogoutAsync)
             .RequireAuthorization();
 
+        endpoints.MapPut("/api/v1/auth/device-notifications/register", RegisterDeviceNotificationAsync)
+            .RequireAuthorization();
+
         endpoints.MapGet("/api/v1/auth/me", CurrentUserAsync)
             .RequireAuthorization();
 
@@ -338,10 +341,36 @@ public static class ApiEndpoints
         return Results.Ok(new HeartbeatResponse(updated.Id, updated.LeaseExpiresAt, updated.TokenExpiresAt));
     }
 
+    private static async Task<IResult> RegisterDeviceNotificationAsync(
+        HttpContext context,
+        IDeviceNotificationStore notifications,
+        CancellationToken cancellationToken)
+    {
+        if (!context.User.IsInRole(RoleCodes.Admin)
+            && !context.User.IsInRole(RoleCodes.Supervisor)
+            && !context.User.IsInRole(RoleCodes.WarehouseOperator)
+            && !context.User.IsInRole(RoleCodes.FinishedGoodsWarehouseOperator))
+        {
+            throw new ApiException(
+                StatusCodes.Status403Forbidden,
+                "NOTIFICATION_ROLE_NOT_AUTHORIZED",
+                "This session cannot register for finished-goods notifications.");
+        }
+
+        if (context.Items.TryGetValue(ApiContextKeys.Device, out var value) && value is DeviceRecord device)
+        {
+            var registration = await notifications.RegisterAsync(context.User.UserId(), device.Id, cancellationToken);
+            return Results.Ok(new DeviceNotificationRegistrationResponse(registration.RegistrationId, registration.Credential, 5));
+        }
+
+        throw new ApiException(StatusCodes.Status401Unauthorized, "DEVICE_CONTEXT_REQUIRED", "An authenticated request must include its token-bound device code.");
+    }
+
     private static async Task<IResult> LogoutAsync(
         HttpContext context,
         IFieldSessionStore sessionStore,
         IApiDataStore dataStore,
+        IDeviceNotificationStore notifications,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
@@ -357,6 +386,7 @@ public static class ApiEndpoints
                 var revoked = await sessionStore.RevokeSessionAsync(sessionId, userId, "USER_LOGOUT", now, cancellationToken);
                 if (revoked && device is not null)
                 {
+                    await notifications.DeactivateAsync(userId, device.Id, cancellationToken);
                     await WriteAuditAsync(
                         dataStore,
                         context,

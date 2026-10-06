@@ -89,6 +89,13 @@ class StoreLocation {
   bool get isEmpty => units.isEmpty;
   bool get hasKnownCapacity => capacity != null && capacity! > 0;
 
+  /// Presentation only. This is not occupancy and it is not load state.
+  String get presenceLabel {
+    if (!isEnabled) return 'DEVRE DIŞI';
+    if (units.isEmpty) return 'BOŞ';
+    return 'DOLU';
+  }
+
   double? get fillRatio => hasKnownCapacity ? unitCount / capacity! : null;
 
   /// Never true while capacity is unknown.
