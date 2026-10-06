@@ -73,6 +73,86 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         await InsertStoreEventAsync(connection, transaction, locationId, unitId, "UNIT_DELIVERED",
             request.PartId, request.ContainerTypeId, request.Id,
             actorUserId: null, deviceId: null, new { source = "TRANSPORT_COMPLETED" }, cancellationToken);
+        await EnqueueFinishedGoodsNotificationAsync(
+            connection, transaction, locationId, unitId, request, cancellationToken);
+    }
+
+    private static async Task EnqueueFinishedGoodsNotificationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid locationId,
+        Guid unitId,
+        TransportRequestSnapshot request,
+        CancellationToken cancellationToken)
+    {
+        string displayName = "";
+        string? partCode = null;
+        string? machineCode = null;
+        await using (var lookup = new NpgsqlCommand(
+            """
+            SELECT l.display_name, p.part_code, m.code
+            FROM ops.store_locations l
+            LEFT JOIN master.parts p ON p.id = @part
+            LEFT JOIN master.machines m ON m.id = @machine
+            WHERE l.id = @location
+            """,
+            connection,
+            transaction))
+        {
+            lookup.Parameters.AddWithValue("location", locationId);
+            AddNullableUuid(lookup, "part", request.PartId);
+            lookup.Parameters.AddWithValue("machine", request.MachineId);
+            await using var reader = await lookup.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                displayName = reader.GetString(0);
+                partCode = reader.IsDBNull(1) ? null : reader.GetString(1);
+                machineCode = reader.IsDBNull(2) ? null : reader.GetString(2);
+            }
+
+            reader.Close();
+        }
+
+        var data = new Dictionary<string, string>
+        {
+            ["notificationType"] = FinishedGoodsNotificationCopy.NotificationType,
+            ["unitId"] = unitId.ToString("D"),
+            ["locationId"] = locationId.ToString("D"),
+            ["locationName"] = displayName,
+            ["requestNo"] = request.RequestNo.ToString()
+        };
+        if (!string.IsNullOrWhiteSpace(partCode)) data["partCode"] = partCode;
+        if (!string.IsNullOrWhiteSpace(machineCode)) data["machineCode"] = machineCode;
+
+        await using var insert = new NpgsqlCommand(
+            """
+            INSERT INTO integration.notification_outbox
+                (event_key, registration_id, notification_type, title, body, data_json)
+            SELECT @event_key, reg.id, @notification_type, @title, @body, @data
+            FROM integration.device_notification_registrations reg
+            JOIN auth.users u ON u.id = reg.user_id AND u.is_active
+            JOIN audit.client_devices d ON d.id = reg.device_id AND d.is_active
+            WHERE reg.is_active
+              AND EXISTS (
+                  SELECT 1
+                  FROM auth.user_roles ur
+                  JOIN auth.roles role ON role.id = ur.role_id
+                  WHERE ur.user_id = reg.user_id
+                    AND role.code = ANY(@roles))
+            ON CONFLICT (event_key, registration_id) DO NOTHING
+            """,
+            connection,
+            transaction);
+        insert.Parameters.AddWithValue("event_key", FinishedGoodsNotificationCopy.EventKey(unitId));
+        insert.Parameters.AddWithValue("notification_type", FinishedGoodsNotificationCopy.NotificationType);
+        insert.Parameters.AddWithValue("title", FinishedGoodsNotificationCopy.Title(displayName));
+        insert.Parameters.AddWithValue("body", FinishedGoodsNotificationCopy.Body(partCode, machineCode, request.RequestNo));
+        insert.Parameters.Add(new NpgsqlParameter("data", NpgsqlDbType.Jsonb) { Value = JsonSerializer.Serialize(data) });
+        insert.Parameters.Add(new NpgsqlParameter("roles", NpgsqlDbType.Array | NpgsqlDbType.Text)
+        {
+            Value = FinishedGoodsNotificationAuthorization.RecipientRoles
+        });
+        await insert.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private const string FinishedGoodsDestinationNotConfiguredMessage =

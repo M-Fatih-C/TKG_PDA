@@ -22,6 +22,19 @@ public sealed record DeviceResponse(Guid Id, string Code, string Name, string Ty
 
 public sealed record HeartbeatResponse(Guid SessionId, DateTimeOffset LeaseExpiresAt, DateTimeOffset TokenExpiresAt);
 
+public sealed record DeviceNotificationRegistrationResponse(
+    Guid RegistrationId,
+    string Credential,
+    int PollIntervalSeconds);
+
+public sealed record DeviceNotificationResponse(
+    Guid Id,
+    string EventKey,
+    string NotificationType,
+    string Title,
+    string Body,
+    IReadOnlyDictionary<string, string> Data);
+
 public sealed record CreateTransportHttpRequest(
     Guid MachineId,
     Guid VariantId,

@@ -10,6 +10,7 @@ import '../data/models/pda_models.dart';
 import '../data/repositories/pda_repository.dart';
 import '../features/transport/submission_coordinator.dart';
 import '../features/operation/production_coordinator.dart';
+import '../features/warehouse/internal_notification_client.dart';
 import '../features/warehouse/preparation_coordinator.dart';
 import '../features/warehouse/store_coordinator.dart';
 import '../features/warehouse/warehouse_notification_coordinator.dart';
@@ -94,6 +95,7 @@ class AppController extends ChangeNotifier {
     bool enablePolling = true,
     bool enableProductionWorkflow = true,
     bool? enableHeartbeat,
+    InternalNotificationClient? notificationClient,
   }) {
     final notifications =
         warehouseNotificationCoordinator ?? WarehouseNotificationCoordinator();
@@ -106,6 +108,7 @@ class AppController extends ChangeNotifier {
       enablePolling: enablePolling,
       enableProductionWorkflow: enableProductionWorkflow,
       enableHeartbeat: enableHeartbeat,
+      notificationClient: notificationClient,
     );
   }
 
@@ -118,6 +121,7 @@ class AppController extends ChangeNotifier {
     bool enablePolling = true,
     bool enableProductionWorkflow = true,
     bool? enableHeartbeat,
+    InternalNotificationClient? notificationClient,
   }) : _repository = repository,
        _deviceCodeStore = deviceCodeStore,
        _session = session,
@@ -125,6 +129,7 @@ class AppController extends ChangeNotifier {
        _enablePolling = enablePolling,
        _enableProductionWorkflow = enableProductionWorkflow,
        _enableHeartbeat = enableHeartbeat ?? enablePolling,
+       _notificationClient = notificationClient,
        warehouseNotifications = notifications,
        production = ProductionCoordinator(repository),
        preparation = PreparationCoordinator(
@@ -137,6 +142,7 @@ class AppController extends ChangeNotifier {
        ) {
     production.addListener(notifyListeners);
     warehouseNotifications.addListener(notifyListeners);
+    _notificationClient?.onDelivery = _onWarehouseDelivery;
   }
 
   final PdaDataSource _repository;
@@ -146,6 +152,7 @@ class AppController extends ChangeNotifier {
   final bool _enablePolling;
   final bool _enableProductionWorkflow;
   final bool _enableHeartbeat;
+  final InternalNotificationClient? _notificationClient;
   final WarehouseNotificationCoordinator warehouseNotifications;
   final ProductionCoordinator production;
   int _machineGeneration = 0;
@@ -586,6 +593,9 @@ class AppController extends ChangeNotifier {
       }
       _offline = false;
       _startHeartbeat();
+      if (canAccessFinishedGoodsWarehouse) {
+        await _startWarehouseNotifications();
+      }
       return true;
     } on ApiProblem catch (problem) {
       if (serverSessionEstablished) {
@@ -622,8 +632,37 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<void> _startWarehouseNotifications() async {
+    final client = _notificationClient;
+    if (client == null || !client.isSupported) return;
+    try {
+      final registration = await _repository.registerDeviceNotification();
+      if (registration.credential.isEmpty) return;
+      await client.start(
+        credential: registration.credential,
+        registrationId: registration.registrationId,
+      );
+    } catch (_) {
+      // A failed registration must not fail the warehouse login.
+    }
+  }
+
+  void _onWarehouseDelivery(Map<String, String> data) {
+    if (data['notificationType'] != 'FINISHED_GOODS_DELIVERY') return;
+    final unitId = data['unitId'];
+    if (unitId == null || unitId.isEmpty) return;
+    warehouseNotifications.notifyDelivery(
+      unitId: unitId,
+      locationName: data['locationName'] ?? '',
+      partCode: data['partCode'] ?? '',
+      machineCode: data['machineCode'],
+      requestNo: int.tryParse(data['requestNo'] ?? ''),
+    );
+  }
+
   Future<void> _releaseServerSessionBestEffort() async {
     if (!_session.isAuthenticated) return;
+    await _notificationClient?.stop();
     try {
       await _repository.logout();
     } catch (_) {
@@ -638,6 +677,7 @@ class AppController extends ChangeNotifier {
       return;
     }
     _stopHeartbeat();
+    await _notificationClient?.stop();
     try {
       await _repository.logout();
     } catch (_) {

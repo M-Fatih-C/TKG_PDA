@@ -28,6 +28,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         builder.UseSetting("Cors:AllowedOrigins:0", "https://operator.example.test");
         builder.UseSetting("RdsCoreExecution:Enabled", "false");
         builder.UseSetting("Authentication:Jwt:ExpiryMinutes", "15");
+        builder.UseSetting("DeviceNotifications:LongPollSeconds", "0");
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<IRdsReadClient>();
@@ -44,6 +45,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteAsync(
             """
             TRUNCATE
+                integration.notification_outbox,
+                integration.device_notification_registrations,
                 ops.store_events,
                 ops.store_units,
                 integration.rds_tasks,
@@ -493,6 +496,9 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         AddParameters(command, parameters);
         await command.ExecuteNonQueryAsync();
     }
+
+    public Task ExecuteScriptAsync(string path) =>
+        ExecuteAsync(File.ReadAllText(path));
 
     public async Task<T> ScalarAsync<T>(string sql, params (string Name, object? Value)[] parameters)
     {

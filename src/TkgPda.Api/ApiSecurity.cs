@@ -594,6 +594,7 @@ public static class ApiHeaders
     public const string DeviceCode = "X-Device-Code";
     public const string CorrelationId = "X-Correlation-ID";
     public const string IdempotencyKey = "Idempotency-Key";
+    public const string NotificationCredential = "X-TKG-Notification-Credential";
     public const string IdempotencyReplayed = "Idempotency-Replayed";
 }
 

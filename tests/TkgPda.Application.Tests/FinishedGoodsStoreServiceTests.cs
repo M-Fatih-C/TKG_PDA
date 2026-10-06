@@ -20,6 +20,7 @@ public sealed class FinishedGoodsStoreServiceTests
     {
         public RemoveStoreUnitCommand? Removed { get; private set; }
         public ClearStoreLocationCommand? Cleared { get; private set; }
+        public RecordEmptyContainerCommand? RecordedEmpty { get; private set; }
 
         public Task<IReadOnlyList<StoreLocationRecord>> ListLocationsAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<StoreLocationRecord>>([]);
@@ -34,6 +35,12 @@ public sealed class FinishedGoodsStoreServiceTests
         {
             Cleared = command;
             return Task.FromResult(Location_(capacity: 3));
+        }
+
+        public Task<StoreLocationRecord> RecordEmptyContainerAsync(RecordEmptyContainerCommand command, CancellationToken cancellationToken = default)
+        {
+            RecordedEmpty = command;
+            return Task.FromResult(Location_(capacity: null));
         }
     }
 
