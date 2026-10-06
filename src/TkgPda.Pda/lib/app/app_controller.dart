@@ -236,6 +236,10 @@ class AppController extends ChangeNotifier {
   // single-item part-first fields above (which drive whichever cart item is
   // currently being configured).
   bool _batchMode = false;
+  final List<MachineRelatedPart> _selectedAltParts = [];
+  final Map<String, String> _altDemandKeys = {};
+  final Set<String> _altDemandInFlight = {};
+  String? _altBatchKey;
   final List<BatchCartItem> _batchCart = [];
   int _batchConfiguringIndex = -1;
   final BatchSubmissionCoordinator _batchSubmission =
@@ -396,6 +400,10 @@ class AppController extends ChangeNotifier {
 
   // Customer UI — Multi-Part Transport Batch.
   bool get batchMode => _batchMode;
+  List<MachineRelatedPart> get selectedAltParts =>
+      List.unmodifiable(_selectedAltParts);
+  bool isAltPartSelected(String partId) =>
+      _selectedAltParts.any((part) => part.partId == partId);
   List<BatchCartItem> get batchCart => List.unmodifiable(_batchCart);
   bool get isConfiguringBatchItem =>
       _batchConfiguringIndex >= 0 && _batchConfiguringIndex < _batchCart.length;
@@ -990,6 +998,8 @@ class AppController extends ChangeNotifier {
   void exitBatchSelection() {
     _containerBatchProductionId = null;
     _batchMode = false;
+    _selectedAltParts.clear();
+    _altBatchKey = null;
     _batchCart.clear();
     _batchConfiguringIndex = -1;
     _batchSubmission.clear();
@@ -997,6 +1007,89 @@ class AppController extends ChangeNotifier {
     _containerBatchAmbiguous = false;
     resetPartSelection();
     notifyListeners();
+  }
+
+  /// Alt-part demand is only "I want this material". The operator never
+  /// chooses a container, load or slot. A repeated tap while the first
+  /// request is still in flight reuses the same idempotency key.
+  Future<void> requestAltPart(MachineRelatedPart part) async {
+    if (_batchMode) {
+      if (isAltPartSelected(part.partId)) {
+        _selectedAltParts.removeWhere((item) => item.partId == part.partId);
+      } else {
+        _selectedAltParts.add(part);
+      }
+      notifyListeners();
+      return;
+    }
+    final machine = _context?.machine;
+    if (machine == null || !productionTransportReady) {
+      _notice = 'Alt parça talebi için aktif üretim gerekir.';
+      notifyListeners();
+      return;
+    }
+    if (_altDemandInFlight.contains(part.partId) || !mutationGate.canMutate) {
+      return;
+    }
+    final key = _altDemandKeys.putIfAbsent(
+      part.partId,
+      () => 'part-demand:${part.partId}:${_cartIdFactory.v4()}',
+    );
+    _altDemandInFlight.add(part.partId);
+    _setBusy(true);
+    try {
+      final result = await _repository.createPartDemand(
+        machineId: machine.id,
+        partId: part.partId,
+        idempotencyKey: key,
+      );
+      _altDemandKeys.remove(part.partId);
+      _notice = result.predecessorRequestNo == null
+          ? '${part.partCode} talebi oluşturuldu. Talep #${result.requestNo}.'
+          : '${part.partCode} için mevcut palet kaldırılıp yeni palet isteniyor. Talep #${result.requestNo}.';
+      await refreshContext();
+    } on ConnectivityException {
+      _notice = 'Bağlantı yok — alt parça talebi gönderilemedi.';
+    } on ApiProblem catch (problem) {
+      _notice = problem.operatorMessage;
+      if (problem.code == 'PART_REQUEST_ALREADY_ACTIVE') {
+        _altDemandKeys.remove(part.partId);
+        await refreshContext();
+      }
+    } finally {
+      _altDemandInFlight.remove(part.partId);
+      _setBusy(false);
+    }
+  }
+
+  Future<void> submitSelectedAltParts() async {
+    final machine = _context?.machine;
+    if (machine == null ||
+        _selectedAltParts.isEmpty ||
+        !mutationGate.canMutate) {
+      return;
+    }
+    final key = _altBatchKey ??= 'part-demand-batch:${_cartIdFactory.v4()}';
+    final partIds = _selectedAltParts.map((part) => part.partId).toList();
+    _setBusy(true);
+    try {
+      final result = await _repository.createPartDemandBatch(
+        machineId: machine.id,
+        partIds: partIds,
+        idempotencyKey: key,
+      );
+      _notice = '${result.items.length} alt parça talebi oluşturuldu.';
+      _selectedAltParts.clear();
+      _altBatchKey = null;
+      _batchMode = false;
+      await refreshContext();
+    } on ConnectivityException {
+      _notice = 'Bağlantı yok — toplu alt parça talebi gönderilemedi.';
+    } on ApiProblem catch (problem) {
+      _notice = problem.operatorMessage;
+    } finally {
+      _setBusy(false);
+    }
   }
 
   /// Adds [part] (main, RELATED or ALT) to the cart. Returns false without

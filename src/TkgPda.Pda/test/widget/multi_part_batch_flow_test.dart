@@ -40,10 +40,10 @@ void main() {
 
       // Select main part
       await _selectMainPart(tester, testMainPartOption.partId);
-      expect(find.text('1. Kasa Doldu'), findsOneWidget);
+      expect(find.text('1. Kasam Doldu'), findsOneWidget);
 
       // Tap container action
-      await tester.tap(find.text('1. Kasa Doldu'));
+      await tester.tap(find.text('1. Kasam Doldu'));
       await tester.pumpAndSettle();
 
       expect(harness.controller.batchCart.length, 1);
@@ -67,7 +67,7 @@ void main() {
     await _toggleBatchMode(tester);
 
     await _selectMainPart(tester, testMainPartOption.partId);
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pumpAndSettle();
 
     expect(harness.controller.batchCart.length, 1);
@@ -87,13 +87,13 @@ void main() {
     await _toggleBatchMode(tester);
 
     await _selectMainPart(tester, testMainPartOption.partId);
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pumpAndSettle();
 
     expect(harness.controller.batchCart.length, 1);
 
     // Tap again
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pumpAndSettle();
 
     expect(harness.controller.batchCart.length, 1);
@@ -109,7 +109,7 @@ void main() {
       await _toggleBatchMode(tester);
 
       await _selectMainPart(tester, testMainPartOption.partId);
-      await tester.tap(find.text('1. Kasa Doldu'));
+      await tester.tap(find.text('1. Kasam Doldu'));
       await tester.pumpAndSettle();
 
       expect(harness.controller.batchCart.length, 1);
@@ -135,7 +135,7 @@ void main() {
     await _toggleBatchMode(tester);
 
     await _selectMainPart(tester, testMainPartOption.partId);
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pumpAndSettle();
 
     expect(harness.controller.batchCart.length, 1);
@@ -156,7 +156,7 @@ void main() {
     await _toggleBatchMode(tester);
 
     await _selectMainPart(tester, testMainPartOption.partId);
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pumpAndSettle();
 
     expect(harness.controller.batchCart, isNotEmpty);
@@ -177,7 +177,7 @@ void main() {
       await _toggleBatchMode(tester);
 
       await _selectMainPart(tester, testMainPartOption.partId);
-      await tester.tap(find.text('1. Kasa Doldu'));
+      await tester.tap(find.text('1. Kasam Doldu'));
       await tester.pumpAndSettle();
 
       expect(harness.controller.canReviewBatch, isTrue);
@@ -205,7 +205,7 @@ void main() {
       await _toggleBatchMode(tester);
 
       await _selectMainPart(tester, testMainPartOption.partId);
-      await tester.tap(find.text('1. Kasa Doldu'));
+      await tester.tap(find.text('1. Kasam Doldu'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('batch-submit')));
@@ -239,7 +239,7 @@ void main() {
       await _toggleBatchMode(tester);
 
       await _selectMainPart(tester, testMainPartOption.partId);
-      await tester.tap(find.text('1. Kasa Doldu'));
+      await tester.tap(find.text('1. Kasam Doldu'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.byKey(const Key('batch-submit')));
@@ -262,7 +262,7 @@ void main() {
       expect(harness.controller.batchMode, isFalse);
 
       await _selectMainPart(tester, testMainPartOption.partId);
-      await tester.tap(find.text('1. Kasa Doldu'));
+      await tester.tap(find.text('1. Kasam Doldu'));
       await tester.pump(const Duration(milliseconds: 500));
 
       expect(repository.containerActionCount, 1);

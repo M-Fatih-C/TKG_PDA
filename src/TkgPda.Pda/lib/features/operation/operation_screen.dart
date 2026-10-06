@@ -5,6 +5,7 @@ import '../../app/design_tokens.dart';
 import '../../shared/widgets/feedback_banners.dart';
 import 'container_position_panel.dart';
 import 'part_first_screen.dart';
+import 'transport_action_panel.dart';
 
 /// Machine-scoped Operator workspace. Part/variant resolution and transport
 /// actions share one page; there is no second physical-layout screen.
@@ -222,47 +223,57 @@ class _PartFirstWithBatchSkip extends StatelessWidget {
             )
           : null;
 
-      // On a line terminal the selection and the container actions fit side by
-      // side, so neither has to be scrolled to reach the other: part choice
-      // happens a few times a shift, container actions happen constantly, and
-      // stacking them meant the constant one lived in a strip at the bottom.
-      if (PdaScale.isWide(context) && controller.transportActionsReady) {
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: Column(
-                children: [
-                  Expanded(child: selector),
-                  ?skip,
-                ],
-              ),
-            ),
-            SizedBox(width: PdaScale.gutter(context)),
-            SizedBox(
-              width: (constraints.maxWidth * 0.46).clamp(560.0, 940.0),
-              child: ContainerPositionPanel(
-                controller: controller,
-                expand: true,
-              ),
-            ),
-          ],
-        );
-      }
-
+      // Mamul kasa sits with the production workspace. Active transports
+      // are under that area and stay scoped to this terminal's machine.
+      final showMamul = controller.transportActionsReady;
+      final workspace = PdaScale.isWide(context) && showMamul
+          ? Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: Column(
+                    children: [
+                      Expanded(child: selector),
+                      ?skip,
+                    ],
+                  ),
+                ),
+                SizedBox(width: PdaScale.gutter(context)),
+                SizedBox(
+                  width: (constraints.maxWidth * 0.46).clamp(560.0, 940.0),
+                  child: ContainerPositionPanel(
+                    controller: controller,
+                    expand: true,
+                  ),
+                ),
+              ],
+            )
+          : Column(
+              children: [
+                Expanded(child: selector),
+                if (showMamul)
+                  ContainerPositionPanel(
+                    controller: controller,
+                    maxHeight: constraints.maxHeight * 0.42,
+                  ),
+                ?skip,
+              ],
+            );
+      final requests =
+          controller.context?.activeTransportRequests ?? const [];
       return Column(
         children: [
-          Expanded(child: selector),
-          if (controller.transportActionsReady)
-            ContainerPositionPanel(
-              controller: controller,
-              // The docked panel is a non-flex child, so the Column offers it
-              // unbounded height and it would keep its preferred size no matter
-              // how many status banners are stacked above. Cap it against what
-              // this workspace actually has, and let the selection keep the rest.
-              maxHeight: constraints.maxHeight * 0.58,
+          Expanded(child: workspace),
+          if (requests.isNotEmpty)
+            SizedBox(
+              height: (constraints.maxHeight * 0.34).clamp(180.0, 320.0),
+              child: SingleChildScrollView(
+                child: OperatorActiveTransportList(
+                  requests: requests,
+                  controller: controller,
+                ),
+              ),
             ),
-          ?skip,
         ],
       );
     },
@@ -470,9 +481,11 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                         children: [
                           Row(
                             children: [
-                              const Text(
-                                'Toplu Taşıma Sepeti',
-                                style: TextStyle(fontWeight: FontWeight.w800),
+                              Text(
+                                controller.production.active != null
+                                    ? 'Toplu Alt Parça'
+                                    : 'Toplu Taşıma Sepeti',
+                                style: const TextStyle(fontWeight: FontWeight.w800),
                               ),
                               const SizedBox(width: 6),
                               Container(
@@ -486,7 +499,9 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                                 child: Text(
-                                  '${cart.length}',
+                                  controller.production.active != null
+                                      ? '${controller.selectedAltParts.length}'
+                                      : '${cart.length}',
                                   style: TextStyle(
                                     color: theme.colorScheme.onPrimary,
                                     fontSize: 12,
@@ -497,9 +512,13 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                             ],
                           ),
                           Text(
-                            cart.isEmpty
-                                ? 'Parça ve kasa butonuna basarak ekleyin'
-                                : '${cart.length} kasa hazır · Detaylar için dokunun',
+                            controller.production.active != null
+                                ? (controller.selectedAltParts.isEmpty
+                                      ? 'Alt parçaları işaretleyin'
+                                      : '${controller.selectedAltParts.length} alt parça seçildi')
+                                : cart.isEmpty
+                                ? 'Parça seçip sepete ekleyin'
+                                : '${cart.length} kayıt hazır',
                             style: TextStyle(
                               fontSize: 11,
                               color: theme.hintColor,
@@ -509,7 +528,9 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                       ),
                     ),
                   ),
-                  if (cart.isNotEmpty) ...[
+                  if (cart.isNotEmpty ||
+                      (controller.production.active != null &&
+                          controller.selectedAltParts.isNotEmpty)) ...[
                     TextButton(
                       key: const Key('batch-clear-cart'),
                       onPressed: controller.busy
@@ -520,11 +541,20 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                     const SizedBox(width: 4),
                     FilledButton.icon(
                       key: const Key('batch-submit'),
-                      onPressed: controller.canReviewBatch && !controller.busy
+                      onPressed: controller.production.active != null
+                          ? (controller.selectedAltParts.isNotEmpty &&
+                                    !controller.busy
+                                ? controller.submitSelectedAltParts
+                                : null)
+                          : controller.canReviewBatch && !controller.busy
                           ? controller.submitBatch
                           : null,
                       icon: const Icon(Icons.send, size: 16),
-                      label: const Text('Tümünü Gönder'),
+                      label: Text(
+                        controller.production.active != null
+                            ? 'Seçilenleri Gönder'
+                            : 'Tümünü Gönder',
+                      ),
                     ),
                   ],
                 ],

@@ -568,8 +568,12 @@ class _DemandPicker extends StatelessWidget {
                       key: Key('demand-option-${demand.requestNo}'),
                       title: Text(demand.partCode ?? 'Parça bilinmiyor'),
                       subtitle: Text(
-                        '${demand.machineCode} · Talep #${demand.requestNo} · '
-                        '${_waitedLabel(demand.requestedAt)}',
+                        [
+                          if ((demand.partDescription ?? '').trim().isNotEmpty)
+                            demand.partDescription!.trim(),
+                          '${demand.machineCode} · Talep #${demand.requestNo} · '
+                              '${_waitedLabel(demand.requestedAt)}',
+                        ].join('\n'),
                       ),
                       trailing: Text(
                         demand.needsMaterial ? 'Dolu' : 'Boş',

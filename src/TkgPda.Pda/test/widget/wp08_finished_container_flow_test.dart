@@ -12,13 +12,13 @@ import 'package:tkg_pda/data/models/pda_models.dart';
 import '../support/fakes.dart';
 
 void main() {
-  testWidgets('1: Kasa Doldu submits immediately without a confirmation dialog', (
+  testWidgets('1: Kasam Doldu submits immediately without a confirmation dialog', (
     tester,
   ) async {
     final harness = await _operationHarness(tester);
 
-    expect(find.text('1. Kasa Doldu'), findsOneWidget);
-    await tester.tap(find.text('1. Kasa Doldu'));
+    expect(find.text('1. Kasam Doldu'), findsOneWidget);
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(harness.repository.containerActionCount, 1);
@@ -29,13 +29,13 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('2: Kasa Boş submits immediately without a confirmation dialog', (
+  testWidgets('2: Alan Boş submits immediately without a confirmation dialog', (
     tester,
   ) async {
     final harness = await _operationHarness(tester);
 
-    expect(find.text('1. Kasa Boş'), findsOneWidget);
-    await tester.tap(find.text('1. Kasa Boş'));
+    expect(find.text('1. Alan Boş'), findsOneWidget);
+    await tester.tap(find.text('1. Alan Boş'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(harness.repository.containerActionCount, 1);
@@ -46,7 +46,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('3: a backend-disabled Kasa Doldu cannot be pressed', (
+  testWidgets('3: a backend-disabled Kasam Doldu cannot be pressed', (
     tester,
   ) async {
     const message =
@@ -98,7 +98,7 @@ void main() {
       ..createCompleter = Completer<TransportResult>();
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pump();
     await tester.tap(find.byKey(const Key('direct-action-REMOVE_FULL-1')));
     await tester.pump();
@@ -118,7 +118,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('5: ambiguous Kasa Doldu retry reuses the same key', (
+  testWidgets('5: ambiguous Kasam Doldu retry reuses the same key', (
     tester,
   ) async {
     final repository = FakePdaRepository()
@@ -127,7 +127,7 @@ void main() {
       );
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
     final firstKey = repository.lastIdempotencyKey;
     expect(find.byKey(const Key('retry-ambiguous')), findsOneWidget);
@@ -141,7 +141,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('6: successful Kasa Doldu refreshes the active transport list', (
+  testWidgets('6: successful Kasam Doldu refreshes the active transport list', (
     tester,
   ) async {
     final request = _activeRequest(
@@ -152,7 +152,7 @@ void main() {
     final repository = FakePdaRepository()..containerActionActiveRequest = request;
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(
@@ -167,7 +167,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('7: successful Kasa Boş shows backend WAITING_PREPARATION', (
+  testWidgets('7: successful Alan Boş shows backend WAITING_PREPARATION', (
     tester,
   ) async {
     final request = _activeRequest(
@@ -178,7 +178,7 @@ void main() {
     final repository = FakePdaRepository()..containerActionActiveRequest = request;
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('1. Kasa Boş'));
+    await tester.tap(find.text('1. Alan Boş'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(

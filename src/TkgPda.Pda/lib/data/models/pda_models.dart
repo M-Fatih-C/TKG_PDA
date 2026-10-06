@@ -692,6 +692,7 @@ class ActiveTransportRequest {
     this.queuePosition,
     this.ageSeconds,
     this.executionElapsedSeconds,
+    this.chainState,
   });
 
   final String requestId;
@@ -732,6 +733,10 @@ class ActiveTransportRequest {
   /// Seconds since RDS reported execution start; null without start evidence.
   final int? executionElapsedSeconds;
 
+  /// Server chain label: WAITING_PREDECESSOR, REMOVING_EXISTING,
+  /// PREPARING_SUCCESSOR, PREPARING, or null. Never a robot percentage.
+  final String? chainState;
+
   factory ActiveTransportRequest.fromJson(JsonMap json) =>
       ActiveTransportRequest(
         requestId: json['requestId'] as String,
@@ -765,7 +770,65 @@ class ActiveTransportRequest {
         executionElapsedSeconds: json['executionElapsedSeconds'] == null
             ? null
             : _integer(json['executionElapsedSeconds']),
+        chainState: json['chainState'] as String?,
       );
+}
+
+class PartDemandResult {
+  const PartDemandResult({
+    required this.requestNo,
+    required this.taskType,
+    required this.status,
+    required this.readiness,
+    this.predecessorRequestNo,
+    this.predecessorTaskType,
+    required this.idempotentReplay,
+  });
+
+  final int requestNo;
+  final String taskType;
+  final String status;
+  final String readiness;
+  final int? predecessorRequestNo;
+  final String? predecessorTaskType;
+  final bool idempotentReplay;
+
+  factory PartDemandResult.fromJson(Map<String, dynamic> json) =>
+      PartDemandResult(
+        requestNo: _integer(json['requestNo']),
+        taskType: json['taskType'] as String? ?? '',
+        status: json['status'] as String? ?? '',
+        readiness: json['readiness'] as String? ?? '',
+        predecessorRequestNo: json['predecessorRequestNo'] == null
+            ? null
+            : _integer(json['predecessorRequestNo']),
+        predecessorTaskType: json['predecessorTaskType'] as String?,
+        idempotentReplay: json['idempotentReplay'] as bool? ?? false,
+      );
+}
+
+class PartDemandBatchResult {
+  const PartDemandBatchResult({
+    required this.idempotentReplay,
+    required this.items,
+  });
+
+  final bool idempotentReplay;
+  final List<PartDemandResult> items;
+
+  factory PartDemandBatchResult.fromJson(Map<String, dynamic> json) {
+    final raw = json['items'];
+    final items = raw is List
+        ? raw
+              .whereType<Map<String, dynamic>>()
+              .map(PartDemandResult.fromJson)
+              .toList(growable: false)
+        : const <PartDemandResult>[];
+    return PartDemandBatchResult(
+      idempotentReplay: json['idempotentReplay'] as bool? ?? false,
+      items: items,
+    );
+  }
 }
 
 class OperationalContext {

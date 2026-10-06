@@ -186,7 +186,9 @@ class _RemoveAllBar extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Kasa Pozisyonları (${controller.context?.activeVariantCode ?? 'Aktif Varyant'})',
+              controller.production.active != null
+                  ? 'Mamul Kasa'
+                  : 'Kasa Pozisyonları (${controller.context?.activeVariantCode ?? 'Aktif Varyant'})',
               style: TextStyle(
                 fontWeight: FontWeight.w700,
                 fontSize: PdaScale.body(context),
@@ -292,7 +294,7 @@ class _PositionCard extends StatelessWidget {
         controller: controller,
         position: position,
         action: 'FULL',
-        label: '${position.positionNumber}. Kasa Doldu',
+        label: '${position.positionNumber}. Kasam Doldu',
         availability: position.fullAction,
         icon: Icons.inventory,
       );
@@ -300,7 +302,7 @@ class _PositionCard extends StatelessWidget {
         controller: controller,
         position: position,
         action: 'EMPTY',
-        label: '${position.positionNumber}. Kasa Boş',
+        label: '${position.positionNumber}. Alan Boş',
         availability: position.emptyAction,
         icon: Icons.move_to_inbox_outlined,
       );

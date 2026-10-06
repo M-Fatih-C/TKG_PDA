@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../app/app_controller.dart';
 import '../../data/models/pda_models.dart';
-import 'transport_action_panel.dart';
 import 'production_session_panel.dart';
 
 /// Final Operator workspace after a machine is selected. Part and compatible
@@ -60,8 +59,6 @@ class _PartFirstSelectorState extends State<PartFirstSelector> {
                     option.partCode.toUpperCase().contains(normalizedQuery),
               )
               .toList(growable: false);
-    final activeRequests =
-        controller.context?.activeTransportRequests ?? const [];
     return RefreshIndicator(
       onRefresh: () async {
         await controller.reloadPartOptions();
@@ -106,7 +103,9 @@ class _PartFirstSelectorState extends State<PartFirstSelector> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Toplu Taşıma Modu Açık: Parça ve kasa butonuna bastığınızda talep sepete eklenir.',
+                      controller.production.active != null
+                          ? 'Toplu Alt Parça: seçin, sonra Seçilenleri Gönder.'
+                          : 'Toplu Taşıma Modu Açık: Parça ve kasa butonuna bastığınızda talep sepete eklenir.',
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
@@ -183,16 +182,10 @@ class _PartFirstSelectorState extends State<PartFirstSelector> {
             const SizedBox(height: 10),
             _EffectivePartCard(main: main, controller: controller),
           ],
-          if (controller.selectedEffectivePart != null) ...[
+          if (controller.selectedEffectivePart != null &&
+              controller.production.active == null) ...[
             const SizedBox(height: 18),
             _CompatibleVariantCard(controller: controller),
-          ],
-          if (activeRequests.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            OperatorActiveTransportList(
-              requests: activeRequests,
-              controller: controller,
-            ),
           ],
           const SizedBox(height: 40),
         ],
@@ -432,7 +425,7 @@ class _EffectivePartCard extends StatelessWidget {
                 ],
               ),
             ),
-            if (!usingMain) ...[
+            if (!usingMain && controller.production.active == null) ...[
               const SizedBox(height: 4),
               TextButton.icon(
                 key: const Key('request-main-part'),
@@ -458,7 +451,7 @@ class _EffectivePartCard extends StatelessWidget {
                 style: TextStyle(fontSize: 12, color: Color(0xFF475569)),
               ),
             ],
-            if (related.isNotEmpty) ...[
+            if (related.isNotEmpty && controller.production.active == null) ...[
               const SizedBox(height: 14),
               const Text(
                 'İlgili Parçalar',
@@ -494,7 +487,7 @@ class _EffectivePartCard extends StatelessWidget {
                 isAlternative: true,
               ),
             ],
-            if (other.isNotEmpty) ...[
+            if (other.isNotEmpty && controller.production.active == null) ...[
               const SizedBox(height: 16),
               const Text(
                 'Diğer Parçalar',
@@ -583,14 +576,18 @@ class _RelatedPartChip extends StatelessWidget {
         ? const Color(0xFF92400E)
         : const Color(0xFF0369A1);
 
+    final altDemand = controller.production.active != null && isAlternative;
+    final highlighted = altDemand
+        ? controller.isAltPartSelected(part.partId)
+        : selected;
     return ChoiceChip(
       key: chipKey,
-      selected: selected,
+      selected: highlighted,
       backgroundColor: Colors.white,
       selectedColor: selectedBg,
       side: BorderSide(
-        color: selected ? selectedBorder : const Color(0xFFCBD5E1),
-        width: selected ? 2.5 : 1,
+        color: highlighted ? selectedBorder : const Color(0xFFCBD5E1),
+        width: highlighted ? 2.5 : 1,
       ),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       label: Text(
@@ -598,11 +595,18 @@ class _RelatedPartChip extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
           fontSize: 15,
-          fontWeight: selected ? FontWeight.w900 : FontWeight.w700,
-          color: selected ? selectedText : const Color(0xFF1E293B),
+          fontWeight: highlighted ? FontWeight.w900 : FontWeight.w700,
+          color: highlighted ? selectedText : const Color(0xFF1E293B),
         ),
       ),
-      onSelected: !controller.canChangeEffectivePart
+      onSelected: altDemand
+          ? (controller.busy
+                ? null
+                : (_) {
+                    FocusScope.of(context).unfocus();
+                    controller.requestAltPart(part);
+                  })
+          : !controller.canChangeEffectivePart
           ? null
           : (_) {
               FocusScope.of(context).unfocus();

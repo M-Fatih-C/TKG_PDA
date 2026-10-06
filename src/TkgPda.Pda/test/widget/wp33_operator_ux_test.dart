@@ -15,12 +15,12 @@ void main() {
   ) async {
     final harness = await _operationHarness(tester);
 
-    expect(find.text('1. Kasa Doldu'), findsOneWidget);
-    expect(find.text('1. Kasa Boş'), findsOneWidget);
+    expect(find.text('1. Kasam Doldu'), findsOneWidget);
+    expect(find.text('1. Alan Boş'), findsOneWidget);
     expect(find.text('Tüm Kasaları Kaldır'), findsNothing);
     expect(find.byKey(const Key('direct-action-REMOVE_EMPTY-1')), findsNothing);
 
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('1. Kasam Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(harness.repository.containerActionCount, 1);
@@ -63,8 +63,8 @@ void main() {
       const Offset(-260, 0),
     );
     await tester.pumpAndSettle();
-    expect(find.text('2. Kasa Doldu'), findsOneWidget);
-    expect(find.text('2. Kasa Boş'), findsOneWidget);
+    expect(find.text('2. Kasam Doldu'), findsOneWidget);
+    expect(find.text('2. Alan Boş'), findsOneWidget);
 
     // Each logical container must own its action keys. These previously collided:
     // every card rendered the position-independent 'direct-action-BRING_EMPTY', so a

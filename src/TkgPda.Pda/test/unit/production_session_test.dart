@@ -27,6 +27,21 @@ ProductionSession productionRecord({
 );
 
 void main() {
+  test('alt part demand does not retarget the mamul container', () async {
+    final repo = FakePdaRepository();
+    final c = await controller(repo);
+    await c.selectMainPartOption(testMainPartOption);
+    await c.startProduction();
+    expect(c.selectedEffectivePart?.partId, testMainPartId);
+
+    await c.requestAltPart(testMainPartOption.relatedParts.first);
+
+    expect(repo.partDemandCount, 1);
+    expect(repo.lastPartDemandIds, [testAltPartId]);
+    expect(repo.containerActionCount, 0);
+    expect(c.selectedEffectivePart?.partId, testMainPartId);
+  });
+
   test(
     'normal client requires production; matching session accompanies transport without physical slots',
     () async {

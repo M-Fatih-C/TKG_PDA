@@ -120,6 +120,7 @@ class WarehouseDemand {
     required this.requestedAt,
     required this.claimedByAreaId,
     required this.claimedByAreaNumber,
+    this.partDescription,
   });
 
   final String requestId;
@@ -128,6 +129,7 @@ class WarehouseDemand {
   final String machineCode;
   final String? partId;
   final String? partCode;
+  final String? partDescription;
   final String? containerTypeId;
   final String? containerCode;
 
@@ -152,6 +154,7 @@ class WarehouseDemand {
     machineCode: json['machineCode'] as String? ?? '',
     partId: json['partId'] as String?,
     partCode: json['partCode'] as String?,
+    partDescription: json['partDescription'] as String?,
     containerTypeId: json['containerTypeId'] as String?,
     containerCode: json['containerCode'] as String?,
     operation: json['operation'] as String? ?? '',

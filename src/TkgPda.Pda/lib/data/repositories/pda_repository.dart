@@ -44,6 +44,16 @@ abstract interface class PdaDataSource {
     required String productGroupId,
     required String partId,
   });
+  Future<PartDemandResult> createPartDemand({
+    required String machineId,
+    required String partId,
+    required String idempotencyKey,
+  });
+  Future<PartDemandBatchResult> createPartDemandBatch({
+    required String machineId,
+    required List<String> partIds,
+    required String idempotencyKey,
+  });
   Future<ContainerActionResult> createContainerAction({
     required String machineId,
     required String variantId,
@@ -295,6 +305,34 @@ class PdaRepository implements PdaDataSource {
         .whereType<Map<String, dynamic>>()
         .map(ContainerPosition.fromJson)
         .toList(growable: false);
+  }
+
+  @override
+  Future<PartDemandResult> createPartDemand({
+    required String machineId,
+    required String partId,
+    required String idempotencyKey,
+  }) async {
+    final response = await _api.post(
+      '/api/v1/machines/$machineId/part-demands',
+      idempotencyKey: idempotencyKey,
+      body: {'partId': partId},
+    );
+    return PartDemandResult.fromJson(_json(response.body));
+  }
+
+  @override
+  Future<PartDemandBatchResult> createPartDemandBatch({
+    required String machineId,
+    required List<String> partIds,
+    required String idempotencyKey,
+  }) async {
+    final response = await _api.post(
+      '/api/v1/machines/$machineId/part-demands/batch',
+      idempotencyKey: idempotencyKey,
+      body: {'partIds': partIds},
+    );
+    return PartDemandBatchResult.fromJson(_json(response.body));
   }
 
   @override

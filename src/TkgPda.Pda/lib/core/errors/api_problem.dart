@@ -27,6 +27,12 @@ class ApiProblem implements Exception {
     'REMOVE_EMPTY_SLOT_NOT_FOUND' => 'Bu parça için boş kasa bulunamadı.',
     'ACTIVE_TRANSPORT_EXISTS' =>
       'Bu işlem için aktif bir taşıma talebi zaten var.',
+    'PART_REQUEST_ALREADY_ACTIVE' =>
+      'Bu alt parça için aktif talep zaten var.',
+    'PART_AREA_STATE_UNKNOWN' =>
+      'Alan durumu bilinmiyor. Boşaltma veya dolu getirme tahmini yapılmadı.',
+    'PART_NOT_ALT_PART' =>
+      'Seçilen parça aktif üretimin alt parçası değil.',
     'SLOT_ALREADY_RESERVED' || 'SLOT_BUSY' =>
       'Uygun konum başka bir taşıma için kullanılıyor. Durumu yenileyin.',
     'RUNTIME_CONTEXT_MISMATCH' ||

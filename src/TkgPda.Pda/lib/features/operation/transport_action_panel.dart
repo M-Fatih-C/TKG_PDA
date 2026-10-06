@@ -90,6 +90,8 @@ class _TransportCard extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             ..._partLines(),
+            const SizedBox(height: 8),
+            _LifecycleBar(request: request),
             ..._statusLines(),
             if (execution.failureCode != null)
               Text(
@@ -175,6 +177,8 @@ class _TransportCard extends StatelessWidget {
         ),
       if (readiness != null)
         Text('Hazırlık: $readiness', key: const Key('active-readiness')),
+      if (_chainLabel(request.chainState) case final label?)
+        Text(label, key: const Key('active-chain-state')),
       if (age != null)
         Text(
           'Talep süresi: ${formatServerDuration(age)}',
@@ -214,5 +218,72 @@ class _TransportCard extends StatelessWidget {
       ),
     );
     if (confirmed == true) await controller.cancelTransport(request);
+  }
+}
+
+String? _chainLabel(String? chainState) => switch (chainState) {
+  'WAITING_PREDECESSOR' => 'Önceki görev bekleniyor',
+  'REMOVING_EXISTING' => 'Mevcut palet kaldırılıyor',
+  'PREPARING_SUCCESSOR' => 'Yeni palet hazırlanıyor',
+  'PREPARING' => 'Palet hazırlanıyor',
+  _ => null,
+};
+
+/// Segmented lifecycle from persisted status and readiness. A stage lights
+/// only when the backend has that evidence. There is no robot percentage.
+class _LifecycleBar extends StatelessWidget {
+  const _LifecycleBar({required this.request});
+
+  final ActiveTransportRequest request;
+
+  @override
+  Widget build(BuildContext context) {
+    final stages = <(String, bool)>[
+      ('TALEP', true),
+      (
+        'HAZIRLIK',
+        request.readinessState == 'WAITING_PREPARATION' ||
+            request.readinessState == 'READY',
+      ),
+      (
+        'ROBOT GÖREVİ',
+        request.status == 'SENT_TO_RDS' || request.status == 'RUNNING',
+      ),
+      ('TAŞINIYOR', request.status == 'RUNNING'),
+      ('TAMAMLANDI', request.status == 'COMPLETED'),
+    ];
+    return Row(
+      key: const Key('transport-lifecycle-bar'),
+      children: [
+        for (final stage in stages)
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Column(
+                children: [
+                  Container(
+                    height: 6,
+                    color: stage.$2
+                        ? const Color(0xFF0369A1)
+                        : const Color(0xFFCBD5E1),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    stage.$1,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w800,
+                      color: stage.$2
+                          ? const Color(0xFF0F172A)
+                          : const Color(0xFF94A3B8),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
   }
 }

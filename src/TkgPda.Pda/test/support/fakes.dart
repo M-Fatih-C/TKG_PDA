@@ -630,6 +630,53 @@ class FakePdaRepository implements PdaDataSource {
     required String partId,
   }) async => containerPositionsValue;
 
+  int partDemandCount = 0;
+  int partDemandBatchCount = 0;
+  List<String> lastPartDemandIds = const [];
+  String? lastPartDemandKey;
+
+  @override
+  Future<PartDemandResult> createPartDemand({
+    required String machineId,
+    required String partId,
+    required String idempotencyKey,
+  }) async {
+    partDemandCount++;
+    lastPartDemandIds = [partId];
+    lastPartDemandKey = idempotencyKey;
+    return const PartDemandResult(
+      requestNo: 1,
+      taskType: 'BRING_FULL',
+      status: 'QUEUED',
+      readiness: 'WAITING_PREPARATION',
+      idempotentReplay: false,
+    );
+  }
+
+  @override
+  Future<PartDemandBatchResult> createPartDemandBatch({
+    required String machineId,
+    required List<String> partIds,
+    required String idempotencyKey,
+  }) async {
+    partDemandBatchCount++;
+    lastPartDemandIds = partIds;
+    lastPartDemandKey = idempotencyKey;
+    return PartDemandBatchResult(
+      idempotentReplay: false,
+      items: [
+        for (var index = 0; index < partIds.length; index++)
+          PartDemandResult(
+            requestNo: index + 1,
+            taskType: 'BRING_FULL',
+            status: 'QUEUED',
+            readiness: 'WAITING_PREPARATION',
+            idempotentReplay: false,
+          ),
+      ],
+    );
+  }
+
   @override
   Future<ContainerActionResult> createContainerAction({
     required String machineId,
