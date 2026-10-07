@@ -216,11 +216,7 @@ public sealed partial class PostgresTransportWorkflowStore
             }
 
             await RequireTaskTemplateAsync(connection, transaction, session, removal.Operation, cancellationToken);
-            if (removal.FinishedGoods && registryProfile)
-            {
-                await RequireSharedEndpointAsync(connection, transaction, activeNavigation!.Value, "FINISHED_GOODS", "FINISHED_GOODS_MAPPING_MISSING", cancellationToken);
-            }
-            else if (removal.FinishedGoods)
+            if (removal.FinishedGoods && !registryProfile)
             {
                 _ = await ResolveFinishedGoodsDestinationAsync(
                     connection,
@@ -253,6 +249,15 @@ public sealed partial class PostgresTransportWorkflowStore
 
         if (registryProfile)
         {
+            // Lock canonical shared endpoints in deterministic class order:
+            // 1) FINISHED_GOODS, 2) NON_FINISHED_RETURN, 3) EMPTY_RETURN.
+            // Within each class, endpoints are acquired in lexicographical business_code order.
+            var fgCount = removals.Count(removal => removal.FinishedGoods && removal.Operation == TransportTaskType.RemoveFull);
+            if (fgCount > 0)
+            {
+                await RequireSharedCapacityAsync(connection, transaction, activeNavigation!.Value, "FINISHED_GOODS", fgCount, "FINISHED_GOODS_MAPPING_MISSING", cancellationToken);
+            }
+
             var altCount = removals.Count(removal => !removal.FinishedGoods && removal.Operation == TransportTaskType.RemoveFull);
             if (altCount > 0)
             {

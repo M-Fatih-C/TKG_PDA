@@ -27,6 +27,47 @@ public sealed partial class PostgresTransportWorkflowStore
         return await command.ExecuteScalarAsync(cancellationToken) is Guid id ? id : null;
     }
 
+    private static bool IsSingleCapacityEndpoint(string endpointClass) =>
+        endpointClass is "FINISHED_GOODS" or "NON_FINISHED_RETURN" or "EMPTY_RETURN";
+
+    private static string SharedEndpointLockKey(string endpointClass, string businessCode) =>
+        $"shared_endpoint:{endpointClass}:{businessCode}";
+
+    private static async Task<bool> TryLockSharedEndpointAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string endpointClass,
+        string businessCode,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT pg_try_advisory_xact_lock(hashtextextended(@key, 0))",
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("key", SharedEndpointLockKey(endpointClass, businessCode));
+        return Convert.ToBoolean(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    private static async Task<bool> IsSharedEndpointOccupiedGloballyAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string businessCode,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            $"""
+             SELECT 1
+             FROM ops.transport_requests r
+             WHERE r.destination_business_code = @code
+               AND r.status IN ({ActiveStatusesSql})
+             LIMIT 1
+             """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("code", businessCode);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
     private static async Task RequireSharedCapacityAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -36,32 +77,107 @@ public sealed partial class PostgresTransportWorkflowStore
         string missingCode,
         CancellationToken cancellationToken)
     {
-        await using var command = new NpgsqlCommand(
-            $"""
-             SELECT count(*)
-             FROM integration.profile_shared_endpoint_bindings b
-             JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
-                                              AND w.navigation_profile_id = b.navigation_profile_id
-             WHERE b.navigation_profile_id = @profile
-               AND b.endpoint_class = @class
-               AND w.last_sync_at IS NOT NULL
-               AND COALESCE(w.last_disabled, 0) = 0
-               AND COALESCE(w.last_sync_failed, 0) = 0
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM ops.transport_requests r
-                   WHERE r.navigation_id = @profile
-                     AND r.destination_business_code = b.business_code
-                     AND r.status IN ({ActiveStatusesSql}))
-             """,
+        var candidates = new List<(string BusinessCode, bool Healthy, int Disabled, int SyncFailed)>();
+        await using (var command = new NpgsqlCommand(
+            """
+            SELECT b.business_code,
+                   COALESCE(w.last_disabled, 0),
+                   COALESCE(w.last_sync_failed, 0),
+                   w.last_sync_at IS NOT NULL
+                     AND COALESCE(w.last_disabled, 0) = 0
+                     AND COALESCE(w.last_sync_failed, 0) = 0 AS healthy
+            FROM integration.profile_shared_endpoint_bindings b
+            JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
+                                             AND w.navigation_profile_id = b.navigation_profile_id
+            WHERE b.navigation_profile_id = @profile
+              AND b.endpoint_class = @class
+            ORDER BY b.business_code
+            """,
             connection,
-            transaction);
-        command.Parameters.AddWithValue("profile", profileId);
-        command.Parameters.AddWithValue("class", endpointClass);
-        var available = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
-        if (available < required)
+            transaction))
+        {
+            command.Parameters.AddWithValue("profile", profileId);
+            command.Parameters.AddWithValue("class", endpointClass);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                candidates.Add((
+                    reader.GetString(0),
+                    reader.GetBoolean(3),
+                    reader.GetInt32(1),
+                    reader.GetInt32(2)));
+            }
+        }
+
+        if (candidates.Count == 0)
         {
             throw new WorkflowRuleException(missingCode, SharedEndpointMessage(missingCode));
+        }
+
+        if (!IsSingleCapacityEndpoint(endpointClass))
+        {
+            var healthyCount = candidates.Count(c => c.Healthy);
+            if (healthyCount < required)
+            {
+                if (candidates.Any(c => c.Disabled > 0))
+                {
+                    throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
+                }
+
+                throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
+            }
+            return;
+        }
+
+        // For single-capacity destinations:
+        // Collect and reserve 'required' endpoints in deterministic lexicographical order.
+        var acquired = new List<string>();
+        var anyHealthy = false;
+        foreach (var candidate in candidates)
+        {
+            if (!candidate.Healthy)
+            {
+                continue;
+            }
+
+            anyHealthy = true;
+
+            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken))
+            {
+                continue;
+            }
+
+            var locked = await TryLockSharedEndpointAsync(connection, transaction, endpointClass, candidate.BusinessCode, cancellationToken);
+            if (!locked)
+            {
+                continue;
+            }
+
+            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken))
+            {
+                continue;
+            }
+
+            acquired.Add(candidate.BusinessCode);
+            if (acquired.Count == required)
+            {
+                break;
+            }
+        }
+
+        if (acquired.Count < required)
+        {
+            if (!anyHealthy)
+            {
+                if (candidates.Any(c => c.Disabled > 0))
+                {
+                    throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
+                }
+
+                throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
+            }
+
+            throw CapacityUnavailableException(endpointClass);
         }
     }
 
@@ -171,30 +287,22 @@ public sealed partial class PostgresTransportWorkflowStore
         string missingCode,
         CancellationToken cancellationToken)
     {
-        int total = 0;
-        int disabled = 0;
-        string? code = null;
+        var candidates = new List<(string BusinessCode, bool Healthy, int Disabled, int SyncFailed)>();
         await using (var command = new NpgsqlCommand(
-            $"""
-             SELECT b.business_code,
-                    COALESCE(w.last_disabled, 0),
-                    COALESCE(w.last_sync_failed, 0),
-                    w.last_sync_at IS NOT NULL
-                      AND COALESCE(w.last_disabled, 0) = 0
-                      AND COALESCE(w.last_sync_failed, 0) = 0 AS healthy
-             FROM integration.profile_shared_endpoint_bindings b
-             JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
-                                              AND w.navigation_profile_id = b.navigation_profile_id
-             WHERE b.navigation_profile_id = @profile
-               AND b.endpoint_class = @class
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM ops.transport_requests r
-                   WHERE r.navigation_id = @profile
-                     AND r.destination_business_code = b.business_code
-                     AND r.status IN ({ActiveStatusesSql}))
-             ORDER BY b.business_code
-             """,
+            """
+            SELECT b.business_code,
+                   COALESCE(w.last_disabled, 0),
+                   COALESCE(w.last_sync_failed, 0),
+                   w.last_sync_at IS NOT NULL
+                     AND COALESCE(w.last_disabled, 0) = 0
+                     AND COALESCE(w.last_sync_failed, 0) = 0 AS healthy
+            FROM integration.profile_shared_endpoint_bindings b
+            JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
+                                             AND w.navigation_profile_id = b.navigation_profile_id
+            WHERE b.navigation_profile_id = @profile
+              AND b.endpoint_class = @class
+            ORDER BY b.business_code
+            """,
             connection,
             transaction))
         {
@@ -203,31 +311,80 @@ public sealed partial class PostgresTransportWorkflowStore
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
-                total++;
-                if (reader.GetInt32(1) > 0) disabled++;
-                if (code is null && reader.GetBoolean(3))
-                {
-                    code = reader.GetString(0);
-                }
+                candidates.Add((
+                    reader.GetString(0),
+                    reader.GetBoolean(3),
+                    reader.GetInt32(1),
+                    reader.GetInt32(2)));
             }
         }
 
-        if (code is not null)
-        {
-            return code;
-        }
-
-        if (total == 0)
+        if (candidates.Count == 0)
         {
             throw new WorkflowRuleException(missingCode, SharedEndpointMessage(missingCode));
         }
 
-        if (disabled > 0)
+        // For non-single-capacity endpoints (e.g. EMPTY_SOURCE pool):
+        if (!IsSingleCapacityEndpoint(endpointClass))
         {
-            throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
+            var healthySource = candidates.FirstOrDefault(c => c.Healthy);
+            if (healthySource.BusinessCode is not null)
+            {
+                return healthySource.BusinessCode;
+            }
+
+            if (candidates.Any(c => c.Disabled > 0))
+            {
+                throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
+            }
+
+            throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
         }
 
-        throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
+        // For single-capacity destinations:
+        // Deterministically iterate in lexicographical business_code order.
+        // Lock the canonical endpoint identity via PostgreSQL transaction advisory lock,
+        // then verify that no active request holds it globally.
+        var anyHealthy = false;
+        foreach (var candidate in candidates)
+        {
+            if (!candidate.Healthy)
+            {
+                continue;
+            }
+
+            anyHealthy = true;
+
+            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken))
+            {
+                continue;
+            }
+
+            var locked = await TryLockSharedEndpointAsync(connection, transaction, endpointClass, candidate.BusinessCode, cancellationToken);
+            if (!locked)
+            {
+                continue;
+            }
+
+            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken))
+            {
+                continue;
+            }
+
+            return candidate.BusinessCode;
+        }
+
+        if (!anyHealthy)
+        {
+            if (candidates.Any(c => c.Disabled > 0))
+            {
+                throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
+            }
+
+            throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
+        }
+
+        throw CapacityUnavailableException(endpointClass);
     }
 
     private static string SharedEndpointMessage(string code) => code switch
@@ -237,5 +394,21 @@ public sealed partial class PostgresTransportWorkflowStore
         "FINISHED_GOODS_MAPPING_MISSING" => "Bu NAV profilinde bitmiş ürün alanı bağlı değil.",
         "NON_FINISHED_RETURN_MAPPING_MISSING" => "Bu NAV profilinde alt parça dönüş alanı bağlı değil.",
         _ => "Bu NAV profilinde gerekli fiziksel uç nokta bağlı değil."
+    };
+
+    private static WorkflowRuleException CapacityUnavailableException(string endpointClass) => endpointClass switch
+    {
+        "FINISHED_GOODS" => new WorkflowRuleException(
+            "FINISHED_GOODS_CAPACITY_UNAVAILABLE",
+            "Uygun boş bitmiş ürün alanı bulunamadı."),
+        "NON_FINISHED_RETURN" => new WorkflowRuleException(
+            "NON_FINISHED_RETURN_CAPACITY_UNAVAILABLE",
+            "Uygun boş alt parça dönüş alanı bulunamadı."),
+        "EMPTY_RETURN" => new WorkflowRuleException(
+            "EMPTY_RETURN_CAPACITY_UNAVAILABLE",
+            "Uygun boş kasa dönüş alanı bulunamadı."),
+        _ => new WorkflowRuleException(
+            "SHARED_ENDPOINT_CAPACITY_UNAVAILABLE",
+            "Uygun boş hedef alan bulunamadı.")
     };
 }
