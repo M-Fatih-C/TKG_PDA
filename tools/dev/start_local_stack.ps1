@@ -281,7 +281,8 @@ $seedFiles = @(
     (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql'),
     (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql'),
     (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'),
-    (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql')
+    (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql'),
+    (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')
 )
 foreach ($sf in $seedFiles) {
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null

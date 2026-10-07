@@ -2,13 +2,8 @@ import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './auth/AuthContext'
 import { AppShell } from './components/AppShell'
 import { AuditPage } from './pages/AuditPage'
-import { CatalogPage } from './pages/CatalogPage'
-import { ContainersPage } from './pages/ContainersPage'
 import { DashboardPage } from './pages/DashboardPage'
-import { DataQualityPage } from './pages/DataQualityPage'
 import { DevicesPage } from './pages/DevicesPage'
-import { LayoutEditorPage } from './pages/LayoutEditorPage'
-import { LayoutsPage } from './pages/LayoutsPage'
 import { LoginPage } from './pages/LoginPage'
 import { MachinesPage } from './pages/MachinesPage'
 import { NotFoundPage } from './pages/NotFoundPage'
@@ -33,11 +28,6 @@ export default function App() {
         <Route path="users" element={<UsersPage />} />
         <Route path="devices" element={<DevicesPage />} />
         <Route path="machines" element={<MachinesPage />} />
-        <Route path="layouts" element={<LayoutsPage />} />
-        <Route path="layouts/:layoutId/editor" element={<LayoutEditorPage />} />
-        <Route path="catalog" element={<CatalogPage />} />
-        <Route path="containers" element={<ContainersPage />} />
-        <Route path="data-quality" element={<DataQualityPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="production-end-priorities" element={<ProductionEndPriorityPage />} />
         <Route path="rds" element={<RdsIntegrationPage />} />

@@ -1,7 +1,7 @@
 param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\18\bin',
     [int]$Port = 55439,
-    [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~ProductionEndCleanupApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests|FullyQualifiedName~GlobalTaskVisibilityAndCancellationScopeApiTests|FullyQualifiedName~OperationalAuditEventsApiTests|FullyQualifiedName~OperationalAuditContainerActionEventsApiTests|FullyQualifiedName~ActiveTransportProjectionApiTests|FullyQualifiedName~FinishedContainerFlowApiTests|FullyQualifiedName~PartDemandApiTests|FullyQualifiedName~DeviceNotificationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests|FullyQualifiedName~OperationalEvidenceApiTests|FullyQualifiedName~RobotAlarmObservationApiTests|FullyQualifiedName~RdsAlarmObservationWorkerTests|FullyQualifiedName~VariantScopedRdsCommissioningApiTests|FullyQualifiedName~RdsCommissioningActivationApiTests'
+    [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~ProductionEndCleanupApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests|FullyQualifiedName~GlobalTaskVisibilityAndCancellationScopeApiTests|FullyQualifiedName~OperationalAuditEventsApiTests|FullyQualifiedName~OperationalAuditContainerActionEventsApiTests|FullyQualifiedName~ActiveTransportProjectionApiTests|FullyQualifiedName~FinishedContainerFlowApiTests|FullyQualifiedName~PartDemandApiTests|FullyQualifiedName~DeviceNotificationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests|FullyQualifiedName~OperationalEvidenceApiTests|FullyQualifiedName~RobotAlarmObservationApiTests|FullyQualifiedName~RdsAlarmObservationWorkerTests|FullyQualifiedName~VariantScopedRdsCommissioningApiTests|FullyQualifiedName~RdsCommissioningActivationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,6 +64,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\014_transport_event_context.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\015_part_demand_dependencies.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\016_finished_goods_areas.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\017_internal_device_notifications.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\018_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\019_robot_alarm_observations.sql')))
@@ -87,6 +88,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\014_transport_event_context.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\015_part_demand_dependencies.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\016_finished_goods_areas.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\017_internal_device_notifications.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\018_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\019_robot_alarm_observations.sql')))
@@ -130,6 +132,7 @@ SELECT md5(jsonb_build_array(
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\014_transport_event_context.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\015_part_demand_dependencies.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\016_finished_goods_areas.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\017_internal_device_notifications.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\018_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\019_robot_alarm_observations.sql')))

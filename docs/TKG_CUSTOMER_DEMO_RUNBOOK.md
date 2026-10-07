@@ -40,7 +40,7 @@ RDS dispatch is a valid production capability. This runbook does not turn it off
 16. Open Global Tasks from another operator. The fleet list is visible.
 17. Global Tasks has no cancel action.
 18. Cancel is available only on the authorized machine screen.
-19. The finished-goods screen lists `FG_AREA_01` through `FG_AREA_19` as Alan 1–Alan 19. A vacant area is not shown as holding an empty container. Boş kasa bırak records one explicitly.
+19. The finished-goods screen lists internal locations `FG-01` through `FG-19`. These are not customer names. A vacant area is not shown as holding an empty container. Boş kasa bırak records one explicitly.
 20. Admin audit shows login and configuration history. Transport evidence shows total, warehouse, and robot durations. Error history is three sources: `ops.transport_request_events`, `integration.rds_tasks`, and `integration.robot_alarm_observations`. Alarm history is TKG's observation of successful RDS snapshots, not a vendor incident log. A failed read does not clear an open alarm.
 21. Semi-finished preparation and finished-goods store are different screens. The finished-goods tablet notification is created only after a full container is stored, with the text Kasa Koyuldu. Screen-off delivery still needs a physical tablet. Force Stop is not guaranteed.
 
