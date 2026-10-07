@@ -945,6 +945,137 @@ public sealed class PostgresTransportWorkflowTests
     }
 
     [PostgresFact]
+    public async Task Commissioning_registry_completeness_guard_bypasses_003_when_live_worksites_exist_and_no_area_id_present()
+    {
+        await ResetAsync();
+
+        // 1. Verify exact structural evidence in database:
+        //    profiles=25, maps=25, codes=25, assignments=25, source-backed=24, plans=1775, bindings=208, sealer bindings=0, no config_json.areaId
+        var profileCount = await ScalarAsync<long>(
+            "SELECT count(*) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'");
+        var mapCount = await ScalarAsync<long>(
+            "SELECT count(DISTINCT robot_map_name) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'");
+        var codeCount = await ScalarAsync<long>(
+            "SELECT count(DISTINCT code) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'");
+        var assignmentCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM master.variant_navigation_profile_assignments vnpa
+            JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id
+            WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """);
+        var sourceBackedCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM master.navigation_profiles np
+            WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+              AND np.config_json ->> 'layoutBindingState' = 'SOURCE_BACKED'
+            """);
+        var planCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM integration.rds_worksite_plans p
+            JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id
+            WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """);
+        var bindingCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM integration.layout_slot_rds_plan_bindings b
+            JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id
+            WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """);
+        var sealerBindings = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM integration.layout_slot_rds_plan_bindings b
+            JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id
+            WHERE np.code = 'TKG_SEALER_V03_NAV'
+            """);
+        var areaIdCount = await ScalarAsync<long>(
+            """
+            SELECT count(DISTINCT config_json ->> 'areaId')
+            FROM master.navigation_profiles
+            WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """);
+
+        Assert.Equal(25, profileCount);
+        Assert.Equal(25, mapCount);
+        Assert.Equal(25, codeCount);
+        Assert.Equal(25, assignmentCount);
+        Assert.Equal(24, sourceBackedCount);
+        Assert.Equal(1775, planCount);
+        Assert.Equal(208, bindingCount);
+        Assert.Equal(0, sealerBindings);
+        Assert.Equal(0, areaIdCount); // Crucial: config_json has no 'areaId' key!
+
+        try
+        {
+            // 2. Insert mock live WorkSites colliding with all 1775 planned site IDs to simulate persistent discovered state
+            await ExecuteAsync(
+                """
+                INSERT INTO integration.rds_worksites (navigation_profile_id, rds_site_id)
+                SELECT p.navigation_profile_id, p.planned_rds_site_id
+                FROM integration.rds_worksite_plans p
+                JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id
+                WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+                ON CONFLICT (navigation_profile_id, rds_site_id) DO NOTHING
+                """);
+
+            var liveCollisions = await ScalarAsync<long>(
+                """
+                SELECT count(*)
+                FROM integration.rds_worksite_plans p
+                JOIN integration.rds_worksites w ON w.rds_site_id = p.planned_rds_site_id
+                JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id
+                WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+                """);
+            Assert.Equal(1775, liveCollisions);
+
+            // 3. Evaluate the exact guard query and logic from start_local_stack.ps1:
+            //    Even with 1775 collisions and areaIdCount == 0, regComplete MUST evaluate to true!
+            var isRegComplete = (profileCount == 25 &&
+                mapCount == 25 &&
+                codeCount == 25 &&
+                assignmentCount == 25 &&
+                sourceBackedCount == 24 &&
+                planCount == 1775 &&
+                bindingCount == 208 &&
+                sealerBindings == 0);
+
+            Assert.True(isRegComplete, "Commissioning registry must be classified complete despite live collisions and absent areaId.");
+
+            // 4. Verify downstream steps proceed:
+            //    - 004 FG locations: exactly 19
+            var fgCount = await ScalarAsync<long>(
+                "SELECT count(*) FROM ops.store_locations WHERE code ~ '^FG-(0[1-9]|1[0-9])$' AND is_enabled");
+            Assert.Equal(19, fgCount);
+
+            //    - 005 Task templates: exactly 96 (24 * 4)
+            var templateCount = await ScalarAsync<long>(
+                "SELECT count(*) FROM master.task_templates WHERE config_json ->> 'templateRegistry' = 'tkg_variant_task_templates_v1'");
+            Assert.Equal(96, templateCount);
+
+            //    - Runtime self-heal configures all 9 active customer machines
+            var activeMachineCount = await ScalarAsync<long>("SELECT count(*) FROM master.machines WHERE is_active");
+            Assert.Equal(9, activeMachineCount);
+        }
+        finally
+        {
+            await ExecuteAsync(
+                """
+                DELETE FROM integration.rds_worksites
+                WHERE rds_site_id IN (
+                    SELECT p.planned_rds_site_id
+                    FROM integration.rds_worksite_plans p
+                    JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id
+                    WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+                )
+                """);
+        }
+    }
+
+    [PostgresFact]
     public async Task Cancellation_after_dispatch_uses_the_stable_deferred_error()
     {
         await ResetAsync();

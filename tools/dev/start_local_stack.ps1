@@ -296,7 +296,8 @@ SELECT
     count(*) AS profile_count,
     count(DISTINCT robot_map_name) AS map_count,
     count(DISTINCT code) AS code_count,
-    count(DISTINCT config_json ->> 'areaId') AS area_count,
+    (SELECT count(*) FROM master.variant_navigation_profile_assignments vnpa JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS assignment_count,
+    (SELECT count(*) FROM master.navigation_profiles np WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1' AND np.config_json ->> 'layoutBindingState' = 'SOURCE_BACKED') AS source_backed_count,
     (SELECT count(*) FROM integration.rds_worksite_plans p JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS plan_count,
     (SELECT count(*) FROM integration.layout_slot_rds_plan_bindings b JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS binding_count,
     (SELECT count(*) FROM integration.layout_slot_rds_plan_bindings b JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id WHERE np.code = 'TKG_SEALER_V03_NAV') AS sealer_bindings,
@@ -308,26 +309,35 @@ WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
 $regRaw = Invoke-DevPsqlScalar $Database $regCheckSql
 $regParts = if ($regRaw) { $regRaw.Trim().Split('|') } else { @() }
 
-$profileCount   = if ($regParts.Length -ge 1 -and [int]::TryParse($regParts[0], [ref]$null)) { [int]$regParts[0] } else { 0 }
-$mapCount       = if ($regParts.Length -ge 2 -and [int]::TryParse($regParts[1], [ref]$null)) { [int]$regParts[1] } else { 0 }
-$codeCount      = if ($regParts.Length -ge 3 -and [int]::TryParse($regParts[2], [ref]$null)) { [int]$regParts[2] } else { 0 }
-$areaCount      = if ($regParts.Length -ge 4 -and [int]::TryParse($regParts[3], [ref]$null)) { [int]$regParts[3] } else { 0 }
-$planCount      = if ($regParts.Length -ge 5 -and [int]::TryParse($regParts[4], [ref]$null)) { [int]$regParts[4] } else { 0 }
-$bindingCount   = if ($regParts.Length -ge 6 -and [int]::TryParse($regParts[5], [ref]$null)) { [int]$regParts[5] } else { 0 }
-$sealerBindings = if ($regParts.Length -ge 7 -and [int]::TryParse($regParts[6], [ref]$null)) { [int]$regParts[6] } else { 0 }
-$liveCollisions = if ($regParts.Length -ge 8 -and [int]::TryParse($regParts[7], [ref]$null)) { [int]$regParts[7] } else { 0 }
+$profileCount      = if ($regParts.Length -ge 1 -and [int]::TryParse($regParts[0], [ref]$null)) { [int]$regParts[0] } else { 0 }
+$mapCount          = if ($regParts.Length -ge 2 -and [int]::TryParse($regParts[1], [ref]$null)) { [int]$regParts[1] } else { 0 }
+$codeCount         = if ($regParts.Length -ge 3 -and [int]::TryParse($regParts[2], [ref]$null)) { [int]$regParts[2] } else { 0 }
+$assignmentCount   = if ($regParts.Length -ge 4 -and [int]::TryParse($regParts[3], [ref]$null)) { [int]$regParts[3] } else { 0 }
+$sourceBackedCount = if ($regParts.Length -ge 5 -and [int]::TryParse($regParts[4], [ref]$null)) { [int]$regParts[4] } else { 0 }
+$planCount         = if ($regParts.Length -ge 6 -and [int]::TryParse($regParts[5], [ref]$null)) { [int]$regParts[5] } else { 0 }
+$bindingCount      = if ($regParts.Length -ge 7 -and [int]::TryParse($regParts[6], [ref]$null)) { [int]$regParts[6] } else { 0 }
+$sealerBindings    = if ($regParts.Length -ge 8 -and [int]::TryParse($regParts[7], [ref]$null)) { [int]$regParts[7] } else { 0 }
+$liveCollisions    = if ($regParts.Length -ge 9 -and [int]::TryParse($regParts[8], [ref]$null)) { [int]$regParts[8] } else { 0 }
 
-$regComplete = ($profileCount -eq 25 -and $mapCount -eq 25 -and $codeCount -eq 25 -and $areaCount -eq 25 -and $planCount -eq 1775 -and $bindingCount -eq 208 -and $sealerBindings -eq 0)
+$regComplete = ($profileCount -eq 25 -and
+    $mapCount -eq 25 -and
+    $codeCount -eq 25 -and
+    $assignmentCount -eq 25 -and
+    $sourceBackedCount -eq 24 -and
+    $planCount -eq 1775 -and
+    $bindingCount -eq 208 -and
+    $sealerBindings -eq 0)
 
 if ($regComplete) {
-    Write-Host "Commissioning registry is structurally complete ($profileCount profiles, $planCount plans, $bindingCount bindings). Bypassing 003 seed replay." -ForegroundColor Green
+    Write-Host "Commissioning registry structurally complete." -ForegroundColor Green
+    Write-Host "Bypassing 003 seed replay." -ForegroundColor Green
 } elseif ($liveCollisions -eq 0) {
     Write-Host 'Applying commissioning registry seed (003_tkg_rds_variant_commissioning.sql)...' -ForegroundColor Cyan
     $seed003 = (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql')
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $seed003 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Applying 003_tkg_rds_variant_commissioning.sql failed" }
 } else {
-    throw "Cannot apply 003_tkg_rds_variant_commissioning.sql: Commissioning registry is incomplete (profiles=$profileCount/25, maps=$mapCount/25, codes=$codeCount/25, areas=$areaCount/25, plans=$planCount/1775, bindings=$bindingCount/208, sealer_bindings=$sealerBindings/0) and $liveCollisions live WorkSite collision(s) exist in integration.rds_worksites."
+    throw "Cannot apply 003_tkg_rds_variant_commissioning.sql: Commissioning registry is incomplete (profiles=$profileCount/25, maps=$mapCount/25, codes=$codeCount/25, assignments=$assignmentCount/25, source_backed=$sourceBackedCount/24, plans=$planCount/1775, bindings=$bindingCount/208, sealer_bindings=$sealerBindings/0) and $liveCollisions live WorkSite collision(s) exist in integration.rds_worksites."
 }
 
 Write-Host 'Applying replay-safe production task templates and internal finished goods locations (005, 004)...' -ForegroundColor Cyan
