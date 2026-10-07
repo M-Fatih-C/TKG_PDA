@@ -287,7 +287,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
     }
 
     [Fact]
-    public async Task Reservation_is_released_when_request_is_cancelled_or_failed()
+    public async Task Reservation_is_released_when_request_is_cancelled()
     {
         var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
         try
@@ -328,6 +328,96 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
                 "SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @m AND status IN ('CREATED','QUEUED','SENT_TO_RDS','RUNNING')",
                 ("m", setup.SceneB.MachineId));
             Assert.Equal("FG-01", destC);
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Reservation_is_released_when_request_is_failed()
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
+        try
+        {
+            using var clientA = await fixture.LoginClientAsync(setup.SceneA.Operator);
+            using var clientB = await fixture.LoginClientAsync(setup.SceneB.Operator);
+
+            await StartAsync(clientA, setup.SceneA);
+            await StartAsync(clientB, setup.SceneB);
+
+            // Request A claims FG-01
+            var resA = await clientA.SendAsync(CreateFullContainerActionRequest(setup.SceneA, "fail-test-a"));
+            Assert.True(resA.IsSuccessStatusCode);
+
+            // Request B fails because FG-01 is occupied
+            var resB = await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "fail-test-b"));
+            Assert.False(resB.IsSuccessStatusCode);
+            Assert.Contains("FINISHED_GOODS_CAPACITY_UNAVAILABLE", await resB.Content.ReadAsStringAsync());
+
+            // Transition Request A to FAILED
+            var reqAId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.transport_requests WHERE machine_id = @m", ("m", setup.SceneA.MachineId));
+            await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+            await store.RecordExecutionTransitionAsync(reqAId, TransportRequestStatus.SentToRds);
+            await store.RecordExecutionOutcomeAsync(
+                reqAId,
+                new ExecutionOutcome(
+                    Status: TransportRequestStatus.Failed,
+                    FailureCode: "ROBOT_TIMEOUT",
+                    FailureMessage: "Failed for test",
+                    EvidenceType: null));
+
+            // Now Request C from Machine B should succeed and reuse FG-01
+            var resC = await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "fail-test-c"));
+            var bodyC = await resC.Content.ReadAsStringAsync();
+            Assert.True(resC.IsSuccessStatusCode, bodyC);
+
+            var destC = await fixture.ScalarAsync<string>(
+                "SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @m AND status IN ('CREATED','QUEUED','SENT_TO_RDS','RUNNING')",
+                ("m", setup.SceneB.MachineId));
+            Assert.Equal("FG-01", destC);
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Reservation_is_released_when_request_is_completed()
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
+        try
+        {
+            using var clientA = await fixture.LoginClientAsync(setup.SceneA.Operator);
+            using var clientB = await fixture.LoginClientAsync(setup.SceneB.Operator);
+
+            await StartAsync(clientA, setup.SceneA);
+            await StartAsync(clientB, setup.SceneB);
+
+            // Request A claims FG-01
+            var resA = await clientA.SendAsync(CreateFullContainerActionRequest(setup.SceneA, "comp-test-a"));
+            Assert.True(resA.IsSuccessStatusCode);
+
+            // Transition Request A to COMPLETED
+            var reqAId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.transport_requests WHERE machine_id = @m", ("m", setup.SceneA.MachineId));
+            await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+            await store.RecordExecutionTransitionAsync(reqAId, TransportRequestStatus.SentToRds);
+            await store.RecordExecutionTransitionAsync(reqAId, TransportRequestStatus.Running);
+            await store.RecordExecutionTransitionAsync(reqAId, TransportRequestStatus.Completed);
+
+            // Now Request B from Machine B should succeed and reuse FG-01
+            var resB = await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "comp-test-b"));
+            var bodyB = await resB.Content.ReadAsStringAsync();
+            Assert.True(resB.IsSuccessStatusCode, bodyB);
+
+            var destB = await fixture.ScalarAsync<string>(
+                "SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @m AND status IN ('CREATED','QUEUED','SENT_TO_RDS','RUNNING')",
+                ("m", setup.SceneB.MachineId));
+            Assert.Equal("FG-01", destB);
         }
         finally
         {
@@ -415,6 +505,424 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
 
             var fgOp = shReport.Operations.Single(o => o.Operation == "REMOVE_FULL_MAMUL");
             Assert.DoesNotContain("FINISHED_GOODS_MAPPING_MISSING", fgOp.Blockers);
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Rds_resolution_isolates_worksite_per_navigation_profile_for_canonical_return()
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: true, includeReturn02: true);
+        try
+        {
+            var reqA = await fixture.ScalarAsync<Guid>(
+                """
+                INSERT INTO ops.transport_requests
+                    (request_origin, requested_by, machine_id, variant_id, layout_id, navigation_id,
+                     task_type_id, status, priority, destination_business_code)
+                SELECT 'API', @user, @machine, @variant, @layout, @nav,
+                       (SELECT id FROM master.task_types WHERE code = 'REMOVE_FULL'), 'CREATED', 10, 'RETURN-01'
+                RETURNING id
+                """,
+                ("user", setup.SceneA.Operator.UserId),
+                ("machine", setup.SceneA.MachineId),
+                ("variant", setup.SceneA.VariantId),
+                ("layout", setup.SceneA.LayoutId),
+                ("nav", setup.SceneA.NavigationId));
+
+            var reqB = await fixture.ScalarAsync<Guid>(
+                """
+                INSERT INTO ops.transport_requests
+                    (request_origin, requested_by, machine_id, variant_id, layout_id, navigation_id,
+                     task_type_id, status, priority, destination_business_code)
+                SELECT 'API', @user, @machine, @variant, @layout, @nav,
+                       (SELECT id FROM master.task_types WHERE code = 'REMOVE_FULL'), 'CREATED', 10, 'RETURN-01'
+                RETURNING id
+                """,
+                ("user", setup.SceneB.Operator.UserId),
+                ("machine", setup.SceneB.MachineId),
+                ("variant", setup.SceneB.VariantId),
+                ("layout", setup.SceneB.LayoutId),
+                ("nav", setup.SceneB.NavigationId));
+
+            await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+            var execution = new PostgresRdsExecutionStore(dataSource);
+
+            var ctxA = await execution.GetDispatchContextAsync(reqA);
+            var ctxB = await execution.GetDispatchContextAsync(reqB);
+
+            Assert.NotNull(ctxA);
+            Assert.NotNull(ctxB);
+
+            // Both have destination_business_code = 'RETURN-01', but resolve distinct profile-local WorkSites
+            Assert.Equal("TKG_SH01A_V01_WS_RETURN01", ctxA.Destination.SiteId);
+            Assert.Equal("TKG_PAH01A_V01_WS_RETURN01", ctxB.Destination.SiteId);
+            Assert.DoesNotContain("PAH01A", ctxA.Destination.SiteId, StringComparison.Ordinal);
+            Assert.DoesNotContain("SH01A", ctxB.Destination.SiteId, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Real_commissioning_binds_cross_profile_return_and_empty_with_canonical_identities()
+    {
+        var setup = await PrepareTwoMachineScenesUnboundAsync();
+        try
+        {
+            await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+            var commissioningStore = new PostgresRdsIntegrationStore(dataSource);
+            var admin = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+            var context = new AdminMutationContext(admin.UserId, Guid.NewGuid(), "127.0.0.1", "comm-test");
+
+            // 1. Cross-profile NON_FINISHED_RETURN binding with canonical RETURN-01
+            var bindA = await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-01", "TKG_SH01A_V01_WS_RETURN01", true, context);
+            var bindB = await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-01", "TKG_PAH01A_V01_WS_RETURN01", true, context);
+
+            Assert.True(bindA.Applied, $"Binding A failed: {string.Join(", ", bindA.Blockers)}");
+            Assert.True(bindB.Applied, $"Binding B failed: {string.Join(", ", bindB.Blockers)}");
+            Assert.Empty(bindA.Blockers);
+            Assert.Empty(bindB.Blockers);
+            Assert.Equal("RETURN-01", bindA.BusinessCode);
+            Assert.Equal("RETURN-01", bindB.BusinessCode);
+            Assert.NotNull(bindA.ResolvedSiteId);
+            Assert.NotNull(bindB.ResolvedSiteId);
+            Assert.Equal("TKG_SH01A_V01_WS_RETURN01", bindA.ResolvedSiteId);
+            Assert.Equal("TKG_PAH01A_V01_WS_RETURN01", bindB.ResolvedSiteId);
+            Assert.NotEqual(bindA.ResolvedSiteId, bindB.ResolvedSiteId);
+
+            var siteA = await fixture.ScalarAsync<Guid>(
+                "SELECT rds_worksite_id FROM integration.profile_shared_endpoint_bindings WHERE navigation_profile_id = @nav AND endpoint_class = 'NON_FINISHED_RETURN'",
+                ("nav", setup.SceneA.NavigationId));
+            var siteB = await fixture.ScalarAsync<Guid>(
+                "SELECT rds_worksite_id FROM integration.profile_shared_endpoint_bindings WHERE navigation_profile_id = @nav AND endpoint_class = 'NON_FINISHED_RETURN'",
+                ("nav", setup.SceneB.NavigationId));
+            Assert.NotEqual(siteA, siteB);
+
+            // 2. Cross-profile EMPTY_RETURN binding with canonical EMPTY-01
+            var emptyRetA = await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "EMPTY_RETURN", "EMPTY-01", "TKG_SH01A_V01_WS_EMPTY01", true, context);
+            var emptyRetB = await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "EMPTY_RETURN", "EMPTY-01", "TKG_PAH01A_V01_WS_EMPTY01", true, context);
+
+            Assert.True(emptyRetA.Applied);
+            Assert.True(emptyRetB.Applied);
+            Assert.Equal("EMPTY-01", emptyRetA.BusinessCode);
+            Assert.Equal("EMPTY-01", emptyRetB.BusinessCode);
+            Assert.NotNull(emptyRetA.ResolvedSiteId);
+            Assert.NotNull(emptyRetB.ResolvedSiteId);
+            Assert.NotEqual(emptyRetA.ResolvedSiteId, emptyRetB.ResolvedSiteId);
+
+            // 3. Cross-profile EMPTY_SOURCE binding with canonical EMPTY-01
+            var emptySrcA = await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "EMPTY_SOURCE", "EMPTY-01", "TKG_SH01A_V01_WS_EMPTY01", true, context);
+            var emptySrcB = await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "EMPTY_SOURCE", "EMPTY-01", "TKG_PAH01A_V01_WS_EMPTY01", true, context);
+
+            Assert.True(emptySrcA.Applied);
+            Assert.True(emptySrcB.Applied);
+            Assert.Equal("EMPTY-01", emptySrcA.BusinessCode);
+            Assert.Equal("EMPTY-01", emptySrcB.BusinessCode);
+
+            // 4. Verify profile mismatch rejection via DB trigger
+            var v1 = setup.SceneA.NavigationId;
+            var v2ReturnSite = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM integration.rds_worksites WHERE rds_site_id = 'TKG_PAH01A_V01_WS_RETURN01'");
+            var mismatchEx = await Assert.ThrowsAsync<PostgresException>(() => fixture.ExecuteAsync("""
+                INSERT INTO integration.profile_shared_endpoint_bindings
+                    (navigation_profile_id, endpoint_class, business_code, rds_worksite_id)
+                VALUES (@profile, 'NON_FINISHED_RETURN', 'RETURN-01', @site)
+                """, ("profile", v1), ("site", v2ReturnSite)));
+            Assert.Contains("PROFILE_MISMATCH", mismatchEx.MessageText, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Real_commissioning_rejects_mismatched_ordinals()
+    {
+        var setup = await PrepareTwoMachineScenesUnboundAsync();
+        try
+        {
+            await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+            var commissioningStore = new PostgresRdsIntegrationStore(dataSource);
+            var admin = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+            var context = new AdminMutationContext(admin.UserId, Guid.NewGuid(), "127.0.0.1", "ordinal-test");
+
+            // RETURN-02 passed with planned WS_RETURN01
+            var wrongReturn = await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-02", "TKG_SH01A_V01_WS_RETURN01", true, context);
+            Assert.False(wrongReturn.Applied);
+            Assert.Contains("RDS_WORKSITE_PLAN_NAME_MISMATCH", wrongReturn.Blockers);
+
+            // EMPTY-03 passed with planned WS_EMPTY02 (ordinal 2)
+            var wrongEmpty = await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "EMPTY_RETURN", "EMPTY-03", "TKG_SH01A_V01_WS_EMPTY02", true, context);
+            Assert.False(wrongEmpty.Applied);
+            Assert.Contains("RDS_WORKSITE_PLAN_NAME_MISMATCH", wrongEmpty.Blockers);
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Real_commissioning_return_cross_profile_concurrency_rejects_second_request()
+    {
+        var setup = await PrepareTwoMachineScenesUnboundAsync();
+        try
+        {
+            await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+            var commissioningStore = new PostgresRdsIntegrationStore(dataSource);
+            var admin = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+            var context = new AdminMutationContext(admin.UserId, Guid.NewGuid(), "127.0.0.1", "ret-conc-test");
+
+            // Real commissioning bindings for single RETURN-01 across NAV profiles
+            await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-01", "TKG_SH01A_V01_WS_RETURN01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-01", "TKG_PAH01A_V01_WS_RETURN01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "EMPTY_SOURCE", "EMPTY-01", "TKG_SH01A_V01_WS_EMPTY01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "EMPTY_SOURCE", "EMPTY-01", "TKG_PAH01A_V01_WS_EMPTY01", true, context);
+
+            // Map slots for AltPart and FULL
+            var fallbackContainer = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+            await MapOccupiedAsync(setup.SceneA.Slot, setup.SceneA.AltPart, "FULL", fallbackContainer);
+            await MapOccupiedAsync(setup.SceneB.Slot, setup.SceneB.AltPart, "FULL", fallbackContainer);
+
+            await fixture.ExecuteAsync("""
+                INSERT INTO master.production_end_priorities (operation_code, priority)
+                VALUES ('REMOVE_FULL', 40), ('REMOVE_EMPTY', 70)
+                ON CONFLICT (operation_code) DO UPDATE SET priority = EXCLUDED.priority
+                """);
+
+            using var clientA = await fixture.LoginClientAsync(setup.SceneA.Operator);
+            using var clientB = await fixture.LoginClientAsync(setup.SceneB.Operator);
+
+            await StartAsync(clientA, setup.SceneA);
+            await StartAsync(clientB, setup.SceneB);
+
+            var sessionAId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.production_sessions WHERE machine_id = @m AND status = 'ACTIVE'",
+                ("m", setup.SceneA.MachineId));
+            var sessionBId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.production_sessions WHERE machine_id = @m AND status = 'ACTIVE'",
+                ("m", setup.SceneB.MachineId));
+
+            var endA = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.SceneA.MachineId}/production-sessions/{sessionAId}/end");
+            endA.Headers.Add(ApiHeaders.IdempotencyKey, "ret-conc-a");
+            var endB = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.SceneB.MachineId}/production-sessions/{sessionBId}/end");
+            endB.Headers.Add(ApiHeaders.IdempotencyKey, "ret-conc-b");
+
+            // Concurrently request removal of full alt container (NON_FINISHED_RETURN)
+            var taskA = clientA.SendAsync(endA);
+            var taskB = clientB.SendAsync(endB);
+
+            await Task.WhenAll(taskA, taskB);
+
+            var respA = await taskA;
+            var respB = await taskB;
+
+            var responses = new[] { respA, respB };
+            Assert.Equal(1, responses.Count(r => r.IsSuccessStatusCode));
+            Assert.Equal(1, responses.Count(r => !r.IsSuccessStatusCode));
+
+            var failedResp = responses.Single(r => !r.IsSuccessStatusCode);
+            var failedBody = await failedResp.Content.ReadAsStringAsync();
+            Assert.Contains("NON_FINISHED_RETURN_CAPACITY_UNAVAILABLE", failedBody, StringComparison.Ordinal);
+            Assert.Contains("Uygun boş alt parça dönüş alanı bulunamadı", failedBody, StringComparison.Ordinal);
+
+            // Exactly one active request owns RETURN-01 globally
+            var activeReturnCount = await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.transport_requests WHERE destination_business_code = 'RETURN-01' AND status IN ('CREATED','QUEUED','SENT_TO_RDS','RUNNING')");
+            Assert.Equal(1L, activeReturnCount);
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Real_commissioning_multiple_return_capacity_allocates_both_deterministically()
+    {
+        var setup = await PrepareTwoMachineScenesUnboundAsync();
+        try
+        {
+            await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+            var commissioningStore = new PostgresRdsIntegrationStore(dataSource);
+            var admin = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+            var context = new AdminMutationContext(admin.UserId, Guid.NewGuid(), "127.0.0.1", "multi-ret-test");
+
+            // Real commissioning bindings for RETURN-01 and RETURN-02 on both NAV profiles
+            await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-01", "TKG_SH01A_V01_WS_RETURN01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-02", "TKG_SH01A_V01_WS_RETURN02", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-01", "TKG_PAH01A_V01_WS_RETURN01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "NON_FINISHED_RETURN", "RETURN-02", "TKG_PAH01A_V01_WS_RETURN02", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "EMPTY_SOURCE", "EMPTY-01", "TKG_SH01A_V01_WS_EMPTY01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "EMPTY_SOURCE", "EMPTY-01", "TKG_PAH01A_V01_WS_EMPTY01", true, context);
+
+            var fallbackContainer = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+            await MapOccupiedAsync(setup.SceneA.Slot, setup.SceneA.AltPart, "FULL", fallbackContainer);
+            await MapOccupiedAsync(setup.SceneB.Slot, setup.SceneB.AltPart, "FULL", fallbackContainer);
+
+            await fixture.ExecuteAsync("""
+                INSERT INTO master.production_end_priorities (operation_code, priority)
+                VALUES ('REMOVE_FULL', 40), ('REMOVE_EMPTY', 70)
+                ON CONFLICT (operation_code) DO UPDATE SET priority = EXCLUDED.priority
+                """);
+
+            using var clientA = await fixture.LoginClientAsync(setup.SceneA.Operator);
+            using var clientB = await fixture.LoginClientAsync(setup.SceneB.Operator);
+
+            await StartAsync(clientA, setup.SceneA);
+            await StartAsync(clientB, setup.SceneB);
+
+            var sessionAId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.production_sessions WHERE machine_id = @m AND status = 'ACTIVE'",
+                ("m", setup.SceneA.MachineId));
+            var sessionBId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.production_sessions WHERE machine_id = @m AND status = 'ACTIVE'",
+                ("m", setup.SceneB.MachineId));
+
+            var endA = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.SceneA.MachineId}/production-sessions/{sessionAId}/end");
+            endA.Headers.Add(ApiHeaders.IdempotencyKey, "multi-ret-a");
+            var endB = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.SceneB.MachineId}/production-sessions/{sessionBId}/end");
+            endB.Headers.Add(ApiHeaders.IdempotencyKey, "multi-ret-b");
+
+            var taskA = clientA.SendAsync(endA);
+            var taskB = clientB.SendAsync(endB);
+
+            await Task.WhenAll(taskA, taskB);
+
+            var respA = await taskA;
+            var respB = await taskB;
+
+            Assert.True(respA.IsSuccessStatusCode, await respA.Content.ReadAsStringAsync());
+            Assert.True(respB.IsSuccessStatusCode, await respB.Content.ReadAsStringAsync());
+
+            var destA = await fixture.ScalarAsync<string>(
+                "SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @m",
+                ("m", setup.SceneA.MachineId));
+            var destB = await fixture.ScalarAsync<string>(
+                "SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @m",
+                ("m", setup.SceneB.MachineId));
+
+            Assert.NotNull(destA);
+            Assert.NotNull(destB);
+            Assert.NotEqual(destA, destB);
+
+            var allocatedCodes = new HashSet<string> { destA, destB };
+            Assert.Contains("RETURN-01", allocatedCodes);
+            Assert.Contains("RETURN-02", allocatedCodes);
+
+            // Assert each resolves WorkSite under its own NAV
+            var execution = new PostgresRdsExecutionStore(dataSource);
+            var reqA = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests WHERE machine_id = @m", ("m", setup.SceneA.MachineId));
+            var reqB = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests WHERE machine_id = @m", ("m", setup.SceneB.MachineId));
+            var ctxA = await execution.GetDispatchContextAsync(reqA);
+            var ctxB = await execution.GetDispatchContextAsync(reqB);
+
+            Assert.StartsWith("TKG_SH01A_V01_WS_RETURN", ctxA!.Destination.SiteId, StringComparison.Ordinal);
+            Assert.StartsWith("TKG_PAH01A_V01_WS_RETURN", ctxB!.Destination.SiteId, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Real_commissioning_empty_return_cross_profile_concurrency_rejects_second_request()
+    {
+        var setup = await PrepareTwoMachineScenesUnboundAsync();
+        try
+        {
+            await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+            var commissioningStore = new PostgresRdsIntegrationStore(dataSource);
+            var admin = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+            var context = new AdminMutationContext(admin.UserId, Guid.NewGuid(), "127.0.0.1", "empty-ret-test");
+
+            // Real commissioning bindings for single EMPTY-01 on both NAV profiles
+            await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "EMPTY_RETURN", "EMPTY-01", "TKG_SH01A_V01_WS_EMPTY01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "EMPTY_RETURN", "EMPTY-01", "TKG_PAH01A_V01_WS_EMPTY01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "SH-01-A", "1", "EMPTY_SOURCE", "EMPTY-01", "TKG_SH01A_V01_WS_EMPTY01", true, context);
+            await commissioningStore.BindSharedEndpointAsync(
+                "PAH-01-A", "1", "EMPTY_SOURCE", "EMPTY-01", "TKG_PAH01A_V01_WS_EMPTY01", true, context);
+
+            // Set slots to OCCUPIED and EMPTY
+            var fallbackContainer = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+            await MapOccupiedAsync(setup.SceneA.Slot, setup.SceneA.MainPart, "EMPTY", fallbackContainer);
+            await MapOccupiedAsync(setup.SceneB.Slot, setup.SceneB.MainPart, "EMPTY", fallbackContainer);
+
+            await fixture.ExecuteAsync("""
+                INSERT INTO master.production_end_priorities (operation_code, priority)
+                VALUES ('REMOVE_FULL', 40), ('REMOVE_EMPTY', 70)
+                ON CONFLICT (operation_code) DO UPDATE SET priority = EXCLUDED.priority
+                """);
+
+            using var clientA = await fixture.LoginClientAsync(setup.SceneA.Operator);
+            using var clientB = await fixture.LoginClientAsync(setup.SceneB.Operator);
+
+            await StartAsync(clientA, setup.SceneA);
+            await StartAsync(clientB, setup.SceneB);
+
+            var sessionAId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.production_sessions WHERE machine_id = @m AND status = 'ACTIVE'",
+                ("m", setup.SceneA.MachineId));
+            var sessionBId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.production_sessions WHERE machine_id = @m AND status = 'ACTIVE'",
+                ("m", setup.SceneB.MachineId));
+
+            var endA = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.SceneA.MachineId}/production-sessions/{sessionAId}/end");
+            endA.Headers.Add(ApiHeaders.IdempotencyKey, "empty-conc-a");
+            var endB = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.SceneB.MachineId}/production-sessions/{sessionBId}/end");
+            endB.Headers.Add(ApiHeaders.IdempotencyKey, "empty-conc-b");
+
+            // Concurrently request removal of empty container (EMPTY_RETURN)
+            var taskA = clientA.SendAsync(endA);
+            var taskB = clientB.SendAsync(endB);
+
+            await Task.WhenAll(taskA, taskB);
+
+            var respA = await taskA;
+            var respB = await taskB;
+
+            var responses = new[] { respA, respB };
+            Assert.Equal(1, responses.Count(r => r.IsSuccessStatusCode));
+            Assert.Equal(1, responses.Count(r => !r.IsSuccessStatusCode));
+
+            var failedResp = responses.Single(r => !r.IsSuccessStatusCode);
+            var failedBody = await failedResp.Content.ReadAsStringAsync();
+            Assert.Contains("EMPTY_RETURN_CAPACITY_UNAVAILABLE", failedBody, StringComparison.Ordinal);
+            Assert.Contains("Uygun boş kasa dönüş alanı bulunamadı", failedBody, StringComparison.Ordinal);
+
+            // Exactly 1 active request holds EMPTY-01
+            var totalActive = await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.transport_requests WHERE destination_business_code = 'EMPTY-01' AND status IN ('CREATED','QUEUED','SENT_TO_RDS','RUNNING')");
+            Assert.Equal(1L, totalActive);
         }
         finally
         {
@@ -530,7 +1038,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
 
             INSERT INTO integration.profile_shared_endpoint_bindings
                 (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-            SELECT n.id, 'EMPTY_SOURCE', p.planned_rds_site_id, NULL, w.id
+            SELECT n.id, 'EMPTY_SOURCE', 'EMPTY-01', NULL, w.id
             FROM master.navigation_profiles n
             JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id AND p.object_family = 'EMPTY' AND p.ordinal = 1
             JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
@@ -539,7 +1047,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
 
             INSERT INTO integration.profile_shared_endpoint_bindings
                 (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-            SELECT n.id, 'EMPTY_RETURN', p.planned_rds_site_id, NULL, w.id
+            SELECT n.id, 'EMPTY_RETURN', 'EMPTY-01', NULL, w.id
             FROM master.navigation_profiles n
             JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id AND p.object_family = 'EMPTY' AND p.ordinal = 1
             JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
@@ -605,6 +1113,109 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         };
         action.Headers.Add(ApiHeaders.IdempotencyKey, idempotencyKey);
         return action;
+    }
+
+    private async Task<TwoMachineSetup> PrepareTwoMachineScenesUnboundAsync()
+    {
+        await fixture.ResetAsync();
+
+        var sceneA = await PrepareSceneUnboundAsync("SH-01-A", "1", "TKG_SH01A_V01_NAV");
+        var sceneB = await PrepareSceneUnboundAsync("PAH-01-A", "1", "TKG_PAH01A_V01_NAV");
+
+        return new TwoMachineSetup(sceneA, sceneB);
+    }
+
+    private async Task<Scene> PrepareSceneUnboundAsync(string machineCode, string variantCode, string navCode)
+    {
+        var context = await fixture.ConfigureMachineAsync(machineCode, variantCode);
+        await DiscoverProfileWorksitesOnlyAsync(navCode);
+
+        var navigationId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM master.navigation_profiles WHERE code = @code", ("code", navCode));
+
+        await fixture.ExecuteAsync(
+            "UPDATE ops.machine_runtime_state SET active_navigation_id = @nav WHERE machine_id = @machine",
+            ("nav", navigationId), ("machine", context.MachineId));
+
+        var slot = await fixture.ScalarAsync<Guid>("""
+            SELECT id FROM master.layout_slots
+            WHERE layout_id = @layout AND is_enabled AND slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+            ORDER BY display_order, code, id
+            LIMIT 1
+            """, ("layout", context.LayoutId));
+
+        var position = await fixture.ScalarAsync<int>("""
+            SELECT position_number FROM (
+                SELECT id, row_number() OVER (ORDER BY display_order, code, id)::int AS position_number
+                FROM master.layout_slots
+                WHERE layout_id = @layout AND is_enabled AND slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+            ) numbered
+            WHERE id = @slot
+            """, ("layout", context.LayoutId), ("slot", slot));
+
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var main = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.parts (part_code, description) VALUES (@code, 'Mamul') RETURNING id",
+            ("code", $"P-MAIN-{suffix}"));
+        var alt = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.parts (part_code, description) VALUES (@code, 'Alt') RETURNING id",
+            ("code", $"P-ALT-{suffix}"));
+
+        var group = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.product_groups (variant_id, main_part_id, name) VALUES (@variant, @part, 'Group') RETURNING id",
+            ("variant", context.VariantId), ("part", main));
+
+        var container = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+        await fixture.ExecuteAsync("""
+            INSERT INTO master.product_group_parts (product_group_id, part_id, container_type_id, relation_type, is_active)
+            VALUES (@group, @part, @container, 'ALT_PART', true)
+            """, ("group", group), ("part", alt), ("container", container));
+
+        await fixture.ExecuteAsync(
+            "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part) ON CONFLICT DO NOTHING",
+            ("slot", slot), ("part", main));
+
+        await fixture.SetSlotAsync(slot, "OCCUPIED", "FULL", main);
+
+        var oper = await fixture.SeedIdentityAsync(machineCode: machineCode);
+
+        return new Scene(context.MachineId, context.VariantId, context.LayoutId, navigationId, group, main, alt, slot, position, oper);
+    }
+
+    private async Task DiscoverProfileWorksitesOnlyAsync(string navCode)
+    {
+        await fixture.ExecuteAsync("""
+            UPDATE master.navigation_profiles
+            SET status = 'PUBLISHED',
+                published_at = COALESCE(published_at, now()),
+                config_json = jsonb_set(
+                    jsonb_set(config_json, '{geometryVerified}', 'true'::jsonb),
+                    '{commissioningState}', '"COMMISSIONED"'::jsonb)
+            WHERE code = @code;
+
+            INSERT INTO integration.rds_worksites
+                (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, raw_state_json)
+            SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, '{}'::jsonb
+            FROM integration.rds_worksite_plans p
+            JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id
+            WHERE n.code = @code
+              AND (
+                  (p.object_family = 'PREPARATION' AND p.ordinal BETWEEN 1 AND 4)
+                  OR (p.object_family = 'EMPTY' AND p.ordinal BETWEEN 1 AND 8)
+                  OR (p.object_family = 'RETURN' AND p.ordinal BETWEEN 1 AND 8)
+                  OR (p.object_family = 'FINISHED_GOODS' AND p.ordinal BETWEEN 1 AND 19))
+            ON CONFLICT (navigation_profile_id, rds_site_id) DO UPDATE
+            SET last_sync_at = now(), last_disabled = 0, last_sync_failed = 0;
+
+            INSERT INTO integration.preparation_area_rds_mapping (preparation_area_id, rds_worksite_id)
+            SELECT pa.id, w.id
+            FROM ops.preparation_areas pa
+            JOIN integration.rds_worksite_plans p ON p.object_family = 'PREPARATION' AND p.ordinal = pa.area_number
+            JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id AND n.code = @code
+            JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
+            WHERE pa.area_number BETWEEN 1 AND 4
+            ON CONFLICT (preparation_area_id, rds_worksite_id) DO NOTHING;
+            """, ("code", navCode));
     }
 
     private static async Task StartAsync(HttpClient client, Scene setup)

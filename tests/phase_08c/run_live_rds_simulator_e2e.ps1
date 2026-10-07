@@ -184,6 +184,7 @@ try {
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\migrations\023_rds_variant_commissioning_hardening.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\migrations\024_operational_reporting.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\migrations\025_profile_scoped_shared_endpoints.sql')))
+    Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\migrations\026_canonical_shared_endpoint_identities.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')))

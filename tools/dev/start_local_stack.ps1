@@ -271,7 +271,8 @@ foreach ($migration in @(
     '022_variant_scoped_rds_worksite_commissioning.sql',
     '023_rds_variant_commissioning_hardening.sql',
     '024_operational_reporting.sql',
-    '025_profile_scoped_shared_endpoints.sql'
+    '025_profile_scoped_shared_endpoints.sql',
+    '026_canonical_shared_endpoint_identities.sql'
 )) {
     Write-Host "Applying migration $migration..." -ForegroundColor Cyan
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot "db\migrations\$migration") | Out-Null

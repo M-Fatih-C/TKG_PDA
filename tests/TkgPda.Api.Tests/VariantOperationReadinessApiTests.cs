@@ -97,20 +97,20 @@ public sealed class VariantOperationReadinessApiTests(ApiTestFixture fixture) : 
         var mismatch = await Assert.ThrowsAsync<PostgresException>(() => fixture.ExecuteAsync("""
             INSERT INTO integration.profile_shared_endpoint_bindings
                 (navigation_profile_id, endpoint_class, business_code, rds_worksite_id)
-            VALUES (@profile, 'EMPTY_SOURCE', 'TKG_SH01A_V02_WS_EMPTY01', @site)
+            VALUES (@profile, 'EMPTY_SOURCE', 'EMPTY-01', @site)
             """, ("profile", v1), ("site", v2Empty)));
         Assert.Contains("PROFILE_MISMATCH", mismatch.MessageText, StringComparison.Ordinal);
 
-        await BindAsync(v1, "EMPTY_SOURCE", "TKG_SH01A_V01_WS_EMPTY01", await WorkSiteAsync(v1, "TKG_SH01A_V01_WS_EMPTY01"));
-        await BindAsync(v1, "EMPTY_RETURN", "TKG_SH01A_V01_WS_EMPTY01", await WorkSiteAsync(v1, "TKG_SH01A_V01_WS_EMPTY01"));
+        await BindAsync(v1, "EMPTY_SOURCE", "EMPTY-01", await WorkSiteAsync(v1, "TKG_SH01A_V01_WS_EMPTY01"));
+        await BindAsync(v1, "EMPTY_RETURN", "EMPTY-01", await WorkSiteAsync(v1, "TKG_SH01A_V01_WS_EMPTY01"));
         await BindAsync(v1, "FINISHED_GOODS", "FG-01", await WorkSiteAsync(v1, "TKG_SH01A_V01_WS_FG01"), "FG-01");
         await BindAsync(v2, "FINISHED_GOODS", "FG-01", await WorkSiteAsync(v2, "TKG_SH01A_V02_WS_FG01"), "FG-01");
-        await BindAsync(v1, "NON_FINISHED_RETURN", "TKG_SH01A_V01_WS_RETURN01", await WorkSiteAsync(v1, "TKG_SH01A_V01_WS_RETURN01"));
+        await BindAsync(v1, "NON_FINISHED_RETURN", "RETURN-01", await WorkSiteAsync(v1, "TKG_SH01A_V01_WS_RETURN01"));
 
         var bring = await InsertRequestAsync("BRING_EMPTY", "TKG_SH01A_V01_NAV", null);
-        var removeEmpty = await InsertRequestAsync("REMOVE_EMPTY", "TKG_SH01A_V01_NAV", "TKG_SH01A_V01_WS_EMPTY01");
+        var removeEmpty = await InsertRequestAsync("REMOVE_EMPTY", "TKG_SH01A_V01_NAV", "EMPTY-01");
         var mamul = await InsertRequestAsync("REMOVE_FULL", "TKG_SH01A_V01_NAV", "FG-01");
-        var alt = await InsertRequestAsync("REMOVE_FULL", "TKG_SH01A_V01_NAV", "TKG_SH01A_V01_WS_RETURN01");
+        var alt = await InsertRequestAsync("REMOVE_FULL", "TKG_SH01A_V01_NAV", "RETURN-01");
         var otherNav = await InsertRequestAsync("REMOVE_FULL", "TKG_SH01A_V02_NAV", "FG-01");
         await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
         var execution = new PostgresRdsExecutionStore(dataSource);

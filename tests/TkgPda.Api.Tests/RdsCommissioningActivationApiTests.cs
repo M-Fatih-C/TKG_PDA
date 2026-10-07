@@ -882,7 +882,7 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
 
         INSERT INTO integration.profile_shared_endpoint_bindings
             (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-        SELECT n.id, 'EMPTY_SOURCE', p.planned_rds_site_id, NULL, w.id
+        SELECT n.id, 'EMPTY_SOURCE', 'EMPTY-01', NULL, w.id
         FROM master.navigation_profiles n
         JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id
         JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
@@ -891,7 +891,7 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
 
         INSERT INTO integration.profile_shared_endpoint_bindings
             (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-        SELECT n.id, 'EMPTY_RETURN', p.planned_rds_site_id, NULL, w.id
+        SELECT n.id, 'EMPTY_RETURN', 'EMPTY-01', NULL, w.id
         FROM master.navigation_profiles n
         JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id
         JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
@@ -900,7 +900,7 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
 
         INSERT INTO integration.profile_shared_endpoint_bindings
             (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-        SELECT n.id, 'NON_FINISHED_RETURN', p.planned_rds_site_id, NULL, w.id
+        SELECT n.id, 'NON_FINISHED_RETURN', 'RETURN-01', NULL, w.id
         FROM master.navigation_profiles n
         JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id
         JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id

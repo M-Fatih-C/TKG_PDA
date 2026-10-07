@@ -69,7 +69,7 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             JOIN master.task_types tt ON tt.id = r.task_type_id
             WHERE tt.code = 'REMOVE_FULL'
             """);
-        Assert.EndsWith("_WS_RETURN01", predecessor, StringComparison.Ordinal);
+        Assert.Equal("RETURN-01", predecessor);
         Assert.DoesNotContain("FG-", predecessor, StringComparison.Ordinal);
 
         await fixture.ExecuteAsync("DELETE FROM ops.transport_request_dependencies");
@@ -82,7 +82,7 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             JOIN master.task_types tt ON tt.id = r.task_type_id
             WHERE tt.code = 'REMOVE_EMPTY'
             """);
-        Assert.EndsWith("_WS_EMPTY01", emptyCode, StringComparison.Ordinal);
+        Assert.Equal("EMPTY-01", emptyCode);
         Assert.True(await fixture.ScalarAsync<bool>("""
             SELECT destination_slot_id IS NULL FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
@@ -163,10 +163,10 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
             Assert.Equal("FG-01", await DestinationCodeAsync(setup.MainPart, "REMOVE_FULL"));
             var altReturn = await DestinationCodeAsync(setup.AltPart, "REMOVE_FULL");
-            Assert.EndsWith("_WS_RETURN01", altReturn, StringComparison.Ordinal);
+            Assert.Equal("RETURN-01", altReturn);
             Assert.DoesNotContain("FG-", altReturn, StringComparison.Ordinal);
             var emptyReturn = await DestinationCodeAsync(setup.AltPart, "REMOVE_EMPTY");
-            Assert.EndsWith("_WS_EMPTY01", emptyReturn, StringComparison.Ordinal);
+            Assert.Equal("EMPTY-01", emptyReturn);
             Assert.Equal(3L, await fixture.ScalarAsync<long>("""
                 SELECT count(*) FROM ops.transport_requests
                 WHERE destination_slot_id IS NULL AND navigation_id = @nav
@@ -347,7 +347,7 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
 
         INSERT INTO integration.profile_shared_endpoint_bindings
             (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-        SELECT n.id, 'EMPTY_SOURCE', p.planned_rds_site_id, NULL, w.id
+        SELECT n.id, 'EMPTY_SOURCE', 'EMPTY-01', NULL, w.id
         FROM master.navigation_profiles n
         JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id AND p.object_family = 'EMPTY' AND p.ordinal = 1
         JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
@@ -356,7 +356,7 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
 
         INSERT INTO integration.profile_shared_endpoint_bindings
             (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-        SELECT n.id, 'EMPTY_RETURN', p.planned_rds_site_id, NULL, w.id
+        SELECT n.id, 'EMPTY_RETURN', 'EMPTY-01', NULL, w.id
         FROM master.navigation_profiles n
         JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id AND p.object_family = 'EMPTY' AND p.ordinal = 1
         JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
@@ -365,7 +365,7 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
 
         INSERT INTO integration.profile_shared_endpoint_bindings
             (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-        SELECT n.id, 'NON_FINISHED_RETURN', p.planned_rds_site_id, NULL, w.id
+        SELECT n.id, 'NON_FINISHED_RETURN', 'RETURN-01', NULL, w.id
         FROM master.navigation_profiles n
         JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id AND p.object_family = 'RETURN' AND p.ordinal = 1
         JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id

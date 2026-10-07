@@ -1285,16 +1285,16 @@ public sealed partial class PostgresRdsIntegrationStore
                 && plannedName.EndsWith("_WS_PREP" + area.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal),
             "EMPTY_SOURCE" or "EMPTY_RETURN" => family == "EMPTY"
                 && ordinal is >= 1 and <= 8
-                && plannedName.EndsWith("_WS_EMPTY" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                && businessCode == plannedName,
+                && businessCode == "EMPTY-" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture)
+                && plannedName.EndsWith("_WS_EMPTY" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal),
             "FINISHED_GOODS" => family == "FINISHED_GOODS"
                 && ordinal is >= 1 and <= 19
                 && businessCode == "FG-" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture)
                 && plannedName.EndsWith("_WS_FG" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal),
             "NON_FINISHED_RETURN" => family == "RETURN"
                 && ordinal is >= 1 and <= 8
-                && plannedName.EndsWith("_WS_RETURN" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                && businessCode == plannedName,
+                && businessCode == "RETURN-" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture)
+                && plannedName.EndsWith("_WS_RETURN" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal),
             _ => false
         };
     }

@@ -45,6 +45,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("023_rds_variant_commissioning_hardening.sql"));
         await ExecuteScriptAsync(MigrationFile("024_operational_reporting.sql"));
         await ExecuteScriptAsync(MigrationFile("025_profile_scoped_shared_endpoints.sql"));
+        await ExecuteScriptAsync(MigrationFile("026_canonical_shared_endpoint_identities.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(

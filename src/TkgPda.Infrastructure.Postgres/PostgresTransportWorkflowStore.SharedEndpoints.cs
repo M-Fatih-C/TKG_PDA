@@ -30,13 +30,22 @@ public sealed partial class PostgresTransportWorkflowStore
     private static bool IsSingleCapacityEndpoint(string endpointClass) =>
         endpointClass is "FINISHED_GOODS" or "NON_FINISHED_RETURN" or "EMPTY_RETURN";
 
-    private static string SharedEndpointLockKey(string endpointClass, string businessCode) =>
-        $"shared_endpoint:{endpointClass}:{businessCode}";
+    /// <summary>
+    /// Shared Destination Capacity Model:
+    /// - Business identity: Global logical physical destination (FG-01..19, RETURN-01..08, EMPTY-01..08).
+    ///   Uniquely identifies physical capacity across all navigation profiles.
+    /// - Navigation identity: Profile-specific RDS WorkSite (e.g. TKG_SH01A_V01_WS_RETURN01 vs TKG_PAH01A_V01_WS_RETURN01).
+    /// - Runtime: Transport request stores destination_business_code (e.g. RETURN-01).
+    /// - Capacity lock: Transaction advisory lock key "shared_destination:{businessCode}".
+    ///   Lock key and global active-request occupancy query are 1-to-1 identical in physical scope.
+    /// - Dispatch: Uses navigation_id + destination_business_code to resolve the profile-local WorkSite.
+    /// </summary>
+    private static string SharedDestinationLockKey(string businessCode) =>
+        $"shared_destination:{businessCode}";
 
     private static async Task<bool> TryLockSharedEndpointAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
-        string endpointClass,
         string businessCode,
         CancellationToken cancellationToken)
     {
@@ -44,7 +53,7 @@ public sealed partial class PostgresTransportWorkflowStore
             "SELECT pg_try_advisory_xact_lock(hashtextextended(@key, 0))",
             connection,
             transaction);
-        command.Parameters.AddWithValue("key", SharedEndpointLockKey(endpointClass, businessCode));
+        command.Parameters.AddWithValue("key", SharedDestinationLockKey(businessCode));
         return Convert.ToBoolean(await command.ExecuteScalarAsync(cancellationToken));
     }
 
@@ -147,7 +156,7 @@ public sealed partial class PostgresTransportWorkflowStore
                 continue;
             }
 
-            var locked = await TryLockSharedEndpointAsync(connection, transaction, endpointClass, candidate.BusinessCode, cancellationToken);
+            var locked = await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken);
             if (!locked)
             {
                 continue;
@@ -360,7 +369,7 @@ public sealed partial class PostgresTransportWorkflowStore
                 continue;
             }
 
-            var locked = await TryLockSharedEndpointAsync(connection, transaction, endpointClass, candidate.BusinessCode, cancellationToken);
+            var locked = await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken);
             if (!locked)
             {
                 continue;
