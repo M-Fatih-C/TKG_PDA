@@ -62,7 +62,7 @@ public sealed class PostgresOperationalReportStore(NpgsqlDataSource dataSource) 
         SELECT r.id, r.request_no, r.created_at, r.requested_by, u.full_name, u.employee_no, u.username,
                created.device_id, d.device_code, d.name,
                m.id, m.code, m.display_name, v.code, n.code, tt.code,
-               p.part_code, p.description, ct.code, src.code, dst.code,
+               p.part_code, p.description, ct.code, src.code, COALESCE(dst.code, r.destination_business_code),
                r.status, r.failure_code, r.failure_message,
                CASE
                    WHEN cancel.created_at IS NULL THEN NULL

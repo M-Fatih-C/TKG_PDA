@@ -155,18 +155,24 @@ class MachineRelatedPart {
     required this.partCode,
     required this.description,
     required this.relationType,
+    this.requestable = true,
+    this.blockers = const [],
   });
 
   final String partId;
   final String partCode;
   final String? description;
   final String relationType;
+  final bool requestable;
+  final List<String> blockers;
 
   factory MachineRelatedPart.fromJson(JsonMap json) => MachineRelatedPart(
     partId: json['partId'] as String,
     partCode: json['partCode'] as String? ?? '',
     description: json['description'] as String?,
     relationType: json['relationType'] as String? ?? '',
+    requestable: json['requestable'] as bool? ?? true,
+    blockers: (json['blockers'] as List?)?.map((item) => item.toString()).toList(growable: false) ?? const [],
   );
 }
 

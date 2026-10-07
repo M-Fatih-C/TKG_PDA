@@ -11,6 +11,27 @@ namespace TkgPda.Api.Tests;
 public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
+    public async Task Alt_part_without_container_type_is_rejected_before_a_request_exists()
+    {
+        var setup = await SetupAsync();
+        await fixture.ExecuteAsync(
+            "UPDATE master.product_group_parts SET container_type_id = NULL WHERE part_id = @part",
+            ("part", setup.AltPart));
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var rejected = await DemandAsync(client, setup, setup.AltPart, "missing-container");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, rejected.StatusCode);
+        Assert.Equal("CONTAINER_TYPE_MISSING", await ApiTestFixture.ErrorCodeAsync(rejected));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        var options = await client.GetFromJsonAsync<List<MachineMainPartOptionRecord>>($"/api/v1/machines/{setup.Context.MachineId}/part-options");
+        var alt = options!.SelectMany(option => option.RelatedParts).Single(part => part.PartId == setup.AltPart);
+        Assert.False(alt.Requestable);
+        Assert.Contains("CONTAINER_TYPE_MISSING", alt.Blockers!);
+    }
+
+    [Fact]
     public async Task Vacant_alt_part_creates_bring_full_waiting_for_preparation()
     {
         var setup = await SetupAsync();
@@ -150,12 +171,13 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", secondSlot), ("part", second));
         await fixture.SetSlotAsync(secondSlot, "VACANT", "UNKNOWN");
+        var containerTypeId = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
         await fixture.ExecuteAsync(
             """
-            INSERT INTO master.product_group_parts (product_group_id, part_id, relation_type, is_active)
-            VALUES (@group, @part, 'ALT_PART', true)
+            INSERT INTO master.product_group_parts (product_group_id, part_id, container_type_id, relation_type, is_active)
+            VALUES (@group, @part, @container, 'ALT_PART', true)
             """,
-            ("group", setup.Group), ("part", second));
+            ("group", setup.Group), ("part", second), ("container", containerTypeId));
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
 
@@ -520,12 +542,13 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", slot), ("part", part));
         await fixture.SetSlotAsync(slot, "VACANT", "UNKNOWN");
+        var containerTypeId = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
         await fixture.ExecuteAsync(
             """
-            INSERT INTO master.product_group_parts (product_group_id, part_id, relation_type, is_active)
-            VALUES (@group, @part, 'ALT_PART', true)
+            INSERT INTO master.product_group_parts (product_group_id, part_id, container_type_id, relation_type, is_active)
+            VALUES (@group, @part, @container, 'ALT_PART', true)
             """,
-            ("group", setup.Group), ("part", part));
+            ("group", setup.Group), ("part", part), ("container", containerTypeId));
         return part;
     }
 

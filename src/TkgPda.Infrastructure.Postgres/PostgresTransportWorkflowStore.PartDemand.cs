@@ -361,7 +361,14 @@ public sealed partial class PostgresTransportWorkflowStore
                 "İstenen parça aktif üretimin alt parçası değil.");
         }
 
-        return reader.IsDBNull(0) ? null : reader.GetGuid(0);
+        if (reader.IsDBNull(0))
+        {
+            throw new WorkflowRuleException(
+                "CONTAINER_TYPE_MISSING",
+                "Taşıma kabı bilgisi bekleniyor. Talep oluşturulmadı.");
+        }
+
+        return reader.GetGuid(0);
     }
 
     private static async Task<long?> LockOtherActiveDemandAsync(

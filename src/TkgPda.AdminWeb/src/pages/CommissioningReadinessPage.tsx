@@ -7,8 +7,8 @@ import { ErrorState, LoadingState, PageHeader, Panel } from '../components/ui'
 const operationLabels: Record<string, string> = {
   BRING_FULL: 'Malzeme Getir',
   BRING_EMPTY: 'Boş Kasa Getir',
-  REMOVE_FULL_MAMUL: 'Dolu Kasa Götür',
-  REMOVE_FULL_ALT_RETURN: 'Dolu Kasa Götür (Alt dönüş)',
+  REMOVE_FULL_MAMUL: 'Mamul Kasası Götür',
+  REMOVE_FULL_ALT_RETURN: 'Alt / Yarı Mamul Dönüşü',
   REMOVE_EMPTY: 'Boş Kasa Götür',
 }
 
@@ -65,14 +65,7 @@ export function CommissioningReadinessPage() {
       <div className="readiness-grid">
         {query.data?.map((row) => {
           const key = `${row.machineCode}-${row.variantCode}`
-          const visible = row.operations.filter((item) => item.operation !== 'REMOVE_FULL_ALT_RETURN')
-          const mamul = row.operations.find((item) => item.operation === 'REMOVE_FULL_MAMUL')
-          const alt = row.operations.find((item) => item.operation === 'REMOVE_FULL_ALT_RETURN')
-          const operations = visible.map((item) => {
-            if (item.operation !== 'REMOVE_FULL_MAMUL' || !alt || alt.state === 'READY') return item
-            if (item.state === 'READY') return { ...alt, operation: item.operation }
-            return { ...item, blockers: [...item.blockers, ...alt.blockers.filter((code) => !item.blockers.includes(code))] }
-          })
+          const operations = row.operations
           return (
             <Panel key={key}>
               <div className="readiness-meta">
@@ -95,7 +88,6 @@ export function CommissioningReadinessPage() {
               </ul>
               <details className="readiness-detail" open={open === key} onToggle={(event) => setOpen(event.currentTarget.open ? key : null)}>
                 <summary>Teknik ayrıntı</summary>
-                <p>Mamul dolu kasa: {mamul ? capabilityText(mamul) : '—'}. Alt dönüş: {alt ? capabilityText(alt) : '—'}.</p>
                 <ul>
                   {row.operations.flatMap((operation) => operation.blockers.map((code) => (
                     <li key={`${operation.operation}-${code}`}>{operationLabels[operation.operation] ?? operation.operation}: {blockerText[code] ?? code} ({code})</li>

@@ -275,14 +275,17 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
                     LEFT JOIN master.slot_groups sg ON sg.id = sgm.slot_group_id
                     LEFT JOIN integration.rds_worksites rw
                         ON rw.id = integration.resolve_slot_worksite(ls.id, r.navigation_id)
-                    WHERE (r.destination_slot_id IS NOT NULL AND ls.id = r.destination_slot_id)
-                       OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NOT NULL
-                           AND sgm.slot_group_id = template.destination_slot_group_id AND ls.layout_id = r.layout_id)
-                       OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NULL
-                           AND ls.layout_id = r.layout_id AND ls.is_enabled AND (
-                               (tt.code = 'REMOVE_FULL' AND ls.slot_role = 'DROP')
-                               OR (tt.code = 'REMOVE_EMPTY' AND ls.slot_role = 'EMPTY_STORAGE')
-                           ))
+                    WHERE r.destination_business_code IS NULL
+                      AND (
+                           (r.destination_slot_id IS NOT NULL AND ls.id = r.destination_slot_id)
+                           OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NOT NULL
+                               AND sgm.slot_group_id = template.destination_slot_group_id AND ls.layout_id = r.layout_id)
+                           OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NULL
+                               AND ls.layout_id = r.layout_id AND ls.is_enabled AND (
+                                   (tt.code = 'REMOVE_FULL' AND ls.slot_role = 'DROP')
+                                   OR (tt.code = 'REMOVE_EMPTY' AND ls.slot_role = 'EMPTY_STORAGE')
+                               ))
+                          )
                     UNION ALL
                     SELECT NULL::uuid, b.business_code, NULL::varchar, 'SHARED'::varchar,
                            rw.rds_site_id, rw.rds_type, rw.last_filled,
@@ -291,8 +294,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
                     FROM integration.profile_shared_endpoint_bindings b
                     JOIN integration.rds_worksites rw ON rw.id = b.rds_worksite_id
                                                      AND rw.navigation_profile_id = r.navigation_id
-                    WHERE r.destination_slot_id IS NULL
-                      AND r.destination_business_code IS NOT NULL
+                    WHERE r.destination_business_code IS NOT NULL
                       AND b.navigation_profile_id = r.navigation_id
                       AND b.business_code = r.destination_business_code
                       AND (
@@ -402,12 +404,12 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
             return await ReadWorkSiteHealthAsync(connection, requestId, "EMPTY_SOURCE", null, "EMPTY_SOURCE_MAPPING_MISSING", cancellationToken);
         }
 
-        if (operation == "REMOVE_EMPTY" && !hasDestinationSlot)
+        if (operation == "REMOVE_EMPTY" && (businessCode is not null || !hasDestinationSlot))
         {
             return await ReadWorkSiteHealthAsync(connection, requestId, "EMPTY_RETURN", businessCode, "EMPTY_RETURN_MAPPING_MISSING", cancellationToken);
         }
 
-        if (operation == "REMOVE_FULL" && !hasDestinationSlot)
+        if (operation == "REMOVE_FULL" && (businessCode is not null || !hasDestinationSlot))
         {
             if (businessCode is not null && businessCode.StartsWith("FG-", StringComparison.Ordinal))
             {

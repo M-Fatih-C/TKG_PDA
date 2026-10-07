@@ -89,7 +89,13 @@ public sealed partial class PostgresTransportWorkflowStore
         for (var index = 0; index < removals.Count; index++)
         {
             var removal = removals[index];
-            if (!removal.FinishedGoods
+            var registryCleanup = await IsCommissioningRegistryProfileAsync(
+                connection,
+                transaction,
+                await ActiveNavigationAsync(connection, transaction, command.MachineId, cancellationToken),
+                cancellationToken);
+            if (!registryCleanup
+                && !removal.FinishedGoods
                 && removal.Operation == TransportTaskType.RemoveFull
                 && removal.DestinationSlotId is null)
             {
@@ -198,6 +204,8 @@ public sealed partial class PostgresTransportWorkflowStore
     {
         var priorities = new Dictionary<TransportTaskType, int>();
         var emptyCount = 0;
+        var activeNavigation = await ActiveNavigationAsync(connection, transaction, session.MachineId, cancellationToken);
+        var registryProfile = await IsCommissioningRegistryProfileAsync(connection, transaction, activeNavigation, cancellationToken);
         for (var index = 0; index < removals.Count; index++)
         {
             var removal = removals[index];
@@ -208,7 +216,11 @@ public sealed partial class PostgresTransportWorkflowStore
             }
 
             await RequireTaskTemplateAsync(connection, transaction, session, removal.Operation, cancellationToken);
-            if (removal.FinishedGoods)
+            if (removal.FinishedGoods && registryProfile)
+            {
+                await RequireSharedEndpointAsync(connection, transaction, activeNavigation!.Value, "FINISHED_GOODS", "FINISHED_GOODS_MAPPING_MISSING", cancellationToken);
+            }
+            else if (removal.FinishedGoods)
             {
                 _ = await ResolveFinishedGoodsDestinationAsync(
                     connection,
@@ -239,23 +251,39 @@ public sealed partial class PostgresTransportWorkflowStore
             removals[index] = removal with { Priority = priority };
         }
 
-        await AllocateNonFinishedDestinationsAsync(
-            connection,
-            transaction,
-            layoutId,
-            removals,
-            lockedSlots,
-            returnSlots,
-            cancellationToken);
-
-        if (emptyCount > 0)
+        if (registryProfile)
         {
-            var available = await CountAvailableBuffersAsync(connection, transaction, layoutId, cancellationToken);
-            if (available < emptyCount)
+            var altCount = removals.Count(removal => !removal.FinishedGoods && removal.Operation == TransportTaskType.RemoveFull);
+            if (altCount > 0)
             {
-                throw new WorkflowRuleException(
-                    "EMPTY_BUFFER_UNAVAILABLE",
-                    "Boş kasa için uygun boş saklama alanı yok. Üretim kapatılmadı.");
+                await RequireSharedCapacityAsync(connection, transaction, activeNavigation!.Value, "NON_FINISHED_RETURN", altCount, "NON_FINISHED_RETURN_MAPPING_MISSING", cancellationToken);
+            }
+
+            if (emptyCount > 0)
+            {
+                await RequireSharedCapacityAsync(connection, transaction, activeNavigation!.Value, "EMPTY_RETURN", emptyCount, "EMPTY_RETURN_MAPPING_MISSING", cancellationToken);
+            }
+        }
+        else
+        {
+            await AllocateNonFinishedDestinationsAsync(
+                connection,
+                transaction,
+                layoutId,
+                removals,
+                lockedSlots,
+                returnSlots,
+                cancellationToken);
+
+            if (emptyCount > 0)
+            {
+                var available = await CountAvailableBuffersAsync(connection, transaction, layoutId, cancellationToken);
+                if (available < emptyCount)
+                {
+                    throw new WorkflowRuleException(
+                        "EMPTY_BUFFER_UNAVAILABLE",
+                        "Boş kasa için uygun boş saklama alanı yok. Üretim kapatılmadı.");
+                }
             }
         }
     }

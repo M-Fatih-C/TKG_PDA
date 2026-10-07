@@ -140,6 +140,18 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
         var slot = (await fixture.LogisticsSlotsAsync(context.LayoutId, 1)).Single();
         await fixture.SetSlotAsync(slot, "VACANT", "UNKNOWN");
         var part = await fixture.PartForSlotAsync(slot, "P-ACT-NAV", context.VariantId);
+        await fixture.ExecuteAsync("""
+            INSERT INTO integration.rds_worksites
+                (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, raw_state_json)
+            SELECT id, 'TEST-NAV-ACT-EMPTY', 1, now(), 0, 0, '{}'::jsonb
+            FROM master.navigation_profiles WHERE code = 'TKG_SH01A_V01_NAV';
+            INSERT INTO integration.profile_shared_endpoint_bindings
+                (navigation_profile_id, endpoint_class, business_code, rds_worksite_id)
+            SELECT n.id, 'EMPTY_SOURCE', 'TEST-NAV-ACT-EMPTY', w.id
+            FROM master.navigation_profiles n
+            JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = 'TEST-NAV-ACT-EMPTY'
+            WHERE n.code = 'TKG_SH01A_V01_NAV';
+            """);
 
         var created = await fixture.SendTransportAsync(
             client,

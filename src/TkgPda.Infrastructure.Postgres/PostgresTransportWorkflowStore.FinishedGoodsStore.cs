@@ -36,17 +36,37 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         CancellationToken cancellationToken)
     {
         if (request.TaskType != TransportTaskType.RemoveFull) return;
-        if (request.DestinationSlotId is not { } destinationSlotId) return;
 
         Guid locationId;
-        await using (var lookup = new NpgsqlCommand("""
-            SELECT store_location_id FROM ops.store_location_delivery_slots
-            WHERE layout_slot_id = @slot
-            """, connection, transaction))
+        if (request.DestinationBusinessCode is { } businessCode && businessCode.StartsWith("FG-", StringComparison.Ordinal))
         {
+            await using var byCode = new NpgsqlCommand(
+                "SELECT id FROM ops.store_locations WHERE code = @code AND is_enabled",
+                connection,
+                transaction);
+            byCode.Parameters.AddWithValue("code", businessCode);
+            if (await byCode.ExecuteScalarAsync(cancellationToken) is not Guid found)
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED",
+                    "Seçilen bitmiş ürün alanı kayıtlı değil. Teslimat yazılmadı.");
+            }
+
+            locationId = found;
+        }
+        else if (request.DestinationSlotId is { } destinationSlotId)
+        {
+            await using var lookup = new NpgsqlCommand("""
+                SELECT store_location_id FROM ops.store_location_delivery_slots
+                WHERE layout_slot_id = @slot
+                """, connection, transaction);
             lookup.Parameters.AddWithValue("slot", destinationSlotId);
             if (await lookup.ExecuteScalarAsync(cancellationToken) is not Guid found) return;
             locationId = found;
+        }
+        else
+        {
+            return;
         }
 
         Guid unitId;

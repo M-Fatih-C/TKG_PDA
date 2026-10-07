@@ -103,11 +103,17 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         await ValidateProductionTransportContextAsync(connection, transaction, request, cancellationToken);
         var taskTypeId = await ResolveAndValidateMasterDataAsync(connection, transaction, request, cancellationToken);
 
-        // Customer Workflow — Empty Container Buffer: when the operator did not
-        // pick a physical buffer slot themselves, resolve one now from
-        // configured EMPTY_STORAGE slots on this layout — never left to a
-        // guessed/deferred destination.
-        if (TransportRules.RequiresBufferSlot(request.TaskType)
+        var registryProfile = await IsCommissioningRegistryProfileAsync(connection, transaction, request.NavigationProfileId, cancellationToken);
+        if (registryProfile)
+        {
+            request = await AssignRegistrySharedEndpointAsync(connection, transaction, request, cancellationToken);
+        }
+
+        // Layout EMPTY_STORAGE remains the buffer only when this request is not
+        // on a commissioning navigation profile. Registry requests resolve
+        // EMPTY_SOURCE / EMPTY_RETURN through profile_shared_endpoint_bindings.
+        if (!registryProfile
+            && TransportRules.RequiresBufferSlot(request.TaskType)
             && TransportRules.BufferSlotId(request.TaskType, request.SourceSlotId, request.DestinationSlotId) is null)
         {
             var allocatedBufferSlotId = await AllocateBufferSlotAsync(connection, transaction, request, cancellationToken);
@@ -168,7 +174,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         // on the request, so dispatch and completion use exactly what was
         // validated. It is deliberately not part of the slot reservation above:
         // many machines and positions share one drop position.
-        if (request.EnforcesFinishedGoodsDestination)
+        if (request.EnforcesFinishedGoodsDestination && request.DestinationBusinessCode is null)
         {
             request = request with
             {
@@ -191,7 +197,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 idempotency_key = request.IdempotencyKey,
                 batch_id = batchId,
                 request_origin = request.Origin.ToDatabase(),
-                task_type = request.TaskType.ToDatabase()
+                task_type = request.TaskType.ToDatabase(),
+                destination_business_code = request.DestinationBusinessCode
             },
             cancellationToken,
             eventContext);
@@ -1312,13 +1319,13 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 id, idempotency_key, request_origin, requested_by,
                 machine_id, variant_id, layout_id, navigation_id,
                 product_group_id, part_id, container_type_id, task_type_id,
-                source_slot_id, destination_slot_id, status, priority, batch_id,
+                source_slot_id, destination_slot_id, destination_business_code, status, priority, batch_id,
                 readiness_state, production_session_id)
             VALUES (
                 @id, @idempotency_key, @request_origin, @requested_by,
                 @machine_id, @variant_id, @layout_id, @navigation_id,
                 @product_group_id, @part_id, @container_type_id, @task_type_id,
-                @source_slot_id, @destination_slot_id, 'CREATED', @priority, @batch_id,
+                @source_slot_id, @destination_slot_id, @destination_business_code, 'CREATED', @priority, @batch_id,
                 @readiness_state,
                 (SELECT id FROM ops.production_sessions WHERE machine_id = @machine_id AND ended_at IS NULL))
             RETURNING request_no
@@ -1339,6 +1346,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         command.Parameters.AddWithValue("task_type_id", taskTypeId);
         AddNullableUuid(command, "source_slot_id", request.SourceSlotId);
         AddNullableUuid(command, "destination_slot_id", request.DestinationSlotId);
+        AddNullableText(command, "destination_business_code", request.DestinationBusinessCode);
         command.Parameters.AddWithValue("priority", request.Priority);
         AddNullableUuid(command, "batch_id", batchId);
         command.Parameters.AddWithValue("readiness_state", request.InitialReadinessState.ToDatabase());
@@ -1364,7 +1372,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             request.DestinationSlotId,
             request.Priority,
             request.InitialReadinessState,
-            ReadyAt: null);
+            ReadyAt: null,
+            request.DestinationBusinessCode);
     }
 
     private static async Task<TransportRequestSnapshot?> FindByIdempotencyKeyAsync(
@@ -1520,7 +1529,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         reader.IsDBNull(15) ? null : reader.GetGuid(15),
         reader.GetInt32(16),
         WorkflowCode.ParseReadinessState(reader.GetString(17)),
-        reader.IsDBNull(18) ? null : reader.GetFieldValue<DateTimeOffset>(18));
+        reader.IsDBNull(18) ? null : reader.GetFieldValue<DateTimeOffset>(18),
+        reader.IsDBNull(19) ? null : reader.GetString(19));
 
     private static void EnsureEquivalentPayload(TransportRequestSnapshot existing, CreateTransportRequest request)
     {
@@ -1540,6 +1550,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         // first attempt; a retry that omits it is the same logical request.
         var defersFinishedGoodsDestination = request.EnforcesFinishedGoodsDestination
             && request.DestinationSlotId is null;
+        var defersBusinessCode = request.DestinationBusinessCode is null;
 
         var equivalent = existing.Origin == request.Origin
             && existing.RequestedBy == request.RequestedBy
@@ -1553,6 +1564,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             && existing.TaskType == request.TaskType
             && (defersBufferSource || defersMachineSource || existing.SourceSlotId == request.SourceSlotId)
             && (defersBufferDestination || defersMachineDestination || defersFinishedGoodsDestination || existing.DestinationSlotId == request.DestinationSlotId)
+            && (defersBusinessCode || existing.DestinationBusinessCode == request.DestinationBusinessCode)
             && existing.Priority == request.Priority;
 
         if (!equivalent)
@@ -1804,7 +1816,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                r.destination_slot_id,
                r.priority,
                r.readiness_state,
-               r.ready_at
+               r.ready_at,
+               r.destination_business_code
         FROM ops.transport_requests r
         JOIN master.task_types tt ON tt.id = r.task_type_id
         """;

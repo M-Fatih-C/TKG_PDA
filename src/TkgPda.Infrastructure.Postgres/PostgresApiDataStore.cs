@@ -321,7 +321,19 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
             static _ => new List<MachineRelatedPartRecord>());
         await using (var command = dataSource.CreateCommand(
                          """
-                         SELECT main_part_id, part_id, part_code, description, relation_type
+                         SELECT main_part_id, part_id, part_code, description, relation_type,
+                                NOT EXISTS (
+                                    SELECT 1
+                                    FROM master.product_group_parts missing
+                                    JOIN master.product_groups pgm ON pgm.id = missing.product_group_id AND pgm.is_active
+                                    JOIN master.variants vm ON vm.id = pgm.variant_id AND vm.is_active
+                                    WHERE vm.machine_id = @machine_id
+                                      AND pgm.main_part_id = resolved.main_part_id
+                                      AND missing.part_id = resolved.part_id
+                                      AND missing.relation_type = 'ALT_PART'
+                                      AND missing.is_active
+                                      AND missing.container_type_id IS NULL
+                                ) AS requestable
                          FROM (
                              SELECT DISTINCT ON (pg.main_part_id, gpp.part_id)
                                     pg.main_part_id,
@@ -347,11 +359,14 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 var mainPartId = reader.GetGuid(0);
                 if (relatedByMainPart.TryGetValue(mainPartId, out var related))
                 {
+                    var requestable = reader.GetBoolean(5);
                     related.Add(new MachineRelatedPartRecord(
                         reader.GetGuid(1),
                         reader.GetString(2),
                         NullableString(reader, 3),
-                        reader.GetString(4)));
+                        reader.GetString(4),
+                        requestable,
+                        requestable ? [] : ["CONTAINER_TYPE_MISSING"]));
                 }
             }
         }

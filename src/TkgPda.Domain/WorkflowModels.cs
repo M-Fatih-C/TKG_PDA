@@ -49,7 +49,8 @@ public sealed record CreateTransportRequest(
     Guid? DestinationSlotId,
     int Priority = 100,
     bool RequiresPreparation = false,
-    bool RequiresFinishedGoodsDestination = false)
+    bool RequiresFinishedGoodsDestination = false,
+    string? DestinationBusinessCode = null)
 {
     /// <summary>
     /// WP-08: a REMOVE_FULL created by the machine-side container flow (Kasa
@@ -140,7 +141,8 @@ public sealed record TransportRequestSnapshot(
     Guid? DestinationSlotId,
     int Priority,
     TransportReadinessState ReadinessState,
-    DateTimeOffset? ReadyAt);
+    DateTimeOffset? ReadyAt,
+    string? DestinationBusinessCode = null);
 
 /// <summary>
 /// WP-05A: readiness transition rules. Separate from

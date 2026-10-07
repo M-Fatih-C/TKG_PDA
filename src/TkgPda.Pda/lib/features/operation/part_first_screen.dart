@@ -661,7 +661,9 @@ class _RelatedPartChip extends StatelessWidget {
         ),
         child: InkWell(
           onTap:
-              controller.busy || controller.production.active?.isEnding == true
+              !part.requestable ||
+                  controller.busy ||
+                  controller.production.active?.isEnding == true
               ? null
               : () {
                   FocusScope.of(context).unfocus();
@@ -706,10 +708,16 @@ class _RelatedPartChip extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    batch ? (highlighted ? 'SEÇİLDİ' : 'SEÇ') : 'TALEP ET',
-                    style: const TextStyle(
+                    !part.requestable
+                        ? 'Taşıma kabı bilgisi bekleniyor'
+                        : batch
+                            ? (highlighted ? 'SEÇİLDİ' : 'SEÇ')
+                            : 'TALEP ET',
+                    style: TextStyle(
                       fontWeight: FontWeight.w800,
-                      color: Color(0xFFB45309),
+                      color: part.requestable
+                          ? const Color(0xFFB45309)
+                          : const Color(0xFF64748B),
                     ),
                   ),
                 ],

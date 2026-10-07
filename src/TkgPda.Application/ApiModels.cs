@@ -58,7 +58,9 @@ public sealed record MachineRelatedPartRecord(
     Guid PartId,
     string PartCode,
     string? Description,
-    string RelationType);
+    string RelationType,
+    bool Requestable = true,
+    IReadOnlyList<string>? Blockers = null);
 
 /// <summary>
 /// WP-03A: a machine-level main-part selection option, deduplicated across all

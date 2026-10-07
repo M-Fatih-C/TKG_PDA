@@ -1161,6 +1161,14 @@ class AppController extends ChangeNotifier {
   /// chooses a container, load or slot. A repeated tap while the first
   /// request is still in flight reuses the same idempotency key.
   Future<void> requestAltPart(MachineRelatedPart part) async {
+    if (!part.requestable) {
+      _notice = const UiNotice(
+        'Taşıma kabı bilgisi bekleniyor',
+        UiNoticeSeverity.error,
+      );
+      notifyListeners();
+      return;
+    }
     if (production.active?.isEnding == true) {
       _notice = const UiNotice(
         'Üretim bitiriliyor. Yeni alt parça talebi açılamaz.',
@@ -2374,6 +2382,12 @@ class AppController extends ChangeNotifier {
                 main.relatedParts.where((item) => item.partId == part.partId),
               )?.description,
               relationType: part.relationType,
+              requestable: part.relationType != 'ALT_PART' ||
+                  (part.containerTypeId != null && part.containerTypeId!.isNotEmpty),
+              blockers: part.relationType == 'ALT_PART' &&
+                      (part.containerTypeId == null || part.containerTypeId!.isEmpty)
+                  ? const ['CONTAINER_TYPE_MISSING']
+                  : const [],
             ),
           )
           .toList(growable: false),

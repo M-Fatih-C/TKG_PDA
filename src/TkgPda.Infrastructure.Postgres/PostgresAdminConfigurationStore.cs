@@ -209,6 +209,12 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
                        'Physical-layout extraction confidence is ' || (s.metadata_json->>'confidence') || '.'
                 FROM master.layout_slots s
                 WHERE s.metadata_json->>'confidence' IN ('MEDIUM','LOW')
+                UNION ALL
+                SELECT 'ALT_PART_CONTAINER_MISSING', 'HIGH', 'PRODUCT_GROUP_PART', gpp.id::text, p.part_code,
+                       'Alt parça taşıma kabı bilgisi yok; talep açılamaz.'
+                FROM master.product_group_parts gpp
+                JOIN master.parts p ON p.id = gpp.part_id
+                WHERE gpp.relation_type = 'ALT_PART' AND gpp.is_active AND gpp.container_type_id IS NULL
             ) issues
             ORDER BY severity DESC, issue_kind, code, entity_id
             """);
