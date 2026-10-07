@@ -636,7 +636,13 @@ file sealed class FailingFinalizationDataStore(AuthUserRecord user, DeviceRecord
         Task.CompletedTask;
 
     public Task<MachinePermissionRecord?> FindMachinePermissionAsync(Guid userId, Guid machineId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
-    public Task<MachineSummaryRecord?> FindMachineSummaryAsync(Guid machineId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    public Task<MachineSummaryRecord?> FindMachineSummaryAsync(Guid machineId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<MachineSummaryRecord?>(new MachineSummaryRecord(
+            machineId,
+            "SH-01-A",
+            "SH-01-A",
+            0,
+            new MachinePermissionRecord(machineId, true, true, false, false)));
     public Task<IReadOnlyList<MachineSummaryRecord>> ListVisibleMachinesAsync(Guid userId, bool administrator, CancellationToken cancellationToken = default) => throw new NotImplementedException();
     public Task<IReadOnlyList<CompatibleVariantRecord>> ListCompatibleVariantsAsync(Guid machineId, Guid mainPartId, Guid partId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
     public Task<IReadOnlyList<MachineMainPartOptionRecord>> ListMachinePartOptionsAsync(Guid machineId, CancellationToken cancellationToken = default) => throw new NotImplementedException();

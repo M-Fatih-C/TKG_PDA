@@ -9,6 +9,7 @@ import { MachinesPage } from './pages/MachinesPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { ProductionEndPriorityPage } from './pages/ProductionEndPriorityPage'
 import { RdsIntegrationPage } from './pages/RdsIntegrationPage'
+import { ReportsPage } from './pages/ReportsPage'
 import { UsersPage } from './pages/UsersPage'
 
 function ProtectedLayout() {
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="devices" element={<DevicesPage />} />
         <Route path="machines" element={<MachinesPage />} />
         <Route path="audit" element={<AuditPage />} />
+        <Route path="reports" element={<ReportsPage />} />
         <Route path="production-end-priorities" element={<ProductionEndPriorityPage />} />
         <Route path="rds" element={<RdsIntegrationPage />} />
         <Route path="*" element={<NotFoundPage />} />

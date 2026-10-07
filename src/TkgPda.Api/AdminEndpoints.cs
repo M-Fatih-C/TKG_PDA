@@ -68,8 +68,20 @@ public static class AdminEndpoints
         admin.MapPut("/containers/{containerId:guid}", UpdateContainerAsync);
 
         admin.MapGet("/data-issues", (AdminConfigurationService service, CancellationToken ct) => service.ListDataIssuesAsync(ct));
-        admin.MapGet("/audit-logs", (int? limit, Guid? actorUserId, string? entityType, AdminConfigurationService service, CancellationToken ct) =>
-            service.ListAuditAsync(limit ?? 100, actorUserId, entityType, ct));
+        admin.MapGet("/audit-logs", (
+            int? limit,
+            Guid? actorUserId,
+            string? entityType,
+            DateTimeOffset? from,
+            DateTimeOffset? to,
+            string? action,
+            Guid? correlationId,
+            string? entityId,
+            string? actor,
+            AdminConfigurationService service,
+            CancellationToken ct) =>
+            service.ListAuditAsync(limit ?? 100, actorUserId, entityType, ct, from, to, action, correlationId, entityId, actor));
+        admin.MapOperationalReports();
 
         admin.MapGet("/rds/status", RdsStatusAsync);
         admin.MapGet("/rds/robots", ListRdsRobotsAsync);

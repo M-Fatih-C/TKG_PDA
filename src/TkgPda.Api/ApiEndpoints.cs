@@ -246,6 +246,10 @@ public static class ApiEndpoints
                 sessionResult.ExistingSessionId?.ToString(),
                 new
                 {
+                    employeeNo = user.EmployeeNo,
+                    deviceId = device.Id,
+                    deviceCode = device.Code,
+                    deviceName = device.Name,
                     existingSessionId = sessionResult.ExistingSessionId,
                     existingDeviceId = sessionResult.ExistingDeviceId,
                     existingDeviceCode = sessionResult.ExistingDeviceCode,
@@ -262,6 +266,23 @@ public static class ApiEndpoints
         var session = sessionResult.Session!;
         try
         {
+            string? machineCode = null;
+            if (device.MachineId is Guid machineId)
+            {
+                machineCode = (await dataStore.FindMachineSummaryAsync(machineId, cancellationToken))?.Code;
+            }
+
+            var loginSnapshot = new
+            {
+                employeeNo = user.EmployeeNo,
+                deviceId = device.Id,
+                deviceCode = device.Code,
+                deviceName = device.Name,
+                machineId = device.MachineId,
+                machineCode,
+                sessionId = session.Id,
+                roles = user.Roles
+            };
             await WriteAuditAsync(
                 dataStore,
                 context,
@@ -270,12 +291,7 @@ public static class ApiEndpoints
                 "AUTH_SESSION_CREATED",
                 "AUTH_SESSION",
                 session.Id.ToString(),
-                new
-                {
-                    sessionId = session.Id,
-                    leaseExpiresAt = session.LeaseExpiresAt,
-                    tokenExpiresAt = session.TokenExpiresAt
-                },
+                loginSnapshot,
                 cancellationToken);
 
             await dataStore.MarkLoginSucceededAsync(user.Id, cancellationToken);
@@ -288,7 +304,7 @@ public static class ApiEndpoints
                 "AUTH_LOGIN_SUCCEEDED",
                 "AUTH_USER",
                 user.Id.ToString(),
-                new { roles = user.Roles, device = device.Code, sessionId = session.Id },
+                loginSnapshot,
                 cancellationToken);
             context.Response.Headers.CacheControl = "no-store";
 

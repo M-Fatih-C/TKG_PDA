@@ -1,5 +1,6 @@
 import {
   ClipboardList,
+  FileText,
   DatabaseZap,
   LayoutDashboard,
   LogOut,
@@ -21,6 +22,7 @@ const links = [
   { to: '/users', label: 'Kullanıcılar & Yetkiler', icon: Users },
   { to: '/devices', label: 'Cihazlar', icon: Smartphone },
   { to: '/machines', label: 'Makine & Varyantlar', icon: DatabaseZap },
+  { to: '/reports', label: 'Operasyon Kayıtları & Raporlar', icon: FileText },
   { to: '/audit', label: 'Audit Geçmişi', icon: ClipboardList },
   { to: '/production-end-priorities', label: 'Üretim Bitiş Önceliği', icon: ListOrdered },
   { to: '/rds', label: 'RDS Entegrasyonu', icon: RadioTower },

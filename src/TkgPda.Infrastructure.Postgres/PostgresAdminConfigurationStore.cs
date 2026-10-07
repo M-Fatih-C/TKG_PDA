@@ -226,7 +226,13 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
         int limit,
         Guid? actorUserId,
         string? entityType,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? from = null,
+        DateTimeOffset? to = null,
+        string? action = null,
+        Guid? correlationId = null,
+        string? entityId = null,
+        string? actor = null)
     {
         var result = new List<AdminAuditRecord>();
         await using var command = dataSource.CreateCommand(
@@ -238,11 +244,23 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
             LEFT JOIN auth.users u ON u.id = a.actor_user_id
             WHERE (@actor_user_id IS NULL OR a.actor_user_id = @actor_user_id)
               AND (@entity_type IS NULL OR a.entity_type = @entity_type)
+              AND (@from IS NULL OR a.created_at >= @from)
+              AND (@to IS NULL OR a.created_at < @to)
+              AND (@action IS NULL OR a.action = @action)
+              AND (@correlation_id IS NULL OR a.correlation_id = @correlation_id)
+              AND (@entity_id IS NULL OR a.entity_id = @entity_id)
+              AND (@actor IS NULL OR u.username ILIKE @actor OR u.employee_no ILIKE @actor)
             ORDER BY a.created_at DESC, a.id DESC
             LIMIT @limit
             """);
         AddNullableUuid(command, "actor_user_id", actorUserId);
         AddNullableText(command, "entity_type", entityType);
+        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = from.HasValue ? from.Value : DBNull.Value });
+        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = to.HasValue ? to.Value : DBNull.Value });
+        AddNullableText(command, "action", action);
+        AddNullableUuid(command, "correlation_id", correlationId);
+        AddNullableText(command, "entity_id", entityId);
+        AddNullableText(command, "actor", string.IsNullOrWhiteSpace(actor) ? null : $"%{actor.Trim()}%");
         command.Parameters.AddWithValue("limit", limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))

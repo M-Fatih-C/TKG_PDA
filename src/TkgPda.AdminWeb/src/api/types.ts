@@ -174,6 +174,133 @@ export interface DataIssue {
   message: string
 }
 
+export interface TaskReportRow {
+  requestId: string
+  requestNo: number
+  createdAt: string
+  requestedByName: string | null
+  employeeNo: string | null
+  username: string | null
+  deviceCode: string | null
+  deviceName: string | null
+  machineCode: string
+  machineName: string
+  variantCode: string | null
+  operationLabel: string
+  partCode: string | null
+  status: string
+  statusLabel: string
+  isSuccess: boolean
+  failureCode: string | null
+  failureMessage: string | null
+  failureSummary: string | null
+  cancellationLabel: string | null
+  cancelledByName: string | null
+  agvId: string | null
+  endedReason: string | null
+  totalSeconds: number | null
+  warehouseResponseSeconds: number | null
+  robotExecutionSeconds: number | null
+  preparationOperatorName: string | null
+  preparationEmployeeNo: string | null
+  preparationArea: string | null
+  correlationId: string
+}
+
+export interface TaskReportPage {
+  items: TaskReportRow[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface TaskTimelineEntry {
+  at: string
+  title: string
+  actorLine: string | null
+}
+
+export interface TaskReportDetail {
+  task: TaskReportRow
+  timeline: TaskTimelineEntry[]
+}
+
+export interface SessionReportRow {
+  sessionId: string
+  fullName: string
+  employeeNo: string | null
+  username: string
+  roles: string[]
+  loginAt: string
+  endedAt: string | null
+  durationSeconds: number | null
+  deviceCode: string
+  deviceName: string
+  deviceType: string
+  machineState: 'RECORDED' | 'UNBOUND' | 'UNKNOWN' | string
+  machineCode: string | null
+  statusLabel: string
+  endReasonLabel: string | null
+}
+
+export interface BlockedLoginRow {
+  at: string
+  fullName: string | null
+  employeeNo: string | null
+  attemptedDeviceCode: string | null
+  existingDeviceCode: string | null
+  message: string
+}
+
+export interface SessionReportPage {
+  items: SessionReportRow[]
+  total: number
+  page: number
+  pageSize: number
+  blockedAttempts: BlockedLoginRow[]
+}
+
+export interface ReportCount {
+  key: string
+  label: string
+  count: number
+}
+
+export interface OperationsSummary {
+  total: number
+  completed: number
+  failed: number
+  cancelled: number
+  active: number
+  successRate: number | null
+  averageTotalSeconds: number | null
+  averageWarehouseSeconds: number | null
+  averageRobotSeconds: number | null
+  byMachine: ReportCount[]
+  byOperation: ReportCount[]
+  byRequester: ReportCount[]
+  topFailures: ReportCount[]
+}
+
+export interface ReportWindow {
+  from: string
+  to: string
+  machineId?: string
+  employeeNo?: string
+  deviceId?: string
+  status?: string
+  operation?: string
+  part?: string
+  requestNo?: string
+  agvId?: string
+  errorsOnly?: boolean
+  cancelledOnly?: boolean
+  activity?: string
+  endReason?: string
+  page?: number
+  pageSize?: number
+}
+
 export interface AuditRecord {
   id: number
   actorUserId: string | null

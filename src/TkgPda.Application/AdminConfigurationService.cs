@@ -257,8 +257,28 @@ public sealed class AdminConfigurationService(IAdminConfigurationStore store, IP
     public Task<IReadOnlyList<AdminDataIssueRecord>> ListDataIssuesAsync(CancellationToken cancellationToken = default) =>
         store.ListDataIssuesAsync(cancellationToken);
 
-    public Task<IReadOnlyList<AdminAuditRecord>> ListAuditAsync(int limit, Guid? actorUserId, string? entityType, CancellationToken cancellationToken = default) =>
-        store.ListAuditAsync(Math.Clamp(limit, 1, 500), actorUserId, Optional(entityType, 120), cancellationToken);
+    public Task<IReadOnlyList<AdminAuditRecord>> ListAuditAsync(
+        int limit,
+        Guid? actorUserId,
+        string? entityType,
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? from = null,
+        DateTimeOffset? to = null,
+        string? action = null,
+        Guid? correlationId = null,
+        string? entityId = null,
+        string? actor = null) =>
+        store.ListAuditAsync(
+            Math.Clamp(limit, 1, 500),
+            actorUserId,
+            Optional(entityType, 120),
+            cancellationToken,
+            from,
+            to,
+            Optional(action, 120),
+            correlationId,
+            Optional(entityId, 200),
+            Optional(actor, 120));
 
     private static IReadOnlyCollection<string> NormalizeRoles(IReadOnlyCollection<string> roles)
     {
