@@ -123,7 +123,8 @@ class PdaStatusColors {
   static Color of(String state) => switch (state) {
     'READY' || 'COMPLETED' => done,
     'REQUESTED' || 'QUEUED' || 'ROBOT_ASSIGNED' || 'IN_PROGRESS' => running,
-    'WAITING_PREPARATION' => waiting,
+    'WAITING_PREPARATION' || 'CONFIGURATION_MISSING' => waiting,
+    'NOT_READY' => unknown,
     'ERROR' => failed,
     _ => unknown,
   };

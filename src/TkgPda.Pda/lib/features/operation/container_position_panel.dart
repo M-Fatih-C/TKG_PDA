@@ -40,14 +40,8 @@ class ContainerPositionPanel extends StatelessWidget {
     BuildContext context,
     List<ContainerPosition> positions,
   ) {
-    final actionable = positions.any(
-      (position) => position.fullAction.enabled || position.emptyAction.enabled,
-    );
-    if (!actionable) {
-      return PdaScale.isShortTerminal(context) ? 118 : 128;
-    }
     if (PdaScale.isShortTerminal(context)) return 152;
-    return PdaScale.isCompact(context) ? 172 : 204;
+    return PdaScale.isCompact(context) ? 176 : 208;
   }
 
   /// Beyond this a kasa card becomes an empty rectangle. The right column
@@ -242,21 +236,51 @@ class _PositionCard extends StatelessWidget {
   final AppController controller;
   final ContainerPosition position;
 
+  static String? _cardNote(ContainerPosition position) {
+    const activeStates = {
+      'REQUESTED',
+      'QUEUED',
+      'ROBOT_ASSIGNED',
+      'IN_PROGRESS',
+      'WAITING_PREPARATION',
+      'ERROR',
+      'COMPLETED',
+    };
+    if (activeStates.contains(position.transportState)) {
+      return null;
+    }
+    if (!position.fullAction.enabled && _isConfigurationIssue(position.fullAction)) {
+      return position.fullAction.disabledMessage;
+    }
+    if (!position.emptyAction.enabled && _isConfigurationIssue(position.emptyAction)) {
+      return position.emptyAction.disabledMessage;
+    }
+    if (!position.fullAction.enabled && !position.emptyAction.enabled) {
+      return position.fullAction.disabledMessage ??
+          position.emptyAction.disabledMessage;
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final total = controller.containerPositions.length;
     final pad = PdaScale.cardPadding(context);
     final verticalPad = PdaScale.isShortTerminal(context) ? pad + 4 : pad;
+    final note = _cardNote(position);
 
     return Card(
       key: Key('container-card-${position.positionNumber}'),
       margin: EdgeInsets.zero,
       child: LayoutBuilder(
         builder: (context, constraints) {
+          final noteHeight = note != null
+              ? (PdaScale.isShortTerminal(context) ? 22.0 : 32.0)
+              : 0.0;
           final actionHeight = math.max(
             48.0,
-            constraints.maxHeight - verticalPad * 2 - 52,
+            constraints.maxHeight - verticalPad * 2 - 52 - noteHeight,
           );
           return SingleChildScrollView(
             child: ConstrainedBox(
@@ -319,6 +343,21 @@ class _PositionCard extends StatelessWidget {
                     ),
                     SizedBox(height: pad * 0.5),
                     SizedBox(height: actionHeight, child: _actions(context)),
+                    if (note != null) ...[
+                      SizedBox(height: pad * 0.3),
+                      Text(
+                        note,
+                        key: Key('container-note-${position.positionNumber}'),
+                        maxLines: 2,
+                        textAlign: TextAlign.center,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: PdaScale.caption(context) * 0.9,
+                          fontWeight: FontWeight.w600,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -334,21 +373,11 @@ class _PositionCard extends StatelessWidget {
   Widget _actions(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final gap = PdaScale.gutter(context) * 0.45;
-      final submittingFull = controller.isSubmittingContainerAction(
-        position.positionNumber,
-        'FULL',
-      );
-      final submittingEmpty = controller.isSubmittingContainerAction(
-        position.positionNumber,
-        'EMPTY',
-      );
-      final fullReady = position.fullAction.enabled || submittingFull;
-      final emptyReady = position.emptyAction.enabled || submittingEmpty;
       final full = _BusinessActionButton(
         controller: controller,
         position: position,
         action: 'FULL',
-        label: 'Kasam Doldu',
+        label: 'Kasa Doldu',
         availability: position.fullAction,
         icon: Icons.inventory,
       );
@@ -356,31 +385,13 @@ class _PositionCard extends StatelessWidget {
         controller: controller,
         position: position,
         action: 'EMPTY',
-        label: 'Alan Boş',
+        label: 'Boş Kasa Getir',
         availability: position.emptyAction,
         icon: Icons.move_to_inbox_outlined,
       );
-      if (!fullReady && !emptyReady) {
-        final reason =
-            position.fullAction.disabledMessage ??
-            position.emptyAction.disabledMessage ??
-            'Bu kasa için işlem uygun değil';
-        return Center(
-          child: Text(
-            reason,
-            key: Key('container-unavailable-${position.positionNumber}'),
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: PdaScale.caption(context),
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        );
-      }
-      if (fullReady && !emptyReady) return full;
-      if (emptyReady && !fullReady) return empty;
 
-      if (constraints.maxHeight < PdaScale.stackedActionsMinHeight(context)) {
+      final stack = constraints.maxHeight >= 100 && !PdaScale.isShortTerminal(context);
+      if (!stack) {
         return Row(
           children: [
             Expanded(child: full),
@@ -392,9 +403,9 @@ class _PositionCard extends StatelessWidget {
 
       return Column(
         children: [
-          Expanded(flex: fullReady && !emptyReady ? 3 : 2, child: full),
+          Expanded(child: full),
           SizedBox(height: gap),
-          Expanded(flex: emptyReady && !fullReady ? 3 : 2, child: empty),
+          Expanded(child: empty),
         ],
       );
     },
@@ -570,19 +581,46 @@ class _StateBadge extends StatelessWidget {
 
   final ContainerPosition position;
 
+  static String effectiveState(ContainerPosition position) {
+    const activeStates = {
+      'REQUESTED',
+      'QUEUED',
+      'ROBOT_ASSIGNED',
+      'IN_PROGRESS',
+      'WAITING_PREPARATION',
+      'ERROR',
+      'COMPLETED',
+    };
+    if (activeStates.contains(position.transportState)) {
+      return position.transportState;
+    }
+
+    final actionable =
+        position.fullAction.enabled || position.emptyAction.enabled;
+    if (actionable) {
+      return 'READY';
+    }
+
+    final isConfigIssue = _isConfigurationIssue(position.fullAction) ||
+        _isConfigurationIssue(position.emptyAction);
+    if (isConfigIssue) {
+      return 'CONFIGURATION_MISSING';
+    }
+
+    return 'NOT_READY';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final state = position.transportState;
+    final derived = effectiveState(position);
     final queue = position.queuePosition == null
         ? ''
         : ' · #${position.queuePosition}';
     final eta = _etaSuffix(position);
     final suffix = '$queue${eta == null ? '' : ' · $eta'}';
     final moving =
-        state == 'REQUESTED' || state == 'IN_PROGRESS' || state == 'QUEUED';
-    // Severity has to read from across the line. Every state used to render in
-    // the same neutral chip, so "Hazır" and "Hata" looked identical.
-    final colour = PdaStatusColors.of(state);
+        derived == 'REQUESTED' || derived == 'IN_PROGRESS' || derived == 'QUEUED';
+    final colour = PdaStatusColors.of(derived);
 
     final chip = Container(
       padding: EdgeInsets.symmetric(
@@ -590,7 +628,7 @@ class _StateBadge extends StatelessWidget {
         vertical: PdaScale.gutter(context) * 0.4,
       ),
       decoration: BoxDecoration(
-        color: PdaStatusColors.surfaceOf(state),
+        color: PdaStatusColors.surfaceOf(derived),
         borderRadius: BorderRadius.circular(99),
       ),
       child: Row(
@@ -606,7 +644,7 @@ class _StateBadge extends StatelessWidget {
           SizedBox(width: PdaScale.gutter(context) * 0.45),
           Flexible(
             child: Text(
-              '${_stateLabel(state)}$suffix',
+              '${_stateLabel(derived)}$suffix',
               style: TextStyle(
                 fontSize: PdaScale.caption(context),
                 fontWeight: FontWeight.w800,
@@ -621,7 +659,7 @@ class _StateBadge extends StatelessWidget {
     );
 
     return Semantics(
-      label: 'Taşıma durumu ${_stateLabel(state)}$suffix',
+      label: 'Taşıma durumu ${_stateLabel(derived)}$suffix',
       child: Align(alignment: Alignment.centerLeft, child: chip),
     );
   }
@@ -641,6 +679,8 @@ String? _etaSuffix(ContainerPosition position) {
 
 String _stateLabel(String state) => switch (state) {
   'READY' => 'Hazır',
+  'NOT_READY' => 'Hazır Değil',
+  'CONFIGURATION_MISSING' => 'Yapılandırma Eksik',
   'WAITING_PREPARATION' => 'Hazırlık Bekleniyor',
   'REQUESTED' => 'İstendi',
   'QUEUED' => 'Sırada',
@@ -650,3 +690,14 @@ String _stateLabel(String state) => switch (state) {
   'ERROR' => 'Hata',
   _ => 'Güncelleniyor',
 };
+
+bool _isConfigurationIssue(ContainerActionAvailability availability) {
+  final code = availability.disabledCode;
+  if (code == null) return false;
+  final upper = code.toUpperCase();
+  return upper.contains('CONFIGURED') ||
+      upper.contains('CONFIGURATION') ||
+      upper.contains('MAPPING') ||
+      upper.contains('AREA') ||
+      upper.contains('DESTINATION');
+}

@@ -13,12 +13,12 @@ import '../support/fakes.dart';
 
 void main() {
   testWidgets(
-    '1: Kasam Doldu submits immediately without a confirmation dialog',
+    '1: Kasa Doldu submits immediately without a confirmation dialog',
     (tester) async {
       final harness = await _operationHarness(tester);
 
-      expect(find.text('Kasam Doldu'), findsOneWidget);
-      await tester.tap(find.text('Kasam Doldu'));
+      expect(find.text('Kasa Doldu'), findsOneWidget);
+      await tester.tap(find.text('Kasa Doldu'));
       await tester.pump(const Duration(milliseconds: 500));
 
       expect(harness.repository.containerActionCount, 1);
@@ -30,13 +30,13 @@ void main() {
     },
   );
 
-  testWidgets('2: Alan Boş submits immediately without a confirmation dialog', (
+  testWidgets('2: Boş Kasa Getir submits immediately without a confirmation dialog', (
     tester,
   ) async {
     final harness = await _operationHarness(tester);
 
-    expect(find.text('Alan Boş'), findsOneWidget);
-    await tester.tap(find.text('Alan Boş'));
+    expect(find.text('Boş Kasa Getir'), findsOneWidget);
+    await tester.tap(find.text('Boş Kasa Getir'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(harness.repository.containerActionCount, 1);
@@ -47,7 +47,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('3: a backend-disabled Kasam Doldu cannot be pressed', (
+  testWidgets('3: a backend-disabled Kasa Doldu cannot be pressed', (
     tester,
   ) async {
     const message =
@@ -77,11 +77,19 @@ void main() {
       ];
     final harness = await _operationHarness(tester, repository: repository);
 
-    expect(find.byKey(const Key('direct-action-REMOVE_FULL-1')), findsNothing);
+    expect(find.byKey(const Key('direct-action-REMOVE_FULL-1')), findsOneWidget);
+    final fullButton = tester.widget<ElevatedButton>(
+      find.byKey(const Key('direct-action-REMOVE_FULL-1')),
+    );
+    expect(fullButton.enabled, isFalse);
     expect(
       find.byKey(const Key('direct-action-BRING_EMPTY-1')),
       findsOneWidget,
     );
+    final emptyButton = tester.widget<ElevatedButton>(
+      find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+    );
+    expect(emptyButton.enabled, isTrue);
     expect(repository.containerActionCount, 0);
     harness.dispose();
   });
@@ -93,7 +101,7 @@ void main() {
       ..createCompleter = Completer<TransportResult>();
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('Kasam Doldu'));
+    await tester.tap(find.text('Kasa Doldu'));
     await tester.pump();
     await tester.tap(find.byKey(const Key('direct-action-REMOVE_FULL-1')));
     await tester.pump();
@@ -113,7 +121,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('5: ambiguous Kasam Doldu retry reuses the same key', (
+  testWidgets('5: ambiguous Kasa Doldu retry reuses the same key', (
     tester,
   ) async {
     final repository = FakePdaRepository()
@@ -122,7 +130,7 @@ void main() {
       );
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('Kasam Doldu'));
+    await tester.tap(find.text('Kasa Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
     final firstKey = repository.lastIdempotencyKey;
     expect(find.byKey(const Key('retry-ambiguous')), findsOneWidget);
@@ -136,7 +144,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('6: successful Kasam Doldu refreshes the active transport list', (
+  testWidgets('6: successful Kasa Doldu refreshes the active transport list', (
     tester,
   ) async {
     final request = _activeRequest(
@@ -148,7 +156,7 @@ void main() {
       ..containerActionActiveRequest = request;
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('Kasam Doldu'));
+    await tester.tap(find.text('Kasa Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(
@@ -163,7 +171,7 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('7: successful Alan Boş shows backend WAITING_PREPARATION', (
+  testWidgets('7: successful Boş Kasa Getir shows backend WAITING_PREPARATION', (
     tester,
   ) async {
     final request = _activeRequest(
@@ -175,7 +183,7 @@ void main() {
       ..containerActionActiveRequest = request;
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('Alan Boş'));
+    await tester.tap(find.text('Boş Kasa Getir'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(

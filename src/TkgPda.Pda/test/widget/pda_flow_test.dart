@@ -269,12 +269,12 @@ void main() {
       expect(find.text('Fiziksel Yerleşim'), findsNothing);
       expect(
         find.byKey(const Key('direct-action-BRING_EMPTY-1')),
-        findsNothing,
-      );
-      expect(
-        find.text('Bu kasa konumunda aktif bir taşıma talebi bulunuyor.'),
         findsOneWidget,
       );
+      final emptyBtn = tester.widget<ElevatedButton>(
+        find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+      );
+      expect(emptyBtn.enabled, isFalse);
       expect(find.textContaining('Aktif Taşımalar (1)'), findsOneWidget);
       harness.dispose();
     });

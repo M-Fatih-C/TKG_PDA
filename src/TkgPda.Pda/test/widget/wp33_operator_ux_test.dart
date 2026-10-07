@@ -15,12 +15,12 @@ void main() {
   ) async {
     final harness = await _operationHarness(tester);
 
-    expect(find.text('Kasam Doldu'), findsOneWidget);
-    expect(find.text('Alan Boş'), findsOneWidget);
+    expect(find.text('Kasa Doldu'), findsOneWidget);
+    expect(find.text('Boş Kasa Getir'), findsOneWidget);
     expect(find.text('Tüm Kasaları Kaldır'), findsNothing);
     expect(find.byKey(const Key('direct-action-REMOVE_EMPTY-1')), findsNothing);
 
-    await tester.tap(find.text('Kasam Doldu'));
+    await tester.tap(find.text('Kasa Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(harness.repository.containerActionCount, 1);
@@ -63,8 +63,8 @@ void main() {
       const Offset(-260, 0),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Kasam Doldu'), findsNWidgets(2));
-    expect(find.text('Alan Boş'), findsOneWidget);
+    expect(find.text('Kasa Doldu'), findsNWidgets(2));
+    expect(find.text('Boş Kasa Getir'), findsNWidgets(2));
 
     // Each logical container must own its action keys. These previously collided:
     // every card rendered the position-independent 'direct-action-BRING_EMPTY', so a
@@ -84,9 +84,12 @@ void main() {
       find.byKey(const Key('direct-action-REMOVE_FULL-2')),
       findsOneWidget,
     );
-    // Position 2's empty action is not authoritative, so the card does not
-    // offer that button.
-    expect(find.byKey(const Key('direct-action-BRING_EMPTY-2')), findsNothing);
+    // Both buttons remain visible; position 2's empty action is disabled.
+    expect(find.byKey(const Key('direct-action-BRING_EMPTY-2')), findsOneWidget);
+    final bringEmpty2 = tester.widget<ElevatedButton>(
+      find.byKey(const Key('direct-action-BRING_EMPTY-2')),
+    );
+    expect(bringEmpty2.enabled, isFalse);
     harness.dispose();
   });
 

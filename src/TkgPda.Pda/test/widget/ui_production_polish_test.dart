@@ -40,7 +40,13 @@ void main() {
     );
     expect(find.text('Sol Destek Braketi'), findsOneWidget);
     expect(find.text('TALEP ET'), findsWidgets);
-    expect(find.text('Kasa Doldu'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('alt-part-$testAltPartId')),
+        matching: find.text('Kasa Doldu'),
+      ),
+      findsNothing,
+    );
     expect(find.text('Kasa Boş'), findsNothing);
 
     final product = harness.controller.production.active!.mainPartId;
@@ -83,13 +89,20 @@ void main() {
     expect(find.text('3 Alt Parçayı Gönder'), findsOneWidget);
   });
 
-  testWidgets('mamul shows only the server-enabled primary action', (
+  testWidgets('mamul renders both business actions with server-enabled availability', (
     tester,
   ) async {
     await _production(tester);
-    expect(find.text('Kasam Doldu'), findsOneWidget);
-    expect(find.text('Alan Boş'), findsNothing);
-    expect(find.byKey(const Key('direct-action-BRING_EMPTY-1')), findsNothing);
+    expect(find.text('Kasa Doldu'), findsOneWidget);
+    expect(find.text('Boş Kasa Getir'), findsOneWidget);
+    final fullButton = tester.widget<ElevatedButton>(
+      find.byKey(const Key('direct-action-REMOVE_FULL-1')),
+    );
+    final emptyButton = tester.widget<ElevatedButton>(
+      find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+    );
+    expect(fullButton.enabled, isTrue);
+    expect(emptyButton.enabled, isFalse);
   });
 
   testWidgets('active transport lifecycle labels are industrially readable', (
@@ -342,9 +355,9 @@ void main() {
     tester,
   ) async {
     await _production(tester, size: const Size(1024, 600));
-    expect(find.text('Kasa Doldu'), findsNothing);
     expect(find.text('Kasa Boş'), findsNothing);
     expect(find.text('Toplu Taşıma Modu Açık'), findsNothing);
+    expect(find.text('Kasa Taşıma Modu'), findsNothing);
   });
 
   testWidgets('1024x600 columns stay near an even split', (tester) async {

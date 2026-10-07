@@ -119,7 +119,7 @@ void main() {
       expect(c.selectedEffectivePart!.partId, testMainPartId);
       expect(repo.partDemandCount, 1);
       expect(repo.containerActionCount, 0);
-      expect(find.textContaining('Kasam Doldu'), findsWidgets);
+      expect(find.textContaining('Kasa Doldu'), findsWidgets);
     },
   );
 
