@@ -535,6 +535,25 @@ export interface ProductionEndPriority {
   updatedAt: string | null
 }
 
+export interface OperationCapability {
+  operation: string
+  state: string
+  blockers: string[]
+}
+
+export interface VariantOperationReadiness {
+  machineCode: string
+  variantCode: string
+  mapName: string | null
+  navigationCode: string
+  profileStatus: string
+  geometryVerified: boolean
+  activeTaskTemplates: number
+  overallState: string
+  ready: boolean
+  operations: OperationCapability[]
+}
+
 export interface TransportEvidence {
   requestId: string
   totalSeconds: number | null

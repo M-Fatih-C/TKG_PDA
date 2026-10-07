@@ -6,6 +6,14 @@ public sealed record SetProfileSlotMappingHttpRequest(Guid SlotId, Guid Navigati
 
 public sealed record CommissioningActionHttpRequest(string MachineCode, string VariantCode, bool Apply);
 
+public sealed record SharedEndpointHttpRequest(
+    string MachineCode,
+    string VariantCode,
+    string EndpointClass,
+    string BusinessCode,
+    string PlannedWorkSiteName,
+    bool Apply);
+
 public static class CommissioningActivationEndpoints
 {
     public static RouteGroupBuilder MapCommissioningActivation(this RouteGroupBuilder admin)
@@ -24,6 +32,24 @@ public static class CommissioningActivationEndpoints
             store.PromoteVariantCommissioningAsync(request.MachineCode, request.VariantCode, request.Apply, MutationContext(context), ct));
         admin.MapPost("/rds/commissioning/confirm-geometry", (CommissioningActionHttpRequest request, HttpContext context, IRdsIntegrationStore store, CancellationToken ct) =>
             store.ConfirmVariantGeometryAsync(request.MachineCode, request.VariantCode, request.Apply, MutationContext(context), ct));
+        admin.MapGet("/rds/commissioning/endpoint-families", (
+            string machineCode,
+            string variantCode,
+            IRdsIntegrationStore store,
+            CancellationToken ct) => store.ReadEndpointFamiliesAsync(machineCode, variantCode, ct));
+        admin.MapPost("/rds/commissioning/shared-endpoints", (
+            SharedEndpointHttpRequest request,
+            HttpContext context,
+            IRdsIntegrationStore store,
+            CancellationToken ct) => store.BindSharedEndpointAsync(
+                request.MachineCode,
+                request.VariantCode,
+                request.EndpointClass,
+                request.BusinessCode,
+                request.PlannedWorkSiteName,
+                request.Apply,
+                MutationContext(context),
+                ct));
         return admin;
     }
 

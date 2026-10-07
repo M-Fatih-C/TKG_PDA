@@ -44,6 +44,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("022_variant_scoped_rds_worksite_commissioning.sql"));
         await ExecuteScriptAsync(MigrationFile("023_rds_variant_commissioning_hardening.sql"));
         await ExecuteScriptAsync(MigrationFile("024_operational_reporting.sql"));
+        await ExecuteScriptAsync(MigrationFile("025_profile_scoped_shared_endpoints.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -102,6 +103,16 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             WHERE rds_worksite_id IN (
                 SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-ACT-%');
             DELETE FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-ACT-%';
+            DELETE FROM integration.profile_shared_endpoint_bindings b
+            USING integration.rds_worksites w, integration.rds_worksite_plans p
+            WHERE b.rds_worksite_id = w.id
+              AND p.navigation_profile_id = w.navigation_profile_id
+              AND p.planned_rds_site_id = w.rds_site_id;
+            DELETE FROM integration.preparation_area_rds_mapping m
+            USING integration.rds_worksites w, integration.rds_worksite_plans p
+            WHERE m.rds_worksite_id = w.id
+              AND p.navigation_profile_id = w.navigation_profile_id
+              AND p.planned_rds_site_id = w.rds_site_id;
             DELETE FROM integration.rds_worksites w
             USING integration.rds_worksite_plans p
             WHERE p.navigation_profile_id = w.navigation_profile_id

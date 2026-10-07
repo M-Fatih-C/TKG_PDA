@@ -6,6 +6,7 @@ import {
   LogOut,
   Menu,
   RadioTower,
+  ListChecks,
   ListOrdered,
   ShieldCheck,
   Smartphone,
@@ -26,6 +27,7 @@ const links = [
   { to: '/audit', label: 'Audit Geçmişi', icon: ClipboardList },
   { to: '/production-end-priorities', label: 'Üretim Bitiş Önceliği', icon: ListOrdered },
   { to: '/rds', label: 'RDS Entegrasyonu', icon: RadioTower },
+  { to: '/commissioning', label: 'Devreye Alma Hazırlığı', icon: ListChecks },
 ]
 
 export function AppShell({ children }: PropsWithChildren) {

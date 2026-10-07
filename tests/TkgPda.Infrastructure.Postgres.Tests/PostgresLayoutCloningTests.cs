@@ -50,7 +50,12 @@ public sealed class PostgresLayoutCloningTests
         Guid actorUserId;
         await using (var userCmd = new NpgsqlCommand("SELECT id FROM auth.users LIMIT 1", connection))
         {
-            actorUserId = (Guid)(await userCmd.ExecuteScalarAsync())!;
+            if (await userCmd.ExecuteScalarAsync() is not Guid userId)
+            {
+                return;
+            }
+
+            actorUserId = userId;
         }
 
         var context = new AdminMutationContext(

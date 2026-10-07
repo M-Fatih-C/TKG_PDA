@@ -1,3 +1,4 @@
+using System.Linq;
 using Npgsql;
 using NpgsqlTypes;
 using TkgPda.Application;
@@ -155,7 +156,64 @@ public sealed partial class PostgresRdsIntegrationStore
                       FROM integration.layout_slot_rds_plan_bindings b
                       JOIN integration.rds_worksite_plans p ON p.id = b.worksite_plan_id
                      WHERE b.navigation_profile_id = n.id
-                       AND NOT p.geometry_verified)
+                       AND NOT p.geometry_verified),
+                   (SELECT count(*)::int FROM master.task_templates t JOIN master.task_types ty ON ty.id = t.task_type_id
+                     WHERE t.variant_id = v.id AND t.is_active AND t.product_group_id IS NULL AND ty.code = 'BRING_FULL'),
+                   (SELECT count(*)::int FROM master.task_templates t JOIN master.task_types ty ON ty.id = t.task_type_id
+                     WHERE t.variant_id = v.id AND t.is_active AND t.product_group_id IS NULL AND ty.code = 'BRING_EMPTY'),
+                   (SELECT count(*)::int FROM master.task_templates t JOIN master.task_types ty ON ty.id = t.task_type_id
+                     WHERE t.variant_id = v.id AND t.is_active AND t.product_group_id IS NULL AND ty.code = 'REMOVE_FULL'),
+                   (SELECT count(*)::int FROM master.task_templates t JOIN master.task_types ty ON ty.id = t.task_type_id
+                     WHERE t.variant_id = v.id AND t.is_active AND t.product_group_id IS NULL AND ty.code = 'REMOVE_EMPTY'),
+                   (SELECT count(DISTINCT pa.area_number)::int
+                      FROM ops.preparation_areas pa
+                      JOIN integration.preparation_area_rds_mapping pm ON pm.preparation_area_id = pa.id
+                      JOIN integration.rds_worksites w ON w.id = pm.rds_worksite_id AND w.navigation_profile_id = n.id
+                      JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id
+                       AND p.planned_rds_site_id = w.rds_site_id
+                       AND p.object_family = 'PREPARATION'
+                       AND p.ordinal = pa.area_number
+                     WHERE pa.area_number BETWEEN 1 AND 4
+                       AND w.last_sync_at IS NOT NULL
+                       AND COALESCE(w.last_disabled, 0) <> 1
+                       AND COALESCE(w.last_sync_failed, 0) <> 1
+                       AND w.rds_type = 1),
+                   (SELECT count(*)::int FROM integration.profile_shared_endpoint_bindings b
+                      JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = n.id
+                     WHERE b.navigation_profile_id = n.id AND b.endpoint_class = 'EMPTY_SOURCE'
+                       AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled, 0) <> 1
+                       AND COALESCE(w.last_sync_failed, 0) <> 1 AND w.rds_type = 1),
+                   (SELECT count(*)::int FROM integration.profile_shared_endpoint_bindings b
+                      JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = n.id
+                     WHERE b.navigation_profile_id = n.id AND b.endpoint_class = 'EMPTY_RETURN'
+                       AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled, 0) <> 1
+                       AND COALESCE(w.last_sync_failed, 0) <> 1 AND w.rds_type = 1),
+                   (SELECT count(*)::int FROM integration.profile_shared_endpoint_bindings b
+                      JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = n.id
+                     WHERE b.navigation_profile_id = n.id AND b.endpoint_class = 'FINISHED_GOODS'
+                       AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled, 0) <> 1
+                       AND COALESCE(w.last_sync_failed, 0) <> 1 AND w.rds_type = 1),
+                   (SELECT count(*)::int FROM integration.profile_shared_endpoint_bindings b
+                      JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = n.id
+                     WHERE b.navigation_profile_id = n.id AND b.endpoint_class = 'NON_FINISHED_RETURN'
+                       AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled, 0) <> 1
+                       AND COALESCE(w.last_sync_failed, 0) <> 1 AND w.rds_type = 1),
+                   (SELECT count(*)::int FROM (
+                        SELECT w.id FROM integration.preparation_area_rds_mapping pm
+                        JOIN integration.rds_worksites w ON w.id = pm.rds_worksite_id
+                        WHERE w.navigation_profile_id = n.id AND COALESCE(w.last_disabled, 0) = 1
+                        UNION
+                        SELECT w.id FROM integration.profile_shared_endpoint_bindings b
+                        JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
+                        WHERE b.navigation_profile_id = n.id AND COALESCE(w.last_disabled, 0) = 1) disabled_sites),
+                   (SELECT count(*)::int FROM (
+                        SELECT w.id FROM integration.preparation_area_rds_mapping pm
+                        JOIN integration.rds_worksites w ON w.id = pm.rds_worksite_id
+                        WHERE w.navigation_profile_id = n.id AND COALESCE(w.last_sync_failed, 0) = 1
+                        UNION
+                        SELECT w.id FROM integration.profile_shared_endpoint_bindings b
+                        JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
+                        WHERE b.navigation_profile_id = n.id AND COALESCE(w.last_sync_failed, 0) = 1) failed_sites)
             FROM master.navigation_profiles n
             JOIN master.machines m ON m.id = n.machine_id
             JOIN master.variant_navigation_profile_assignments a
@@ -178,15 +236,34 @@ public sealed partial class PostgresRdsIntegrationStore
             var geometryVerified = reader.GetBoolean(8);
             var activeTaskTemplates = reader.GetInt32(15);
             var unverifiedRequiredPlans = reader.GetInt32(20);
-            var ready = status == "PUBLISHED"
+            var structuralReady = status == "PUBLISHED"
                 && state == "COMMISSIONED"
                 && layoutBinding == "SOURCE_BACKED"
                 && missing == 0
                 && crossMachine == 0
                 && crossProfile == 0
                 && geometryVerified
-                && unverifiedRequiredPlans == 0
-                && activeTaskTemplates > 0;
+                && unverifiedRequiredPlans == 0;
+            var operations = BuildOperationCapabilities(
+                status,
+                geometryVerified,
+                layoutBinding,
+                missing,
+                reader.GetInt32(21) > 0,
+                reader.GetInt32(22) > 0,
+                reader.GetInt32(23) > 0,
+                reader.GetInt32(24) > 0,
+                reader.GetInt32(25),
+                reader.GetInt32(26),
+                reader.GetInt32(27),
+                reader.GetInt32(28),
+                reader.GetInt32(29),
+                reader.GetInt32(30) > 0,
+                reader.GetInt32(31) > 0);
+            var readyOperations = operations.Count(item => item.State == "READY");
+            var overall = structuralReady && readyOperations == operations.Count
+                ? "READY"
+                : readyOperations > 0 ? "PARTIALLY_READY" : "NOT_READY";
             result.Add(new VariantCommissioningReport(
                 reader.GetString(0),
                 reader.GetString(1),
@@ -203,12 +280,14 @@ public sealed partial class PostgresRdsIntegrationStore
                 reader.GetInt32(12),
                 missing,
                 reader.GetBoolean(14),
-                ready,
-                reader.GetInt32(15),
+                overall == "READY" && activeTaskTemplates > 0,
+                activeTaskTemplates,
                 crossMachine,
                 crossProfile,
                 reader.IsDBNull(18) ? null : reader.GetString(18),
-                reader.IsDBNull(19) ? null : reader.GetString(19)));
+                reader.IsDBNull(19) ? null : reader.GetString(19),
+                overall,
+                operations));
         }
 
         return result;
@@ -526,6 +605,7 @@ public sealed partial class PostgresRdsIntegrationStore
             }
         }
 
+        await AppendSharedEndpointBlockersAsync(connection, transaction, target, blockers, cancellationToken);
         return blockers;
     }
 
@@ -922,6 +1002,301 @@ public sealed partial class PostgresRdsIntegrationStore
         command.Parameters.AddWithValue("slot_id", slotId);
         command.Parameters.AddWithValue("navigation_id", navigationProfileId);
         return await command.ExecuteScalarAsync(cancellationToken) as string;
+    }
+
+    private static IReadOnlyList<OperationCapability> BuildOperationCapabilities(
+        string profileStatus,
+        bool geometryVerified,
+        string? layoutBinding,
+        int missingBindings,
+        bool bringFullTemplate,
+        bool bringEmptyTemplate,
+        bool removeFullTemplate,
+        bool removeEmptyTemplate,
+        int preparationAreas,
+        int emptySources,
+        int emptyReturns,
+        int finishedGoods,
+        int nonFinishedReturns,
+        bool disabledWorkSite,
+        bool syncFailedWorkSite)
+    {
+        OperationCapability Build(string operation, bool template, string missingCode, bool physicalReady)
+        {
+            var blockers = new List<string>();
+            if (layoutBinding == "PENDING_SOURCE_LAYOUT") blockers.Add("PENDING_SOURCE_LAYOUT");
+            if (layoutBinding != "SOURCE_BACKED") blockers.Add("SOURCE_LAYOUT_MISSING");
+            if (profileStatus != "PUBLISHED") blockers.Add("NAVIGATION_PROFILE_NOT_PUBLISHED");
+            if (!geometryVerified) blockers.Add("GEOMETRY_NOT_VERIFIED");
+            if (missingBindings > 0) blockers.Add("BINDING_INCOMPLETE");
+            if (!template) blockers.Add("TASK_TEMPLATE_MISSING");
+            if (!physicalReady) blockers.Add(missingCode);
+            if (disabledWorkSite) blockers.Add("RDS_WORKSITE_DISABLED");
+            if (syncFailedWorkSite) blockers.Add("RDS_WORKSITE_SYNC_FAILED");
+            return new OperationCapability(operation, blockers.Count == 0 ? "READY" : "BLOCKED", blockers);
+        }
+
+        return
+        [
+            Build("BRING_FULL", bringFullTemplate, "PREPARATION_WORKSITE_MAPPING_MISSING", preparationAreas >= 4),
+            Build("BRING_EMPTY", bringEmptyTemplate, "EMPTY_SOURCE_MAPPING_MISSING", emptySources > 0),
+            Build("REMOVE_FULL_MAMUL", removeFullTemplate, "FINISHED_GOODS_MAPPING_MISSING", finishedGoods > 0),
+            Build("REMOVE_FULL_ALT_RETURN", removeFullTemplate, "NON_FINISHED_RETURN_MAPPING_MISSING", nonFinishedReturns > 0),
+            Build("REMOVE_EMPTY", removeEmptyTemplate, "EMPTY_RETURN_MAPPING_MISSING", emptyReturns > 0)
+        ];
+    }
+
+    private static async Task AppendSharedEndpointBlockersAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        CommissioningTarget target,
+        List<string> blockers,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT
+                (SELECT count(*)::int FROM master.task_types ty
+                  WHERE ty.code IN ('BRING_FULL','BRING_EMPTY','REMOVE_FULL','REMOVE_EMPTY')
+                    AND NOT EXISTS (
+                        SELECT 1 FROM master.task_templates t
+                        WHERE t.variant_id = @variant_id AND t.task_type_id = ty.id
+                          AND t.is_active AND t.product_group_id IS NULL)),
+                (SELECT count(DISTINCT pa.area_number)::int
+                   FROM ops.preparation_areas pa
+                   JOIN integration.preparation_area_rds_mapping pm ON pm.preparation_area_id = pa.id
+                   JOIN integration.rds_worksites w ON w.id = pm.rds_worksite_id AND w.navigation_profile_id = @profile_id
+                   JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = @profile_id
+                    AND p.planned_rds_site_id = w.rds_site_id AND p.object_family = 'PREPARATION' AND p.ordinal = pa.area_number
+                  WHERE pa.area_number BETWEEN 1 AND 4
+                    AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled,0) <> 1
+                    AND COALESCE(w.last_sync_failed,0) <> 1 AND w.rds_type = 1),
+                (SELECT count(*)::int FROM integration.profile_shared_endpoint_bindings b
+                   JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = @profile_id
+                  WHERE b.navigation_profile_id = @profile_id AND b.endpoint_class = 'EMPTY_SOURCE'
+                    AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled,0) <> 1
+                    AND COALESCE(w.last_sync_failed,0) <> 1 AND w.rds_type = 1),
+                (SELECT count(*)::int FROM integration.profile_shared_endpoint_bindings b
+                   JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = @profile_id
+                  WHERE b.navigation_profile_id = @profile_id AND b.endpoint_class = 'EMPTY_RETURN'
+                    AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled,0) <> 1
+                    AND COALESCE(w.last_sync_failed,0) <> 1 AND w.rds_type = 1),
+                (SELECT count(*)::int FROM integration.profile_shared_endpoint_bindings b
+                   JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = @profile_id
+                  WHERE b.navigation_profile_id = @profile_id AND b.endpoint_class = 'FINISHED_GOODS'
+                    AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled,0) <> 1
+                    AND COALESCE(w.last_sync_failed,0) <> 1 AND w.rds_type = 1),
+                (SELECT count(*)::int FROM integration.profile_shared_endpoint_bindings b
+                   JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = @profile_id
+                  WHERE b.navigation_profile_id = @profile_id AND b.endpoint_class = 'NON_FINISHED_RETURN'
+                    AND w.last_sync_at IS NOT NULL AND COALESCE(w.last_disabled,0) <> 1
+                    AND COALESCE(w.last_sync_failed,0) <> 1 AND w.rds_type = 1)
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("variant_id", target.VariantId);
+        command.Parameters.AddWithValue("profile_id", target.ProfileId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        if (reader.GetInt32(0) > 0) AddBlocker(blockers, "TASK_TEMPLATE_MISSING");
+        if (target.LayoutBindingState == "SOURCE_BACKED" && reader.GetInt32(1) < 4) AddBlocker(blockers, "PREPARATION_WORKSITE_MAPPING_MISSING");
+        if (target.LayoutBindingState == "SOURCE_BACKED" && reader.GetInt32(2) == 0) AddBlocker(blockers, "EMPTY_SOURCE_MAPPING_MISSING");
+        if (target.LayoutBindingState == "SOURCE_BACKED" && reader.GetInt32(3) == 0) AddBlocker(blockers, "EMPTY_RETURN_MAPPING_MISSING");
+        if (target.LayoutBindingState == "SOURCE_BACKED" && reader.GetInt32(4) == 0) AddBlocker(blockers, "FINISHED_GOODS_MAPPING_MISSING");
+        if (target.LayoutBindingState == "SOURCE_BACKED" && reader.GetInt32(5) == 0) AddBlocker(blockers, "NON_FINISHED_RETURN_MAPPING_MISSING");
+    }
+
+    public async Task<SharedEndpointBindingDecision> BindSharedEndpointAsync(
+        string machineCode,
+        string variantCode,
+        string endpointClass,
+        string businessCode,
+        string plannedWorkSiteName,
+        bool apply,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var target = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+        var blockers = new List<string>();
+        if (endpointClass is not ("PREPARATION" or "EMPTY_SOURCE" or "EMPTY_RETURN" or "FINISHED_GOODS" or "NON_FINISHED_RETURN"))
+        {
+            blockers.Add("ENDPOINT_CLASS_INVALID");
+        }
+
+        Guid? workSiteId = null;
+        string? resolvedSite = null;
+        await using (var site = new NpgsqlCommand(
+                         """
+                         SELECT w.id, w.rds_site_id, w.navigation_profile_id, p.object_family, p.ordinal,
+                                COALESCE(w.last_disabled, 0), COALESCE(w.last_sync_failed, 0), w.last_sync_at
+                         FROM integration.rds_worksites w
+                         JOIN integration.rds_worksite_plans p
+                           ON p.navigation_profile_id = w.navigation_profile_id
+                          AND p.planned_rds_site_id = w.rds_site_id
+                         WHERE w.navigation_profile_id = @profile_id
+                           AND w.rds_site_id = @site
+                         """,
+                         connection,
+                         transaction))
+        {
+            site.Parameters.AddWithValue("profile_id", target.ProfileId);
+            site.Parameters.AddWithValue("site", plannedWorkSiteName);
+            await using var reader = await site.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                AddBlocker(blockers, "RDS_WORKSITE_NOT_DISCOVERED");
+            }
+            else
+            {
+                workSiteId = reader.GetGuid(0);
+                resolvedSite = reader.GetString(1);
+                if (reader.GetGuid(2) != target.ProfileId) AddBlocker(blockers, "PROFILE_MISMATCH");
+                var family = reader.GetString(3);
+                var ordinal = reader.GetInt32(4);
+                if (!FamilyMatches(endpointClass, businessCode, family, ordinal, plannedWorkSiteName))
+                {
+                    AddBlocker(blockers, "RDS_WORKSITE_PLAN_NAME_MISMATCH");
+                }
+
+                if (reader.IsDBNull(7)) AddBlocker(blockers, "RDS_WORKSITE_NOT_DISCOVERED");
+            }
+        }
+
+        var applied = false;
+        if (apply && blockers.Count == 0 && workSiteId is Guid siteId)
+        {
+            if (endpointClass == "PREPARATION")
+            {
+                await using var map = new NpgsqlCommand(
+                    """
+                    INSERT INTO integration.preparation_area_rds_mapping (preparation_area_id, rds_worksite_id)
+                    SELECT pa.id, @site
+                    FROM ops.preparation_areas pa
+                    WHERE pa.area_number = @area
+                    ON CONFLICT (preparation_area_id, rds_worksite_id) DO NOTHING
+                    """,
+                    connection,
+                    transaction);
+                map.Parameters.AddWithValue("site", siteId);
+                map.Parameters.AddWithValue("area", int.Parse(businessCode, System.Globalization.CultureInfo.InvariantCulture));
+                await map.ExecuteNonQueryAsync(cancellationToken);
+            }
+            else
+            {
+                await using var map = new NpgsqlCommand(
+                    """
+                    INSERT INTO integration.profile_shared_endpoint_bindings
+                        (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
+                    VALUES (
+                        @profile,
+                        @class,
+                        @business,
+                        (SELECT id FROM ops.store_locations WHERE code = @business AND @class = 'FINISHED_GOODS'),
+                        @site)
+                    ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
+                    DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id,
+                                  store_location_id = EXCLUDED.store_location_id
+                    """,
+                    connection,
+                    transaction);
+                map.Parameters.AddWithValue("profile", target.ProfileId);
+                map.Parameters.AddWithValue("class", endpointClass);
+                map.Parameters.AddWithValue("business", businessCode);
+                map.Parameters.AddWithValue("site", siteId);
+                await map.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await WriteCommissioningAuditAsync(
+                connection,
+                transaction,
+                context,
+                "RDS_SHARED_ENDPOINT_MAPPED",
+                machineCode,
+                variantCode,
+                target,
+                target,
+                cancellationToken);
+            applied = true;
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return new SharedEndpointBindingDecision(
+            applied, machineCode, variantCode, target.NavigationCode, endpointClass, businessCode, plannedWorkSiteName, resolvedSite, blockers);
+    }
+
+    public async Task<IReadOnlyList<EndpointFamilyCoverage>> ReadEndpointFamiliesAsync(
+        string machineCode,
+        string variantCode,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var target = await LoadTargetAsync(connection, transaction, machineCode, variantCode, cancellationToken);
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT p.object_family,
+                   count(*)::int,
+                   count(*) FILTER (WHERE w.id IS NOT NULL)::int,
+                   count(*) FILTER (WHERE w.rds_site_id = p.planned_rds_site_id)::int,
+                   count(*) FILTER (WHERE p.commissioning_state <> 'PLANNED')::int,
+                   count(*) FILTER (WHERE p.geometry_verified)::int
+            FROM integration.rds_worksite_plans p
+            LEFT JOIN integration.rds_worksites w
+              ON w.navigation_profile_id = p.navigation_profile_id
+             AND w.rds_site_id = p.planned_rds_site_id
+            WHERE p.navigation_profile_id = @profile_id
+            GROUP BY p.object_family
+            ORDER BY p.object_family
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("profile_id", target.ProfileId);
+        var rows = new List<EndpointFamilyCoverage>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var planned = reader.GetInt32(1);
+            var discovered = reader.GetInt32(2);
+            var exact = reader.GetInt32(3);
+            rows.Add(new EndpointFamilyCoverage(
+                reader.GetString(0),
+                planned,
+                discovered,
+                exact,
+                reader.GetInt32(4),
+                reader.GetInt32(5),
+                planned - exact,
+                0));
+        }
+
+        return rows;
+    }
+
+    private static bool FamilyMatches(string endpointClass, string businessCode, string family, int ordinal, string plannedName)
+    {
+        return endpointClass switch
+        {
+            "PREPARATION" => family == "PREPARATION"
+                && int.TryParse(businessCode, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var area)
+                && area is >= 1 and <= 4
+                && ordinal == area
+                && plannedName.EndsWith("_WS_PREP" + area.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal),
+            "EMPTY_SOURCE" or "EMPTY_RETURN" => family == "EMPTY"
+                && ordinal is >= 1 and <= 8
+                && plannedName.EndsWith("_WS_EMPTY" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                && businessCode == plannedName,
+            "FINISHED_GOODS" => family == "FINISHED_GOODS"
+                && ordinal is >= 1 and <= 19
+                && businessCode == "FG-" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture)
+                && plannedName.EndsWith("_WS_FG" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal),
+            "NON_FINISHED_RETURN" => family == "RETURN"
+                && ordinal is >= 1 and <= 8
+                && plannedName.EndsWith("_WS_RETURN" + ordinal.ToString("00", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
+                && businessCode == plannedName,
+            _ => false
+        };
     }
 
     private static void AddBlocker(List<string> blockers, string code)

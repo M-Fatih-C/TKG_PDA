@@ -143,6 +143,13 @@ public interface IRdsExecutionStore
     Task<RdsNavigationProfileSummary?> GetNavigationProfileSummaryAsync(Guid? profileId, Guid variantId, Guid machineId, CancellationToken cancellationToken = default);
     Task<bool> HasUnreleasedMapSwitchLockAsync(Guid requestId, string vehicle, CancellationToken cancellationToken = default);
     Task<RdsMapSwitchLockSnapshot?> GetUnreleasedMapSwitchLockAsync(Guid requestId, string vehicle, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Extra fail-closed gate for a customer commissioning profile.
+    /// Null means this request is outside that registry, or its chain is complete.
+    /// </summary>
+    Task<string?> ReadRegistryDispatchBlockAsync(Guid requestId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<string?>(null);
 }
 
 public sealed record RdsValidateTransportRequest(
@@ -434,6 +441,13 @@ public sealed class RdsExecutionCoordinator(
         if (context.Request.ReadinessState == TransportReadinessState.WaitingPreparation)
         {
             return new(requestId, requestId.ToString(), false, false, "READINESS_WAITING_PREPARATION", "The request is waiting for warehouse preparation.");
+        }
+
+        var registryBlock = await store.ReadRegistryDispatchBlockAsync(requestId, cancellationToken);
+        if (!string.IsNullOrEmpty(registryBlock))
+        {
+            await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_BLOCKED", registryBlock, "The customer commissioning chain for this operation is incomplete.", correlationId, cancellationToken);
+            return new(requestId, requestId.ToString(), false, false, registryBlock, "The customer commissioning chain for this operation is incomplete.");
         }
 
         // BRING_FULL takes material from a shared warehouse preparation area,

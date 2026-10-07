@@ -27,6 +27,7 @@ import type {
   ProductionEndPriority,
   TransportEvidence,
   TaskReportPage,
+  VariantOperationReadiness,
   TaskReportDetail,
   SessionReportPage,
   OperationsSummary,
@@ -255,6 +256,9 @@ export const createAdminApi = (token: string) => ({
     anchor.click()
     URL.revokeObjectURL(url)
   },
+
+  commissioningReadiness: async (signal?: AbortSignal) =>
+    (await request<VariantOperationReadiness[]>('/api/v1/admin/rds/commissioning/report', { token, signal })).data,
 })
 
 const reportSearch = (filters: ReportWindow) => {

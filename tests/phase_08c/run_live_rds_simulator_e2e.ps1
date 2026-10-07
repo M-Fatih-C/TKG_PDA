@@ -183,10 +183,12 @@ try {
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\migrations\022_variant_scoped_rds_worksite_commissioning.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\migrations\023_rds_variant_commissioning_hardening.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\migrations\024_operational_reporting.sql')))
+    Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\migrations\025_profile_scoped_shared_endpoints.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')))
     Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql')))
+    Invoke-Checked $script:psql ($script:common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\005_tkg_variant_task_templates.sql')))
 
     $context = (Invoke-PsqlScalar @"
 SELECT json_build_object(

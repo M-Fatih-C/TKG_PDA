@@ -10,8 +10,13 @@ Write-Output "variants $($rows.Count)"
 foreach ($row in $rows) {
     $ready = if ($row.ready) { 'ready' } else { 'not ready' }
     $layout = if ($row.layoutBindingState) { $row.layoutBindingState } else { '-' }
-    Write-Output ("{0} V{1} area={2} map={3} nav={4} status={5} state={6} geometryVerified={7} planned={8} mapped={9} verifiedBindings={10} missingBindings={11} default={12} layout={13} {14}" -f `
-        $row.machineCode, $row.variantCode, $row.areaName, $row.mapName, $row.navigationCode, $row.profileStatus, $row.commissioningState, $row.geometryVerified, $row.plannedWorkSites, $row.mappedWorkSites, $row.verifiedBindings, $row.missingBindings, $row.isDefault, $layout, $ready)
+    $overall = if ($row.overallState) { $row.overallState } else { $ready }
+    Write-Output ("{0} V{1} area={2} map={3} nav={4} status={5} state={6} geometryVerified={7} planned={8} mapped={9} verifiedBindings={10} missingBindings={11} default={12} layout={13} overall={14} {15}" -f `
+        $row.machineCode, $row.variantCode, $row.areaName, $row.mapName, $row.navigationCode, $row.profileStatus, $row.commissioningState, $row.geometryVerified, $row.plannedWorkSites, $row.mappedWorkSites, $row.verifiedBindings, $row.missingBindings, $row.isDefault, $layout, $overall, $ready)
+    foreach ($operation in @($row.operations)) {
+        $reasons = (@($operation.blockers) -join ',')
+        Write-Output ("  {0} {1} {2}" -f $operation.operation, $operation.state, $reasons)
+    }
 }
 $sealer = $rows | Where-Object { $_.machineCode -eq 'SEALER' -and $_.variantCode -eq '3' } | Select-Object -First 1
 if ($sealer) {

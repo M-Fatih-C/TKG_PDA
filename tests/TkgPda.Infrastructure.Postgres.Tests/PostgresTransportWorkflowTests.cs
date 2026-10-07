@@ -208,6 +208,11 @@ public sealed class PostgresTransportWorkflowTests
         await SetSlotAsync(slotId, OccupancyState.Occupied, LoadState.Empty);
         await ExecuteAsync(
             """
+            UPDATE master.task_templates
+            SET is_active = false
+            WHERE variant_id = @variant_id
+              AND product_group_id IS NULL
+              AND task_type_id = (SELECT id FROM master.task_types WHERE code = 'REMOVE_EMPTY');
             INSERT INTO master.task_templates (
                 variant_id, task_type_id, rds_task_label, priority, config_json, is_active)
             SELECT @variant_id, id, 'PHASE08B_SIM_TASK', 17,

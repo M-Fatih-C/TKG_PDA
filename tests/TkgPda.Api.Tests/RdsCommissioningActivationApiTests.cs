@@ -735,6 +735,15 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
     public async Task Missing_active_task_template_blocks_ready_verification_and_promotion()
     {
         await fixture.ResetAsync();
+        await fixture.ExecuteAsync("""
+            UPDATE master.task_templates AS template
+            SET is_active = false
+            FROM master.variants AS variant
+            JOIN master.machines AS machine ON machine.id = variant.machine_id
+            WHERE template.variant_id = variant.id
+              AND machine.code = 'SH-01-A'
+              AND variant.code = '1'
+            """);
         await BindRequiredAsync("TKG_SH01A_V01_NAV");
         var actor = await ActorAsync();
         await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
@@ -801,19 +810,101 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
         return new AdminMutationContext(identity.UserId, Guid.NewGuid(), null, "test");
     }
 
-    private Task InsertGateTemplateAsync() => fixture.ExecuteAsync("""
-        INSERT INTO master.task_templates
-            (variant_id, task_type_id, rds_task_label, priority, config_json, is_active)
-        SELECT v.id, tt.id, 'TEST-NAV-GATE', 10, '{"testScope":"TEST-NAV-GATE"}'::jsonb, true
-        FROM master.variants v
-        JOIN master.machines m ON m.id = v.machine_id
-        JOIN master.task_types tt ON tt.code = 'REMOVE_FULL'
-        WHERE m.code = 'SH-01-A' AND v.code = '1'
-          AND NOT EXISTS (
-              SELECT 1 FROM master.task_templates existing
-              WHERE existing.variant_id = v.id
-                AND existing.config_json ->> 'testScope' = 'TEST-NAV-GATE')
-        """);
+    private async Task InsertGateTemplateAsync()
+    {
+        await fixture.ExecuteAsync("""
+            INSERT INTO master.task_templates
+                (variant_id, task_type_id, rds_task_label, priority, config_json, is_active)
+            SELECT v.id, tt.id, 'TKG_NATIVE_' || tt.code, 100,
+                   '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1","labelRole":"TECHNICAL_ONLY","testScope":"TEST-NAV-GATE"}'::jsonb,
+                   true
+            FROM master.variants v
+            JOIN master.machines m ON m.id = v.machine_id
+            JOIN master.task_types tt ON tt.code IN ('BRING_FULL', 'BRING_EMPTY', 'REMOVE_FULL', 'REMOVE_EMPTY')
+            WHERE m.code = 'SH-01-A' AND v.code = '1'
+              AND NOT EXISTS (
+                  SELECT 1 FROM master.task_templates existing
+                  WHERE existing.variant_id = v.id
+                    AND existing.task_type_id = tt.id
+                    AND existing.product_group_id IS NULL);
+
+            UPDATE master.task_templates AS template
+            SET is_active = true
+            FROM master.variants AS variant
+            JOIN master.machines AS machine ON machine.id = variant.machine_id
+            JOIN master.task_types AS task_type ON task_type.code IN ('BRING_FULL', 'BRING_EMPTY', 'REMOVE_FULL', 'REMOVE_EMPTY')
+            WHERE template.variant_id = variant.id
+              AND template.task_type_id = task_type.id
+              AND machine.code = 'SH-01-A'
+              AND variant.code = '1'
+              AND template.product_group_id IS NULL;
+            """);
+        await InstallSharedEndpointsAsync("TKG_SH01A_V01_NAV");
+    }
+
+    private Task InstallSharedEndpointsAsync(string navigationCode) => fixture.ExecuteAsync("""
+        INSERT INTO integration.rds_worksites
+            (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, raw_state_json)
+        SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, '{}'::jsonb
+        FROM integration.rds_worksite_plans p
+        JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id
+        WHERE n.code = @code
+          AND (
+              (p.object_family = 'PREPARATION' AND p.ordinal BETWEEN 1 AND 4)
+              OR (p.object_family = 'EMPTY' AND p.ordinal = 1)
+              OR (p.object_family = 'RETURN' AND p.ordinal = 1)
+              OR (p.object_family = 'FINISHED_GOODS' AND p.ordinal = 1))
+        ON CONFLICT (navigation_profile_id, rds_site_id) DO UPDATE
+        SET rds_type = 1, last_sync_at = now(), last_disabled = 0, last_sync_failed = 0;
+
+        INSERT INTO integration.preparation_area_rds_mapping (preparation_area_id, rds_worksite_id)
+        SELECT pa.id, w.id
+        FROM ops.preparation_areas pa
+        JOIN integration.rds_worksite_plans p
+          ON p.object_family = 'PREPARATION' AND p.ordinal = pa.area_number
+        JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id AND n.code = @code
+        JOIN integration.rds_worksites w
+          ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
+        WHERE pa.area_number BETWEEN 1 AND 4
+        ON CONFLICT (preparation_area_id, rds_worksite_id) DO NOTHING;
+
+        INSERT INTO integration.profile_shared_endpoint_bindings
+            (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
+        SELECT n.id, 'EMPTY_SOURCE', p.planned_rds_site_id, NULL, w.id
+        FROM master.navigation_profiles n
+        JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id
+        JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
+        WHERE n.code = @code AND p.object_family = 'EMPTY' AND p.ordinal = 1
+        ON CONFLICT (navigation_profile_id, endpoint_class, business_code) DO NOTHING;
+
+        INSERT INTO integration.profile_shared_endpoint_bindings
+            (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
+        SELECT n.id, 'EMPTY_RETURN', p.planned_rds_site_id, NULL, w.id
+        FROM master.navigation_profiles n
+        JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id
+        JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
+        WHERE n.code = @code AND p.object_family = 'EMPTY' AND p.ordinal = 1
+        ON CONFLICT (navigation_profile_id, endpoint_class, business_code) DO NOTHING;
+
+        INSERT INTO integration.profile_shared_endpoint_bindings
+            (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
+        SELECT n.id, 'NON_FINISHED_RETURN', p.planned_rds_site_id, NULL, w.id
+        FROM master.navigation_profiles n
+        JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id
+        JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
+        WHERE n.code = @code AND p.object_family = 'RETURN' AND p.ordinal = 1
+        ON CONFLICT (navigation_profile_id, endpoint_class, business_code) DO NOTHING;
+
+        INSERT INTO integration.profile_shared_endpoint_bindings
+            (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
+        SELECT n.id, 'FINISHED_GOODS', loc.code, loc.id, w.id
+        FROM master.navigation_profiles n
+        JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id
+        JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
+        JOIN ops.store_locations loc ON loc.code = 'FG-01'
+        WHERE n.code = @code AND p.object_family = 'FINISHED_GOODS' AND p.ordinal = 1
+        ON CONFLICT (navigation_profile_id, endpoint_class, business_code) DO NOTHING;
+        """, ("code", navigationCode));
 
     private Task PublishAsync(string code) => fixture.ExecuteAsync("""
         UPDATE master.navigation_profiles

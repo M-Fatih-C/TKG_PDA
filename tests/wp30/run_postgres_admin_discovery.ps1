@@ -73,10 +73,12 @@ try {
         'db\migrations\022_variant_scoped_rds_worksite_commissioning.sql',
         'db\migrations\023_rds_variant_commissioning_hardening.sql',
         'db\migrations\024_operational_reporting.sql',
+        'db\migrations\025_profile_scoped_shared_endpoints.sql',
         'db\seeds\generated\002a_customer_textual_master_data.sql',
         'db\seeds\generated\002b_customer_physical_layouts.sql',
         'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql',
-        'db\seeds\generated\003_tkg_rds_variant_commissioning.sql'
+        'db\seeds\generated\003_tkg_rds_variant_commissioning.sql',
+        'db\seeds\generated\005_tkg_variant_task_templates.sql'
     )) {
         Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot $file)))
     }

@@ -367,7 +367,35 @@ public sealed record VariantCommissioningReport(
     int CrossMachineMappings,
     int CrossProfileMappings,
     string? ActiveNavigationCode,
-    string? ProductionSessionStatus);
+    string? ProductionSessionStatus,
+    string OverallState,
+    IReadOnlyList<OperationCapability> Operations);
+
+public sealed record OperationCapability(
+    string Operation,
+    string State,
+    IReadOnlyList<string> Blockers);
+
+public sealed record EndpointFamilyCoverage(
+    string Family,
+    int Planned,
+    int Discovered,
+    int ExactMatched,
+    int Mapped,
+    int Verified,
+    int Missing,
+    int Unexpected);
+
+public sealed record SharedEndpointBindingDecision(
+    bool Applied,
+    string MachineCode,
+    string VariantCode,
+    string NavigationCode,
+    string EndpointClass,
+    string BusinessCode,
+    string PlannedWorkSiteName,
+    string? ResolvedSiteId,
+    IReadOnlyList<string> Blockers);
 
 public sealed record WorkSiteNameDiff(
     string MachineCode,
@@ -447,6 +475,23 @@ public interface IRdsIntegrationStore
         AdminMutationContext context,
         CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
+
+    Task<SharedEndpointBindingDecision> BindSharedEndpointAsync(
+        string machineCode,
+        string variantCode,
+        string endpointClass,
+        string businessCode,
+        string plannedWorkSiteName,
+        bool apply,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<IReadOnlyList<EndpointFamilyCoverage>> ReadEndpointFamiliesAsync(
+        string machineCode,
+        string variantCode,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<EndpointFamilyCoverage>>([]);
     Task<IReadOnlyList<RdsActiveLockFingerprint>> GetActiveTkgLockFingerprintsAsync(CancellationToken cancellationToken = default);
 
     Task ObserveAlarmSnapshotAsync(
