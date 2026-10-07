@@ -28,6 +28,7 @@ param(
     [switch]$NoOperator,
     [switch]$NoAdmin,
     [switch]$EnableSimulationTrialMappings = $true,
+    [switch]$ForceSeeds,
     [switch]$Wait
 )
 
@@ -279,18 +280,23 @@ foreach ($migration in @(
     if ($LASTEXITCODE -ne 0) { throw "Applying $migration failed with exit code $LASTEXITCODE" }
 }
 
-Write-Host 'Applying customer master seeds (002a, 002b, 002c)...' -ForegroundColor Cyan
-$seedFiles = @(
-    (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql'),
-    (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql'),
-    (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'),
-    (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql'),
-    (Join-Path $projectRoot 'db\seeds\generated\005_tkg_variant_task_templates.sql'),
-    (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')
-)
-foreach ($sf in $seedFiles) {
-    & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Applying seed failed: $sf" }
+$seedsApplied = (Invoke-DevPsqlScalar $Database "SELECT count(*) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'") -eq '25'
+if ($seedsApplied -and -not $ForceSeeds) {
+    Write-Host 'Customer master seeds and variant commissioning registry already present. Bypassing static seed replay.' -ForegroundColor Green
+} else {
+    Write-Host 'Applying customer master seeds (002a, 002b, 002c, 003, 005, 004)...' -ForegroundColor Cyan
+    $seedFiles = @(
+        (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql'),
+        (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql'),
+        (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'),
+        (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql'),
+        (Join-Path $projectRoot 'db\seeds\generated\005_tkg_variant_task_templates.sql'),
+        (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')
+    )
+    foreach ($sf in $seedFiles) {
+        & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Applying seed failed: $sf" }
+    }
 }
 
 if ($EnableSimulationTrialMappings) {
