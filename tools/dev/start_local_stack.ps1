@@ -280,23 +280,63 @@ foreach ($migration in @(
     if ($LASTEXITCODE -ne 0) { throw "Applying $migration failed with exit code $LASTEXITCODE" }
 }
 
-$seedsApplied = (Invoke-DevPsqlScalar $Database "SELECT count(*) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'") -eq '25'
-if ($seedsApplied -and -not $ForceSeeds) {
-    Write-Host 'Customer master seeds and variant commissioning registry already present. Bypassing static seed replay.' -ForegroundColor Green
+Write-Host 'Applying replay-safe customer master seeds (002a, 002b, 002c)...' -ForegroundColor Cyan
+foreach ($sf in @(
+    (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql'),
+    (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql'),
+    (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')
+)) {
+    & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Applying master seed failed: $sf" }
+}
+
+# Determine whether the commissioning registry (003) is structurally complete using seed invariants
+$regCheckSql = @"
+SELECT
+    count(*) AS profile_count,
+    count(DISTINCT robot_map_name) AS map_count,
+    count(DISTINCT code) AS code_count,
+    count(DISTINCT config_json ->> 'areaId') AS area_count,
+    (SELECT count(*) FROM integration.rds_worksite_plans p JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS plan_count,
+    (SELECT count(*) FROM integration.layout_slot_rds_plan_bindings b JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS binding_count,
+    (SELECT count(*) FROM integration.layout_slot_rds_plan_bindings b JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id WHERE np.code = 'TKG_SEALER_V03_NAV') AS sealer_bindings,
+    (SELECT count(*) FROM integration.rds_worksite_plans p JOIN integration.rds_worksites w ON w.rds_site_id = p.planned_rds_site_id JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS live_name_collisions
+FROM master.navigation_profiles
+WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
+"@
+
+$regRaw = Invoke-DevPsqlScalar $Database $regCheckSql
+$regParts = if ($regRaw) { $regRaw.Trim().Split('|') } else { @() }
+
+$profileCount   = if ($regParts.Length -ge 1 -and [int]::TryParse($regParts[0], [ref]$null)) { [int]$regParts[0] } else { 0 }
+$mapCount       = if ($regParts.Length -ge 2 -and [int]::TryParse($regParts[1], [ref]$null)) { [int]$regParts[1] } else { 0 }
+$codeCount      = if ($regParts.Length -ge 3 -and [int]::TryParse($regParts[2], [ref]$null)) { [int]$regParts[2] } else { 0 }
+$areaCount      = if ($regParts.Length -ge 4 -and [int]::TryParse($regParts[3], [ref]$null)) { [int]$regParts[3] } else { 0 }
+$planCount      = if ($regParts.Length -ge 5 -and [int]::TryParse($regParts[4], [ref]$null)) { [int]$regParts[4] } else { 0 }
+$bindingCount   = if ($regParts.Length -ge 6 -and [int]::TryParse($regParts[5], [ref]$null)) { [int]$regParts[5] } else { 0 }
+$sealerBindings = if ($regParts.Length -ge 7 -and [int]::TryParse($regParts[6], [ref]$null)) { [int]$regParts[6] } else { 0 }
+$liveCollisions = if ($regParts.Length -ge 8 -and [int]::TryParse($regParts[7], [ref]$null)) { [int]$regParts[7] } else { 0 }
+
+$regComplete = ($profileCount -eq 25 -and $mapCount -eq 25 -and $codeCount -eq 25 -and $areaCount -eq 25 -and $planCount -eq 1775 -and $bindingCount -eq 208 -and $sealerBindings -eq 0)
+
+if ($regComplete) {
+    Write-Host "Commissioning registry is structurally complete ($profileCount profiles, $planCount plans, $bindingCount bindings). Bypassing 003 seed replay." -ForegroundColor Green
+} elseif ($liveCollisions -eq 0) {
+    Write-Host 'Applying commissioning registry seed (003_tkg_rds_variant_commissioning.sql)...' -ForegroundColor Cyan
+    $seed003 = (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql')
+    & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $seed003 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Applying 003_tkg_rds_variant_commissioning.sql failed" }
 } else {
-    Write-Host 'Applying customer master seeds (002a, 002b, 002c, 003, 005, 004)...' -ForegroundColor Cyan
-    $seedFiles = @(
-        (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql'),
-        (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql'),
-        (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'),
-        (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql'),
-        (Join-Path $projectRoot 'db\seeds\generated\005_tkg_variant_task_templates.sql'),
-        (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')
-    )
-    foreach ($sf in $seedFiles) {
-        & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Applying seed failed: $sf" }
-    }
+    throw "Cannot apply 003_tkg_rds_variant_commissioning.sql: Commissioning registry is incomplete (profiles=$profileCount/25, maps=$mapCount/25, codes=$codeCount/25, areas=$areaCount/25, plans=$planCount/1775, bindings=$bindingCount/208, sealer_bindings=$sealerBindings/0) and $liveCollisions live WorkSite collision(s) exist in integration.rds_worksites."
+}
+
+Write-Host 'Applying replay-safe production task templates and internal finished goods locations (005, 004)...' -ForegroundColor Cyan
+foreach ($sf in @(
+    (Join-Path $projectRoot 'db\seeds\generated\005_tkg_variant_task_templates.sql'),
+    (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')
+)) {
+    & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Applying seed failed: $sf" }
 }
 
 if ($EnableSimulationTrialMappings) {
@@ -407,25 +447,25 @@ VALUES
 ON CONFLICT (device_code) DO UPDATE
 SET name = EXCLUDED.name, is_active = true;
 
--- Permissions on SH-01-A
+-- Permissions for all active machines
 INSERT INTO auth.user_machine_permissions (user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
 SELECT u.id, m.id, true, true, true, false
 FROM auth.users u CROSS JOIN master.machines m
-WHERE u.username = 'dev-supervisor' AND m.code = 'SH-01-A'
+WHERE u.username = 'dev-supervisor' AND m.is_active
 ON CONFLICT (user_id, machine_id) DO UPDATE
 SET can_view = true, can_operate = true, can_change_variant = true, can_manage_slots = false;
 
 INSERT INTO auth.user_machine_permissions (user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
 SELECT u.id, m.id, true, true, false, false
 FROM auth.users u CROSS JOIN master.machines m
-WHERE u.username = 'dev-line' AND m.code = 'SH-01-A'
+WHERE u.username = 'dev-line' AND m.is_active
 ON CONFLICT (user_id, machine_id) DO UPDATE
 SET can_view = true, can_operate = true, can_change_variant = false, can_manage_slots = false;
 
 INSERT INTO auth.user_machine_permissions (user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
 SELECT u.id, m.id, true, true, false, false
 FROM auth.users u CROSS JOIN master.machines m
-WHERE u.username = 'dev-warehouse' AND m.code = 'SH-01-A'
+WHERE u.username = 'dev-warehouse' AND m.is_active
 ON CONFLICT (user_id, machine_id) DO UPDATE
 SET can_view = true, can_operate = true, can_change_variant = false, can_manage_slots = false;
 '@
@@ -466,7 +506,7 @@ JOIN master.navigation_profiles np ON np.machine_id = m.id AND np.code = 'DEV-RD
 WHERE m.code = 'SH-01-A'
 ON CONFLICT (variant_id, navigation_profile_id) DO UPDATE SET is_default = true;
 
--- Machine runtime state for SH-01-A
+-- Machine runtime state for SH-01-A (preserve existing valid selection)
 INSERT INTO ops.machine_runtime_state (
     machine_id, active_variant_id, active_layout_id, active_navigation_id
 )
@@ -483,11 +523,91 @@ SET active_variant_id = EXCLUDED.active_variant_id,
     active_layout_id = EXCLUDED.active_layout_id,
     active_navigation_id = EXCLUDED.active_navigation_id,
     row_version = ops.machine_runtime_state.row_version + 1,
-    updated_at = now();
+    updated_at = now()
+WHERE ops.machine_runtime_state.active_variant_id IS NULL
+   OR ops.machine_runtime_state.active_layout_id IS NULL;
 '@
 }
 
 $devEnvironmentSql += @'
+
+-- Ensure baseline runtime state exists for every active customer machine with published layout.
+-- Missing rows are inserted only; existing valid selections are NEVER overwritten.
+WITH candidate_variants AS (
+    SELECT
+        m.id AS machine_id,
+        v.id AS variant_id,
+        vla.layout_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY m.id
+            ORDER BY
+                (CASE WHEN vla.is_default THEN 0 ELSE 1 END),
+                v.display_order ASC,
+                v.code ASC,
+                l.version DESC,
+                l.code ASC
+        ) as rn
+    FROM master.machines m
+    JOIN master.variants v ON v.machine_id = m.id AND v.is_active
+    JOIN master.variant_layout_assignments vla ON vla.variant_id = v.id AND vla.machine_id = m.id
+    JOIN master.layouts l ON l.id = vla.layout_id AND l.machine_id = m.id AND l.status = 'PUBLISHED'
+    WHERE m.is_active
+),
+selected_machine_defaults AS (
+    SELECT cv.machine_id, cv.variant_id, cv.layout_id
+    FROM candidate_variants cv
+    WHERE cv.rn = 1
+),
+nav_candidates AS (
+    SELECT
+        smd.machine_id,
+        np.id AS navigation_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY smd.machine_id
+            ORDER BY (CASE WHEN vnpa.is_default THEN 0 ELSE 1 END), np.version DESC
+        ) AS nav_rn,
+        COUNT(*) OVER (
+            PARTITION BY smd.machine_id
+        ) AS nav_count
+    FROM selected_machine_defaults smd
+    JOIN master.variant_navigation_profile_assignments vnpa
+      ON vnpa.variant_id = smd.variant_id AND vnpa.machine_id = smd.machine_id
+    JOIN master.navigation_profiles np
+      ON np.id = vnpa.navigation_profile_id AND np.machine_id = smd.machine_id AND np.status = 'PUBLISHED'
+)
+INSERT INTO ops.machine_runtime_state (
+    machine_id,
+    active_variant_id,
+    active_layout_id,
+    active_navigation_id,
+    row_version,
+    updated_at
+)
+SELECT
+    smd.machine_id,
+    smd.variant_id,
+    smd.layout_id,
+    CASE WHEN nc.nav_count = 1 THEN nc.navigation_id ELSE NULL END,
+    0,
+    now()
+FROM selected_machine_defaults smd
+LEFT JOIN nav_candidates nc ON nc.machine_id = smd.machine_id AND nc.nav_rn = 1
+ON CONFLICT (machine_id) DO UPDATE
+SET active_variant_id = EXCLUDED.active_variant_id,
+    active_layout_id = EXCLUDED.active_layout_id,
+    active_navigation_id = EXCLUDED.active_navigation_id,
+    updated_at = now()
+WHERE ops.machine_runtime_state.active_variant_id IS NULL
+   OR ops.machine_runtime_state.active_layout_id IS NULL;
+
+-- Ensure all enabled layout slots for active machines have an initial slot runtime state row if missing
+INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+SELECT ls.id, 'VACANT', 'UNKNOWN'
+FROM master.layout_slots ls
+JOIN master.layouts l ON l.id = ls.layout_id AND l.status = 'PUBLISHED'
+JOIN master.machines m ON m.id = l.machine_id AND m.is_active
+WHERE ls.is_enabled
+ON CONFLICT (layout_slot_id) DO NOTHING;
 
 -- Initial 3 test slot states for SH-01-A default layout
 WITH candidate_slots AS (
@@ -525,6 +645,40 @@ SET occupancy_state = EXCLUDED.occupancy_state,
 '@
 $devEnvironmentSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Dev environment seeding failed with exit code $LASTEXITCODE" }
+
+# Local startup preflight validation
+$preflightSql = @"
+SELECT
+    (SELECT count(*) FROM master.machines WHERE is_active)::text
+    || '|' || (SELECT count(*) FROM ops.machine_runtime_state rs JOIN master.machines m ON m.id = rs.machine_id WHERE m.is_active AND rs.active_variant_id IS NOT NULL AND rs.active_layout_id IS NOT NULL)::text
+    || '|' || (SELECT count(*) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1')::text
+    || '|' || (SELECT count(DISTINCT v.id) FROM master.variants v JOIN master.variant_navigation_profile_assignments a ON a.variant_id = v.id JOIN master.navigation_profiles n ON n.id = a.navigation_profile_id WHERE n.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1' AND n.config_json ->> 'layoutBindingState' = 'SOURCE_BACKED')::text
+    || '|' || (SELECT count(*) FROM master.task_templates WHERE config_json ->> 'templateRegistry' = 'tkg_variant_task_templates_v1')::text
+    || '|' || (SELECT count(*) FROM ops.store_locations WHERE code ~ '^FG-(0[1-9]|1[0-9])$' AND is_enabled)::text
+    || '|' || (SELECT count(*) FROM integration.rds_worksites)::text
+"@
+
+$pfRaw = Invoke-DevPsqlScalar $Database $preflightSql
+$pfParts = if ($pfRaw) { $pfRaw.Trim().Split('|') } else { @() }
+$pfActiveMachines   = if ($pfParts.Length -ge 1) { $pfParts[0] } else { '0' }
+$pfConfiguredRows   = if ($pfParts.Length -ge 2) { $pfParts[1] } else { '0' }
+$pfRegistryProfiles = if ($pfParts.Length -ge 3) { $pfParts[2] } else { '0' }
+$pfSourceVariants   = if ($pfParts.Length -ge 4) { $pfParts[3] } else { '0' }
+$pfGenericTemplates = if ($pfParts.Length -ge 5) { $pfParts[4] } else { '0' }
+$pfFgLocations      = if ($pfParts.Length -ge 6) { $pfParts[5] } else { '0' }
+$pfLiveWorksites    = if ($pfParts.Length -ge 7) { $pfParts[6] } else { '0' }
+
+Write-Host ""
+Write-Host "================ Preflight Validation ================" -ForegroundColor Cyan
+Write-Host ("  Active Machines:          {0,-4} (baseline: 9)" -f $pfActiveMachines)
+Write-Host ("  Configured Machine Rows:  {0,-4} (baseline: 9)" -f $pfConfiguredRows)
+Write-Host ("  Registry NAV Profiles:    {0,-4} (baseline: 25)" -f $pfRegistryProfiles)
+Write-Host ("  Source-backed Variants:   {0,-4} (baseline: 24)" -f $pfSourceVariants)
+Write-Host ("  Generic Task Templates:   {0,-4} (baseline: 96)" -f $pfGenericTemplates)
+Write-Host ("  FG Internal Locations:    {0,-4} (baseline: 19)" -f $pfFgLocations)
+Write-Host ("  Live RDS WorkSites:       {0,-4} (persistent state)" -f $pfLiveWorksites)
+Write-Host "======================================================" -ForegroundColor Cyan
+Write-Host ""
 
 # 2. Check if previous stack processes are running; stop them safely before building
 # 2a. Check .runtime/api.pid

@@ -190,6 +190,8 @@ BEGIN
         active_variant_id = EXCLUDED.active_variant_id,
         active_layout_id = EXCLUDED.active_layout_id,
         active_navigation_id = EXCLUDED.active_navigation_id,
-        updated_at = now();
+        updated_at = now()
+    WHERE ops.machine_runtime_state.active_variant_id IS NULL
+       OR ops.machine_runtime_state.active_layout_id IS NULL;
 
 END $$;

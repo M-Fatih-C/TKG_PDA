@@ -30,4 +30,42 @@ void main() {
     expect(problem.operatorMessage, isNot(contains('sourceSlotId')));
     expect(problem.operatorMessage, isNot(contains('database')));
   });
+
+  test('RUNTIME_STATE_NOT_CONFIGURED maps to descriptive operator guidance', () {
+    const problem = ApiProblem(
+      status: 422,
+      code: 'RUNTIME_STATE_NOT_CONFIGURED',
+      detail: 'Machine runtime state must exist before changing workflow state.',
+      correlationId: null,
+    );
+
+    expect(
+      problem.operatorMessage,
+      'Bu makinenin aktif varyant ve yerleşim bilgisi henüz hazırlanmadı. Sistem yöneticisine başvurun.',
+    );
+  });
+
+  test('navigation and production configuration errors map to descriptive messages', () {
+    const navProblem = ApiProblem(
+      status: 409,
+      code: 'NAVIGATION_PROFILE_AMBIGUOUS',
+      detail: 'More than one published navigation profile is assigned.',
+      correlationId: null,
+    );
+    expect(
+      navProblem.operatorMessage,
+      'Birden fazla harita tanımı bulundu ve varsayılan belirlenmedi. Sistem yöneticisine başvurun.',
+    );
+
+    const endingProblem = ApiProblem(
+      status: 409,
+      code: 'PRODUCTION_ENDING',
+      detail: 'Production is ending.',
+      correlationId: null,
+    );
+    expect(
+      endingProblem.operatorMessage,
+      'Üretim bitiriliyor. Yeni işlem başlatılamaz.',
+    );
+  });
 }

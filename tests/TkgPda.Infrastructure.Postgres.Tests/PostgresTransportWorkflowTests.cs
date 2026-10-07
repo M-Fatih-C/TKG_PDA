@@ -724,6 +724,227 @@ public sealed class PostgresTransportWorkflowTests
     }
 
     [PostgresFact]
+    public async Task Switch_variant_without_runtime_state_throws_runtime_state_not_configured()
+    {
+        await ResetAsync();
+        var context = await ContextAsync("SH-01-B", "1");
+        await ExecuteAsync("DELETE FROM ops.machine_runtime_state WHERE machine_id = @id", ("id", context.MachineId));
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var selection = new VariantSelection(context.MachineId, context.VariantId, context.LayoutId, null, null);
+
+        var error = await Assert.ThrowsAsync<WorkflowRuleException>(() => store.SwitchVariantAsync(selection));
+        Assert.Equal("RUNTIME_STATE_NOT_CONFIGURED", error.Code);
+    }
+
+    [PostgresFact]
+    public async Task Switch_variant_on_SH01B_with_baseline_runtime_succeeds_and_updates_active_variant()
+    {
+        await ResetAsync();
+        var v1 = await ContextAsync("SH-01-B", "1");
+        var v2 = await ContextAsync("SH-01-B", "2");
+
+        // Seed initial baseline runtime state for SH-01-B (Variant 1, Layout 1, null navigation)
+        await ExecuteAsync(
+            """
+            INSERT INTO ops.machine_runtime_state (machine_id, active_variant_id, active_layout_id, active_navigation_id)
+            VALUES (@machine_id, @variant_id, @layout_id, NULL)
+            ON CONFLICT (machine_id) DO UPDATE
+            SET active_variant_id = EXCLUDED.active_variant_id,
+                active_layout_id = EXCLUDED.active_layout_id,
+                active_navigation_id = NULL
+            """,
+            ("machine_id", v1.MachineId),
+            ("variant_id", v1.VariantId),
+            ("layout_id", v1.LayoutId));
+
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var selection = new VariantSelection(v1.MachineId, v2.VariantId, v2.LayoutId, null, null);
+
+        await store.SwitchVariantAsync(selection);
+
+        var selectedVariant = await ScalarAsync<Guid>(
+            "SELECT active_variant_id FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", v1.MachineId));
+        var selectedLayout = await ScalarAsync<Guid>(
+            "SELECT active_layout_id FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", v1.MachineId));
+        Assert.Equal(v2.VariantId, selectedVariant);
+        Assert.Equal(v2.LayoutId, selectedLayout);
+    }
+
+    [PostgresFact]
+    public async Task Start_production_on_non_SH01A_machine_with_baseline_runtime_and_null_navigation_succeeds()
+    {
+        await ResetAsync();
+        var v1 = await ContextAsync("SH-01-B", "1");
+
+        // Ensure baseline runtime state with null navigation
+        await ExecuteAsync(
+            """
+            INSERT INTO ops.machine_runtime_state (machine_id, active_variant_id, active_layout_id, active_navigation_id)
+            VALUES (@machine_id, @variant_id, @layout_id, NULL)
+            ON CONFLICT (machine_id) DO UPDATE
+            SET active_variant_id = EXCLUDED.active_variant_id,
+                active_layout_id = EXCLUDED.active_layout_id,
+                active_navigation_id = NULL
+            """,
+            ("machine_id", v1.MachineId),
+            ("variant_id", v1.VariantId),
+            ("layout_id", v1.LayoutId));
+
+        // Get product group and main part for SH-01-B variant 1
+        var groupAndPart = await ScalarAsync<Guid>(
+            "SELECT id FROM master.product_groups WHERE variant_id = @variant_id LIMIT 1",
+            ("variant_id", v1.VariantId));
+        var mainPartId = await ScalarAsync<Guid>(
+            "SELECT main_part_id FROM master.product_groups WHERE id = @group_id",
+            ("group_id", groupAndPart));
+        var userId = await EnsureActorAsync();
+        await ExecuteAsync(
+            """
+            INSERT INTO auth.user_roles (user_id, role_id)
+            SELECT @user_id, id FROM auth.roles WHERE code = 'ADMIN'
+            ON CONFLICT DO NOTHING
+            """,
+            ("user_id", userId));
+        var deviceId = await ScalarAsync<Guid>(
+            """
+            INSERT INTO audit.client_devices (device_code, name, device_type, is_active)
+            VALUES ('TEST-DEVICE', 'Test Device', 'PDA', true)
+            ON CONFLICT (device_code) DO UPDATE SET is_active = true
+            RETURNING id
+            """);
+
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var command = new StartProductionSession(
+            v1.MachineId,
+            v1.VariantId,
+            groupAndPart,
+            mainPartId,
+            userId,
+            deviceId,
+            $"prod-sh01b-{Guid.NewGuid():N}");
+
+        var result = await store.StartAsync(command);
+        Assert.NotNull(result);
+        Assert.Equal(v1.MachineId, result.Session.MachineId);
+        Assert.Equal(v1.VariantId, result.Session.VariantId);
+        Assert.Equal(mainPartId, result.Session.MainPartId);
+    }
+
+    [PostgresFact]
+    public async Task Baseline_runtime_self_healing_configures_all_active_machines_without_overwriting_valid_selection()
+    {
+        await ResetAsync();
+
+        // 1. Manually configure SH-01-B to variant 2
+        var v2 = await ContextAsync("SH-01-B", "2");
+        await ExecuteAsync(
+            """
+            INSERT INTO ops.machine_runtime_state (machine_id, active_variant_id, active_layout_id, active_navigation_id)
+            VALUES (@machine_id, @variant_id, @layout_id, NULL)
+            ON CONFLICT (machine_id) DO UPDATE
+            SET active_variant_id = EXCLUDED.active_variant_id,
+                active_layout_id = EXCLUDED.active_layout_id,
+                active_navigation_id = NULL
+            """,
+            ("machine_id", v2.MachineId),
+            ("variant_id", v2.VariantId),
+            ("layout_id", v2.LayoutId));
+
+        // 2. Run the exact self-healing query from start_local_stack
+        await ExecuteAsync(
+            """
+            WITH candidate_variants AS (
+                SELECT
+                    m.id AS machine_id,
+                    v.id AS variant_id,
+                    vla.layout_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY m.id
+                        ORDER BY
+                            (CASE WHEN vla.is_default THEN 0 ELSE 1 END),
+                            v.display_order ASC,
+                            v.code ASC,
+                            l.version DESC,
+                            l.code ASC
+                    ) as rn
+                FROM master.machines m
+                JOIN master.variants v ON v.machine_id = m.id AND v.is_active
+                JOIN master.variant_layout_assignments vla ON vla.variant_id = v.id AND vla.machine_id = m.id
+                JOIN master.layouts l ON l.id = vla.layout_id AND l.machine_id = m.id AND l.status = 'PUBLISHED'
+                WHERE m.is_active
+            ),
+            selected_machine_defaults AS (
+                SELECT cv.machine_id, cv.variant_id, cv.layout_id
+                FROM candidate_variants cv
+                WHERE cv.rn = 1
+            ),
+            nav_candidates AS (
+                SELECT
+                    smd.machine_id,
+                    np.id AS navigation_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY smd.machine_id
+                        ORDER BY (CASE WHEN vnpa.is_default THEN 0 ELSE 1 END), np.version DESC
+                    ) AS nav_rn,
+                    COUNT(*) OVER (
+                        PARTITION BY smd.machine_id
+                    ) AS nav_count
+                FROM selected_machine_defaults smd
+                JOIN master.variant_navigation_profile_assignments vnpa
+                  ON vnpa.variant_id = smd.variant_id AND vnpa.machine_id = smd.machine_id
+                JOIN master.navigation_profiles np
+                  ON np.id = vnpa.navigation_profile_id AND np.machine_id = smd.machine_id AND np.status = 'PUBLISHED'
+            )
+            INSERT INTO ops.machine_runtime_state (
+                machine_id,
+                active_variant_id,
+                active_layout_id,
+                active_navigation_id,
+                row_version,
+                updated_at
+            )
+            SELECT
+                smd.machine_id,
+                smd.variant_id,
+                smd.layout_id,
+                CASE WHEN nc.nav_count = 1 THEN nc.navigation_id ELSE NULL END,
+                0,
+                now()
+            FROM selected_machine_defaults smd
+            LEFT JOIN nav_candidates nc ON nc.machine_id = smd.machine_id AND nc.nav_rn = 1
+            ON CONFLICT (machine_id) DO UPDATE
+            SET active_variant_id = EXCLUDED.active_variant_id,
+                active_layout_id = EXCLUDED.active_layout_id,
+                active_navigation_id = EXCLUDED.active_navigation_id,
+                updated_at = now()
+            WHERE ops.machine_runtime_state.active_variant_id IS NULL
+               OR ops.machine_runtime_state.active_layout_id IS NULL;
+            """);
+
+        // 3. Verify all 9 active machines have runtime state configured
+        var configuredCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM ops.machine_runtime_state rs
+            JOIN master.machines m ON m.id = rs.machine_id
+            WHERE m.is_active
+              AND rs.active_variant_id IS NOT NULL
+              AND rs.active_layout_id IS NOT NULL
+            """);
+        var activeMachineCount = await ScalarAsync<long>("SELECT count(*) FROM master.machines WHERE is_active");
+        Assert.Equal(9, activeMachineCount);
+        Assert.Equal(9, configuredCount);
+
+        // 4. Verify SH-01-B still has variant 2 (existing valid selection was NOT overwritten)
+        var sh01bVariant = await ScalarAsync<Guid>(
+            "SELECT active_variant_id FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", v2.MachineId));
+        Assert.Equal(v2.VariantId, sh01bVariant);
+    }
+
+    [PostgresFact]
     public async Task Cancellation_after_dispatch_uses_the_stable_deferred_error()
     {
         await ResetAsync();

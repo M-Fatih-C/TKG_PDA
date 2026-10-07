@@ -47,6 +47,30 @@ class ApiProblem implements Exception {
       'Bu terminal yalnızca tanımlı olduğu makine üzerinde işlem yapabilir.',
     'ACTIVE_SESSION_EXISTS' =>
       'Bu sicil başka bir cihazda aktif. Önce mevcut oturumdan çıkış yapın veya oturumun düşmesini bekleyin.',
+    'RUNTIME_STATE_NOT_CONFIGURED' =>
+      'Bu makinenin aktif varyant ve yerleşim bilgisi henüz hazırlanmadı. Sistem yöneticisine başvurun.',
+    'NAVIGATION_PROFILE_AMBIGUOUS' =>
+      'Birden fazla harita tanımı bulundu ve varsayılan belirlenmedi. Sistem yöneticisine başvurun.',
+    'NAVIGATION_PROFILE_CONFLICT' =>
+      'Seçilen harita profili bu varyant ile uyumlu değil.',
+    'NAVIGATION_CONTEXT_MISMATCH' =>
+      'Harita profili makinenin aktif profiliyle uyuşmuyor.',
+    'PRODUCTION_ENDING' || 'PRODUCTION_END_IN_PROGRESS' =>
+      'Üretim bitiriliyor. Yeni işlem başlatılamaz.',
+    'PRODUCTION_END_PRIORITY_NOT_CONFIGURED' =>
+      'Üretim bitiş önceliği henüz tanımlanmamış. Sistem yöneticisine başvurun.',
+    'PRODUCTION_END_REMOVAL_NOT_CONFIGURED' =>
+      'Üretim bitişi boşaltma alanı tanımlanmamış. Sistem yöneticisine başvurun.',
+    'SLOT_NOT_IN_ACTIVE_LAYOUT' ||
+    'CROSS_MACHINE_SLOT' ||
+    'CROSS_LAYOUT_SLOT' =>
+      'Seçilen konum makinenin aktif yerleşimine ait değil.',
+    'SLOT_DISABLED' =>
+      'Seçilen konum kullanım dışı.',
+    'OCCUPIED_SLOT_REQUIRED' =>
+      'Yalnızca dolu konumlar için doluluk durumu bildirilebilir.',
+    'LOAD_STATE_NOT_SELECTABLE' =>
+      'Bu doluluk durumu seçilemez.',
     'SESSION_NOT_ACTIVE' || 'SESSION_EXPIRED' =>
       'Oturumunuz sona erdi. Lütfen yeniden giriş yapın.',
     _ => switch (status) {
