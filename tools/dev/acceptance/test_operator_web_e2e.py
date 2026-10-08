@@ -16,6 +16,8 @@ Required Flow:
 """
 
 import os
+import re
+import subprocess
 import sys
 import time
 import json
@@ -44,9 +46,58 @@ def check_environment():
 
     return chrome_path
 
-def cleanup_active_session(api_base, device_code, employee_number):
+def get_machine_active_session(api_base, device_code, employee_number, machine_code="SH-01-A"):
     try:
-        # Authenticate to obtain token for cleanup
+        login_url = f"{api_base}/api/v1/auth/login"
+        req_data = json.dumps({"employeeNumber": employee_number}).encode("utf-8")
+        req = urllib.request.Request(
+            login_url,
+            data=req_data,
+            headers={"Content-Type": "application/json", "X-Device-Code": device_code}
+        )
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            login_res = json.loads(resp.read().decode("utf-8"))
+            token = login_res.get("accessToken")
+
+        if not token:
+            return None, None
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Device-Code": device_code,
+            "Content-Type": "application/json"
+        }
+
+        m_req = urllib.request.Request(f"{api_base}/api/v1/machines", headers=headers)
+        with urllib.request.urlopen(m_req, timeout=4) as resp:
+            machines = json.loads(resp.read().decode("utf-8"))
+
+        mach = next((m for m in machines if m.get("code") == machine_code), None)
+        if not mach:
+            return None, None
+
+        m_id = mach.get("id")
+        try:
+            act_req = urllib.request.Request(f"{api_base}/api/v1/machines/{m_id}/production-sessions/active", headers=headers)
+            with urllib.request.urlopen(act_req, timeout=4) as resp:
+                raw = resp.read().decode("utf-8").strip()
+                if resp.status == 204 or not raw:
+                    return m_id, None
+                return m_id, json.loads(raw)
+        except urllib.error.HTTPError as he:
+            if he.code in (204, 404):
+                return m_id, None
+            raise
+        except json.JSONDecodeError:
+            return m_id, None
+    except Exception as e:
+        print(f"Active session query note: {e}")
+        return None, None
+
+def cleanup_exact_session(api_base, device_code, employee_number, machine_id, session_id):
+    if not machine_id or not session_id:
+        return
+    try:
         login_url = f"{api_base}/api/v1/auth/login"
         req_data = json.dumps({"employeeNumber": employee_number}).encode("utf-8")
         req = urllib.request.Request(
@@ -64,39 +115,58 @@ def cleanup_active_session(api_base, device_code, employee_number):
         headers = {
             "Authorization": f"Bearer {token}",
             "X-Device-Code": device_code,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Idempotency-Key": f"acceptance:browser-cleanup:{session_id}"
         }
 
-        # Query machines
-        m_req = urllib.request.Request(f"{api_base}/api/v1/machines", headers=headers)
-        with urllib.request.urlopen(m_req, timeout=4) as resp:
-            machines = json.loads(resp.read().decode("utf-8"))
-
-        sh01a = next((m for m in machines if m.get("code") == "SH-01-A"), None)
-        if not sh01a:
-            return
-
-        m_id = sh01a.get("id")
-        # Check active session
-        try:
-            act_req = urllib.request.Request(f"{api_base}/api/v1/machines/{m_id}/production-sessions/active", headers=headers)
-            with urllib.request.urlopen(act_req, timeout=4) as resp:
-                active_session = json.loads(resp.read().decode("utf-8"))
-                s_id = active_session.get("id")
-                if s_id:
-                    end_url = f"{api_base}/api/v1/machines/{m_id}/production-sessions/{s_id}/end"
-                    end_req = urllib.request.Request(
-                        end_url,
-                        data=b"{}",
-                        headers={**headers, "Idempotency-Key": f"cleanup-{int(time.time())}"}
-                    )
-                    with urllib.request.urlopen(end_req, timeout=4) as end_resp:
-                        pass
-                    print("Cleaned up test production session on SH-01-A.")
-        except Exception:
-            pass
+        end_url = f"{api_base}/api/v1/machines/{machine_id}/production-sessions/{session_id}/end"
+        end_req = urllib.request.Request(end_url, data=b"{}", headers=headers)
+        with urllib.request.urlopen(end_req, timeout=20) as end_resp:
+            ended = json.loads(end_resp.read().decode("utf-8"))
+        status = ((ended.get("session") or {}).get("status") or "").upper()
+        if status != "ENDED":
+            # Occupied positions leave the owned session ENDING and create
+            # child requests. Retire only this session id. Do not touch slots.
+            retire_owned_session(session_id)
+        print(f"Cleaned up browser-owned session {session_id} on SH-01-A.")
     except Exception as e:
-        print(f"Teardown note: {e}")
+        print(f"Session cleanup note: {e}")
+        if session_id:
+            try:
+                retire_owned_session(session_id)
+                print(f"Cleaned up browser-owned session {session_id} on SH-01-A.")
+            except Exception as retire_error:
+                print(f"Session cleanup note: {retire_error}")
+
+def retire_owned_session(session_id):
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", session_id or ""):
+        raise RuntimeError("Refusing to retire a session without an exact id.")
+    psql = os.environ.get("PSQL_PATH", r"C:\Program Files\PostgreSQL\18\bin\psql.exe")
+    sql = f"""
+BEGIN;
+DELETE FROM ops.production_end_run_items
+WHERE run_id IN (SELECT id FROM ops.production_end_runs WHERE production_session_id = '{session_id}');
+DELETE FROM ops.transport_request_dependencies
+WHERE predecessor_request_id IN (SELECT id FROM ops.transport_requests WHERE production_session_id = '{session_id}')
+   OR successor_request_id IN (SELECT id FROM ops.transport_requests WHERE production_session_id = '{session_id}');
+DELETE FROM ops.transport_requests WHERE production_session_id = '{session_id}';
+DELETE FROM ops.production_end_runs WHERE production_session_id = '{session_id}';
+UPDATE ops.production_sessions
+SET ended_at = GREATEST(clock_timestamp(), started_at),
+    ended_by = started_by,
+    ended_device_id = started_device_id,
+    status = 'ENDED'
+WHERE id = '{session_id}' AND ended_at IS NULL;
+COMMIT;
+"""
+    completed = subprocess.run(
+        [psql, "-h", "127.0.0.1", "-p", "55450", "-U", "postgres", "-d", "tkg_pda_dev", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "Owned session retire failed.")
 
 def run_browser_e2e():
     chrome_path = check_environment()
@@ -113,6 +183,15 @@ def run_browser_e2e():
     print("PHASE: OPERATOR WEB REAL BROWSER E2E")
     print("==================================================")
     print(f"Target URL: {web_url}")
+
+    # Check for pre-existing active session on SH-01-A
+    sh01a_id, preexisting_session = get_machine_active_session(api_base, device_code, employee_number, "SH-01-A")
+    if preexisting_session and preexisting_session.get("id"):
+        s_id = preexisting_session.get("id")
+        print(f"\nENVIRONMENT_BUSY: Pre-existing active session {s_id} detected on SH-01-A.")
+        print("Per acceptance safety rules, browser E2E will NOT mutate or end pre-existing sessions.")
+        print("RESULT: SKIP (ENVIRONMENT_BUSY - machine currently in production)")
+        sys.exit(2)
 
     # Ensure Flutter Web server bundle is completely compiled before launching Chrome
     bundle_ready = False
@@ -139,6 +218,7 @@ def run_browser_e2e():
 
     driver = webdriver.Chrome(options=opts)
     report = {"status": "FAIL", "steps": [], "verifications": {}}
+    created_session_id = None
 
     def wait_and_enable_semantics():
         for attempt in range(45):
@@ -281,6 +361,12 @@ def run_browser_e2e():
             raise Exception("Mamul Kasa panel not rendered on machine workspace.")
         report["steps"].append("7. Reached rendered Mamul Kasa UI")
 
+        # Capture exact session ID created by browser test
+        _, active_after_start = get_machine_active_session(api_base, device_code, employee_number, "SH-01-A")
+        if active_after_start and active_after_start.get("id"):
+            created_session_id = active_after_start.get("id")
+            print(f"Browser test captured owned session ID: {created_session_id}")
+
         # Step 8: Verify BOTH buttons exist: 'Kasa Doldu' and 'Boş Kasa Getir'
         has_kasa_doldu = "Kasa Doldu" in all_text
         has_bos_kasa_getir = "Boş Kasa Getir" in all_text
@@ -357,8 +443,14 @@ def run_browser_e2e():
         report["error"] = str(e)
         print(f"\nRESULT: FAIL ({e})")
     finally:
-        driver.quit()
-        cleanup_active_session(api_base, device_code, employee_number)
+        if created_session_id:
+            cleanup_exact_session(api_base, device_code, employee_number, sh01a_id, created_session_id)
+        else:
+            print("No browser-created session to clean up.")
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
     if report["status"] == "PASS":
         sys.exit(0)

@@ -93,7 +93,11 @@ WHERE layout_slot_id = '$bufferId';
 
     # 5. Normal start stack
     Write-Host "`nStarting local stack in normal mode (ResetSimulationState=$false)..."
-    pwsh -File (Join-Path $projectRoot 'tools\dev\start_local_stack.ps1') -Password 'DevPass123!'
+    $stackArgs = @()
+    if ($env:TKG_TEST_PASSWORD) {
+        $stackArgs += @('-Password', $env:TKG_TEST_PASSWORD)
+    }
+    pwsh -File (Join-Path $projectRoot 'tools\dev\start_local_stack.ps1') @stackArgs
 
     # 6. Assert state after restart
     Write-Host "`nVerifying state after restart..."

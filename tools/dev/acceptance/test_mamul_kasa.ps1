@@ -59,7 +59,7 @@ WHERE l.id = '$lId' AND ls.code = 'SLOT-001';
 $slot1Id = (& $psql -h $HostName -p $Port -U $User -d $Database -t -A -c $slot1Sql).Trim()
 
 # Snapshot original slot state
-$readSql = "SELECT coalesce(occupancy_state,'VACANT'), coalesce(load_state,'UNKNOWN'), coalesce(current_part_id::text,''), coalesce(current_container_type_id::text,'') FROM ops.slot_runtime_state WHERE layout_slot_id = '$slot1Id';"
+$readSql = "SELECT occupancy_state, load_state, coalesce(current_part_id::text,''), coalesce(current_container_type_id::text,'') FROM ops.slot_runtime_state WHERE layout_slot_id = '$slot1Id';"
 $origRaw = (& $psql -h $HostName -p $Port -U $User -d $Database -t -A -F ',' -c $readSql).Trim().Split(',')
 $origOcc = $origRaw[0]
 $origLoad = $origRaw[1]
