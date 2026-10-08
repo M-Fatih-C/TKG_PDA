@@ -619,39 +619,10 @@ JOIN master.machines m ON m.id = l.machine_id AND m.is_active
 WHERE ls.is_enabled
 ON CONFLICT (layout_slot_id) DO NOTHING;
 
--- Initial 3 test slot states for SH-01-A default layout
-WITH candidate_slots AS (
-    SELECT ls.id, ROW_NUMBER() OVER (ORDER BY ls.display_order, ls.code) as rn
-    FROM master.machines m
-    JOIN master.variants v ON v.machine_id = m.id AND v.code = '1'
-    JOIN master.variant_layout_assignments a ON a.variant_id = v.id AND a.machine_id = m.id AND a.is_default
-    JOIN master.layout_slots ls ON ls.layout_id = a.layout_id
-    WHERE m.code = 'SH-01-A' AND ls.slot_role <> 'MACHINE' AND ls.is_enabled
-)
-INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state, current_part_id, current_container_type_id)
-SELECT
-    cs.id,
-    CASE cs.rn
-        WHEN 1 THEN 'VACANT'
-        WHEN 2 THEN 'OCCUPIED'
-        WHEN 3 THEN 'OCCUPIED'
-    END,
-    CASE cs.rn
-        WHEN 1 THEN 'UNKNOWN'
-        WHEN 2 THEN 'EMPTY'
-        WHEN 3 THEN 'FULL'
-    END,
-    NULL,
-    NULL
-FROM candidate_slots cs
-WHERE cs.rn IN (1, 2, 3)
-ON CONFLICT (layout_slot_id) DO UPDATE
-SET occupancy_state = EXCLUDED.occupancy_state,
-    load_state = EXCLUDED.load_state,
-    current_part_id = NULL,
-    current_container_type_id = NULL,
-    row_version = ops.slot_runtime_state.row_version + 1,
-    updated_at = now();
+-- Development default priorities for production end cleanup (REMOVE_FULL=40, REMOVE_EMPTY=70)
+INSERT INTO master.production_end_priorities (operation_code, priority)
+VALUES ('REMOVE_FULL', 40), ('REMOVE_EMPTY', 70)
+ON CONFLICT (operation_code) DO NOTHING;
 '@
 $devEnvironmentSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Dev environment seeding failed with exit code $LASTEXITCODE" }

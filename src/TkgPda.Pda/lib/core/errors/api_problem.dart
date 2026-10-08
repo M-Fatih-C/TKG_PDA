@@ -61,6 +61,27 @@ class ApiProblem implements Exception {
       'Üretim bitiş önceliği henüz tanımlanmamış. Sistem yöneticisine başvurun.',
     'PRODUCTION_END_REMOVAL_NOT_CONFIGURED' =>
       'Üretim bitişi boşaltma alanı tanımlanmamış. Sistem yöneticisine başvurun.',
+    'CONTAINER_TYPE_MISSING' => 'Taşıma kabı bilgisi bekleniyor.',
+    'FINISHED_GOODS_DESTINATION_NOT_CONFIGURED' ||
+    'FINISHED_GOODS_MAPPING_MISSING' =>
+      'Bitmiş ürün teslim alanı henüz yapılandırılmamış. Sistem yöneticisine başvurun.',
+    'EMPTY_SOURCE_MAPPING_MISSING' =>
+      'Boş kasa alma alanı tanımlanmamış. Sistem yöneticisine başvurun.',
+    'EMPTY_RETURN_MAPPING_MISSING' =>
+      'Boş kasa iade alanı tanımlanmamış. Sistem yöneticisine başvurun.',
+    'NON_FINISHED_RETURN_MAPPING_MISSING' =>
+      'Yarı mamul iade alanı tanımlanmamış. Sistem yöneticisine başvurun.',
+    'EMPTY_BUFFER_UNAVAILABLE' => 'Boş kasa için uygun boş saklama alanı yok.',
+    'PRODUCTION_END_PART_UNKNOWN' =>
+      'Konumdaki paletin parçası bilinmiyor. Üretim kapatılmadı.',
+    'PRODUCTION_END_POSITION_UNKNOWN' ||
+    'PRODUCTION_END_LOAD_UNKNOWN' =>
+      'Konum veya yük durumu bilinmiyor. Üretim kapatılmadı.',
+    'RDS_TASK_TEMPLATE_NOT_FOUND' =>
+      'Bu işlem için aktif görev şablonu bulunamadı.',
+    'RDS_WORKSITE_NOT_MAPPED' ||
+    'RDS_WORKSITE_MAPPING_MISSING' =>
+      'Robot çalışma noktası eşleşmesi bulunamadı.',
     'SLOT_NOT_IN_ACTIVE_LAYOUT' ||
     'CROSS_MACHINE_SLOT' ||
     'CROSS_LAYOUT_SLOT' =>

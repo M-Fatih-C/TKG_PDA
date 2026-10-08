@@ -42,4 +42,19 @@ WHERE n.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1
         AND existing.product_group_id IS NULL)
 ON CONFLICT (id) DO NOTHING;
 
+-- Ensure any existing generic task templates are aligned with the template registry
+UPDATE master.task_templates tt
+SET config_json = jsonb_set(coalesce(tt.config_json, '{}'::jsonb), '{templateRegistry}', to_jsonb('tkg_variant_task_templates_v1'::text))
+FROM master.machines m
+JOIN master.variants v ON v.machine_id = m.id AND v.is_active
+JOIN master.variant_navigation_profile_assignments a ON a.variant_id = v.id AND a.machine_id = m.id
+JOIN master.navigation_profiles n ON n.id = a.navigation_profile_id AND n.machine_id = m.id
+JOIN master.task_types task_type ON task_type.code IN ('BRING_FULL', 'BRING_EMPTY', 'REMOVE_FULL', 'REMOVE_EMPTY')
+WHERE tt.variant_id = v.id
+  AND tt.task_type_id = task_type.id
+  AND tt.product_group_id IS NULL
+  AND n.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+  AND n.config_json ->> 'layoutBindingState' = 'SOURCE_BACKED'
+  AND (tt.config_json ->> 'templateRegistry' IS NULL OR tt.config_json ->> 'templateRegistry' != 'tkg_variant_task_templates_v1');
+
 COMMIT;

@@ -167,13 +167,13 @@ BEGIN
     INSERT INTO master.task_templates (id, variant_id, task_type_id, rds_task_label, priority, config_json, is_active)
     VALUES
         -- Variant 1 templates
-        ('c3000000-0000-0000-0000-000000000001', v_variant_1_id, v_task_bring_empty, 'TKG_BRING_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
-        ('c3000000-0000-0000-0000-000000000002', v_variant_1_id, v_task_remove_full, 'TKG_REMOVE_FULL', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
-        ('c3000000-0000-0000-0000-000000000003', v_variant_1_id, v_task_remove_empty, 'TKG_REMOVE_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000001', v_variant_1_id, v_task_bring_empty, 'TKG_BRING_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000002', v_variant_1_id, v_task_remove_full, 'TKG_REMOVE_FULL', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000003', v_variant_1_id, v_task_remove_empty, 'TKG_REMOVE_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
         -- Variant 2 templates
-        ('c3000000-0000-0000-0000-000000000004', v_variant_2_id, v_task_bring_empty, 'TKG_BRING_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
-        ('c3000000-0000-0000-0000-000000000005', v_variant_2_id, v_task_remove_full, 'TKG_REMOVE_FULL', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
-        ('c3000000-0000-0000-0000-000000000006', v_variant_2_id, v_task_remove_empty, 'TKG_REMOVE_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true)
+        ('c3000000-0000-0000-0000-000000000004', v_variant_2_id, v_task_bring_empty, 'TKG_BRING_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000005', v_variant_2_id, v_task_remove_full, 'TKG_REMOVE_FULL', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000006', v_variant_2_id, v_task_remove_empty, 'TKG_REMOVE_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true)
     ON CONFLICT (id) DO UPDATE SET
         rds_task_label = EXCLUDED.rds_task_label,
         config_json = EXCLUDED.config_json,

@@ -691,13 +691,31 @@ String _stateLabel(String state) => switch (state) {
   _ => 'Güncelleniyor',
 };
 
+const _knownConfigurationErrorCodes = {
+  'FINISHED_GOODS_DESTINATION_NOT_CONFIGURED',
+  'FINISHED_GOODS_MAPPING_MISSING',
+  'EMPTY_SOURCE_MAPPING_MISSING',
+  'EMPTY_RETURN_MAPPING_MISSING',
+  'NON_FINISHED_RETURN_MAPPING_MISSING',
+  'SHARED_ENDPOINT_MAPPING_MISSING',
+  'RDS_TASK_TEMPLATE_NOT_FOUND',
+  'PRODUCTION_END_PRIORITY_NOT_CONFIGURED',
+  'PRODUCTION_END_REMOVAL_NOT_CONFIGURED',
+  'PREPARATION_AREA_NOT_CONFIGURED',
+  'RDS_WORKSITE_NOT_MAPPED',
+  'RDS_WORKSITE_MAPPING_MISSING',
+  'CONTAINER_TYPE_MISSING',
+  'CONTAINER_POSITION_NOT_FOUND',
+  'RUNTIME_CONTEXT_MISMATCH',
+  'LAYOUT_SLOT_NOT_CONFIGURED',
+  'ROBOT_MAP_NOT_CONFIGURED',
+};
+
 bool _isConfigurationIssue(ContainerActionAvailability availability) {
   final code = availability.disabledCode;
   if (code == null) return false;
   final upper = code.toUpperCase();
-  return upper.contains('CONFIGURED') ||
-      upper.contains('CONFIGURATION') ||
-      upper.contains('MAPPING') ||
-      upper.contains('AREA') ||
-      upper.contains('DESTINATION');
+  return _knownConfigurationErrorCodes.contains(upper) ||
+      upper.endsWith('_NOT_CONFIGURED') ||
+      upper.endsWith('_MAPPING_MISSING');
 }
