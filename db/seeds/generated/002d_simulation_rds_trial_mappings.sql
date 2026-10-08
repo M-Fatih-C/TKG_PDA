@@ -117,27 +117,22 @@ BEGIN
         display_name = EXCLUDED.display_name,
         slot_role = EXCLUDED.slot_role;
 
-    -- 5. Runtime state for buffer and drop slots
+    -- 5. Runtime state for buffer and drop slots (self-heal / insert-only)
     INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state, row_version, updated_at)
     VALUES
         ('c2000000-0000-0000-0000-000000000001', 'OCCUPIED', 'EMPTY', 0, now()),
         ('c2000000-0000-0000-0000-000000000002', 'VACANT', 'UNKNOWN', 0, now()),
         ('c2000000-0000-0000-0000-000000000003', 'OCCUPIED', 'EMPTY', 0, now()),
         ('c2000000-0000-0000-0000-000000000004', 'VACANT', 'UNKNOWN', 0, now())
-    ON CONFLICT (layout_slot_id) DO UPDATE SET
-        occupancy_state = EXCLUDED.occupancy_state,
-        load_state = EXCLUDED.load_state;
+    ON CONFLICT (layout_slot_id) DO NOTHING;
 
-    -- Insert/Reset all layout slots for machine SH-01-A to VACANT / UNKNOWN
+    -- Ensure all layout slots for machine SH-01-A have runtime state row if missing (self-heal / insert-only)
     INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state, row_version, updated_at)
     SELECT id, 'VACANT', 'UNKNOWN', 0, now()
     FROM master.layout_slots
     WHERE layout_id IN (v_layout_1_id, v_layout_2_id)
       AND slot_role NOT IN ('EMPTY_STORAGE', 'DROP')
-    ON CONFLICT (layout_slot_id) DO UPDATE SET
-        occupancy_state = 'VACANT',
-        load_state = 'UNKNOWN',
-        updated_at = now();
+    ON CONFLICT (layout_slot_id) DO NOTHING;
 
     -- 6. Map Layout Slots to RDS WorkSites
     INSERT INTO integration.layout_slot_rds_mapping (layout_slot_id, rds_worksite_id)

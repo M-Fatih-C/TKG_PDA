@@ -28,6 +28,7 @@ param(
     [switch]$NoOperator,
     [switch]$NoAdmin,
     [switch]$EnableSimulationTrialMappings = $true,
+    [switch]$ResetSimulationState,
     [switch]$ForceSeeds,
     [switch]$Wait
 )
@@ -356,6 +357,29 @@ if ($EnableSimulationTrialMappings) {
     if ($LASTEXITCODE -ne 0) { throw "Applying simulation trial seed failed: $simSeed" }
 } else {
     Write-Host 'Simulation trial mappings bypassed (production isolation active).' -ForegroundColor Gray
+}
+
+if ($ResetSimulationState) {
+    Write-Host 'Resetting simulation slot runtime states (-ResetSimulationState active)...' -ForegroundColor Yellow
+    $resetSimSql = @"
+UPDATE ops.slot_runtime_state
+SET occupancy_state = 'OCCUPIED', load_state = 'EMPTY', current_part_id = NULL, current_container_type_id = NULL, row_version = row_version + 1, updated_at = now()
+WHERE layout_slot_id IN ('c2000000-0000-0000-0000-000000000001', 'c2000000-0000-0000-0000-000000000003');
+
+UPDATE ops.slot_runtime_state
+SET occupancy_state = 'VACANT', load_state = 'UNKNOWN', current_part_id = NULL, current_container_type_id = NULL, row_version = row_version + 1, updated_at = now()
+WHERE layout_slot_id IN ('c2000000-0000-0000-0000-000000000002', 'c2000000-0000-0000-0000-000000000004');
+
+UPDATE ops.slot_runtime_state
+SET occupancy_state = 'VACANT', load_state = 'UNKNOWN', current_part_id = NULL, current_container_type_id = NULL, row_version = row_version + 1, updated_at = now()
+WHERE layout_slot_id IN (
+    SELECT ls.id FROM master.layout_slots ls
+    JOIN master.layouts l ON l.id = ls.layout_id
+    JOIN master.machines m ON m.id = l.machine_id
+    WHERE m.code = 'SH-01-A' AND ls.slot_role NOT IN ('EMPTY_STORAGE', 'DROP')
+);
+"@
+    $resetSimSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
 }
 
 # Clean up any leftover test parts, test slots, or test users from integration test suites
