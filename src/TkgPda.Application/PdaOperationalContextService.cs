@@ -201,6 +201,15 @@ public static class PdaOperationalContextPolicy
 
     private static PdaExecutionReadinessRecord ExecutionReadiness(RdsWorkSiteProjectionRecord workSite)
     {
+        if (workSite.IsMapped && workSite.PhysicalState is { } state)
+        {
+            var code = workSite.ConsistencyResult == "PHYSICAL_STATE_MISMATCH" ? "RDS_WORKSITE_OCCUPANCY_CONFLICT"
+                : RdsPhysicalAvailabilityPolicy.ErrorCode(state)
+                    ?? (workSite.ConsistencyResult == "PHYSICAL_STATE_UNKNOWN" ? "RDS_WORKSITE_STATE_UNKNOWN" : null);
+            return new(true, code is null, code,
+                code is null ? null : "Fiziksel alanı ve TKG konumunu kontrol edip RDS senkronundan sonra yeniden deneyin.", workSite.ConsistencyResult);
+        }
+
         if (!workSite.IsMapped)
         {
             return new(false, false, "RDS_WORKSITE_NOT_MAPPED", "Bu lojistik konumu henüz bir RDS WorkSite ile eşleştirilmemiştir.");
@@ -275,6 +284,12 @@ public static class PdaOperationalContextPolicy
         if (hasActiveRequest)
         {
             return Disabled(operation, "SLOT_BUSY", "Bu lojistik konumunu kullanan aktif bir taşıma talebi bulunuyor.");
+        }
+
+        if (slot.RdsWorkSite.IsMapped && slot.RdsWorkSite.PhysicalState is not null)
+        {
+            var readiness = ExecutionReadiness(slot.RdsWorkSite);
+            if (!readiness.IsExecutionReady) return Disabled(operation, readiness.ReadinessCode!, readiness.ReadinessMessage!);
         }
 
         var stateMatches = action switch

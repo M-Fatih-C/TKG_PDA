@@ -1,9 +1,20 @@
 """Regressions for false PASS conditions; these are assertion unit tests, not E2E."""
 import unittest
-from test_operator_web_e2e import all_verifications_pass, validate_projection
+from test_operator_web_e2e import all_verifications_pass, validate_projection, physical_preflight_block
 
 
 class BrowserAssertions(unittest.TestCase):
+    def test_unavailable_mapped_physical_slot_blocks_before_browser_mutation(self):
+        self.assertEqual("RDS_WORKSITE_STALE", physical_preflight_block({"slots": [{"transportEligible": True,
+            "executionReadiness": {"rdsWorkSiteMapped": True, "isExecutionReady": False,
+            "readinessCode": "RDS_WORKSITE_STALE"}}]}))
+        self.assertIsNone(physical_preflight_block({"slots": [{"transportEligible": True,
+            "executionReadiness": {"rdsWorkSiteMapped": True, "isExecutionReady": True}}]}))
+
+    def test_missing_physical_preflight_is_not_a_pass(self):
+        with self.assertRaises(RuntimeError):
+            physical_preflight_block({})
+
     def projection(self, full=False, empty=False, state="READY"):
         return [{"positionNumber": 1, "fullAction": {"enabled": full},
                  "emptyAction": {"enabled": empty}, "transportState": state}]

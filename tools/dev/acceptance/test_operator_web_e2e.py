@@ -108,6 +108,16 @@ def authenticated_read(api_base, device_code, employee_number, path):
         return json.load(response)
 
 
+def physical_preflight_block(context):
+    if not isinstance(context.get("slots"), list):
+        raise RuntimeError("Physical slot preflight could not be verified.")
+    codes = {slot.get("executionReadiness", {}).get("readinessCode") or "RDS_WORKSITE_STATE_UNKNOWN"
+        for slot in context["slots"] if slot.get("transportEligible")
+        and slot.get("executionReadiness", {}).get("rdsWorkSiteMapped")
+        and not slot.get("executionReadiness", {}).get("isExecutionReady")}
+    return ", ".join(sorted(codes)) if codes else None
+
+
 def validate_projection(positions, cards):
     if not positions or len(positions) != len(cards):
         return False
@@ -207,6 +217,14 @@ def run_browser_e2e(report):
 
     if not sh01a_id:
         raise RuntimeError("Target machine preflight failed; browser must not mutate.")
+
+    context = authenticated_read(api_base, device_code, employee_number,
+        f"/api/v1/machines/{sh01a_id}/operational-context")
+    physical_block = physical_preflight_block(context)
+    if physical_block:
+        report["reason"] = f"PHYSICAL_STATE_UNAVAILABLE — {physical_block}"
+        print(f"RESULT: SKIP ({report['reason']}); no session or request mutation performed.")
+        sys.exit(2)
 
     # Ensure Flutter Web server bundle is completely compiled before launching Chrome
     bundle_ready = False

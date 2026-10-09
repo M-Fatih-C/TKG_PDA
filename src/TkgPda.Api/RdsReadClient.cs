@@ -16,7 +16,7 @@ public sealed record RdsOptions(
     string? FullContentValue = null,
     bool AllowInsecureRemoteHttp = false,
     int WorkerIntervalSeconds = 3,
-    int WorkSiteFreshnessSeconds = 300,
+    int WorkSiteFreshnessSeconds = RdsPhysicalAvailabilityPolicy.DefaultFreshnessSeconds,
     int AlarmObservationIntervalSeconds = 10)
 {
     public static RdsOptions FromConfiguration(IConfiguration configuration)
@@ -33,7 +33,7 @@ public sealed record RdsOptions(
             configuration["Rds:FullContentValue"],
             configuration.GetValue("Rds:AllowInsecureRemoteHttp", false),
             configuration.GetValue("Rds:WorkerIntervalSeconds", 3),
-            configuration.GetValue("Rds:WorkSiteFreshnessSeconds", 300),
+            configuration.GetValue("Rds:WorkSiteFreshnessSeconds", RdsPhysicalAvailabilityPolicy.DefaultFreshnessSeconds),
             configuration.GetValue("Rds:AlarmObservationIntervalSeconds", 10));
         options.Validate();
         return options;

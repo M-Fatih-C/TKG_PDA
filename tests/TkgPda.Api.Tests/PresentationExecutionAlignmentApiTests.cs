@@ -323,8 +323,8 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
 
     private Task InstallEndpointsAsync() => fixture.ExecuteAsync("""
         INSERT INTO integration.rds_worksites
-            (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, raw_state_json)
-        SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, '{}'::jsonb
+            (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, last_filled, last_locked, raw_state_json)
+        SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, 0, 0, '{"filled":0,"locked":0}'::jsonb
         FROM integration.rds_worksite_plans p
         JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id
         WHERE n.code = 'TKG_SH01A_V01_NAV'
@@ -334,7 +334,7 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
               OR (p.object_family = 'RETURN' AND p.ordinal = 1)
               OR (p.object_family = 'FINISHED_GOODS' AND p.ordinal = 1))
         ON CONFLICT (navigation_profile_id, rds_site_id) DO UPDATE
-        SET last_sync_at = now(), last_disabled = 0, last_sync_failed = 0;
+        SET last_sync_at = now(), last_disabled = 0, last_sync_failed = 0, last_filled = 0, last_locked = 0;
 
         INSERT INTO integration.preparation_area_rds_mapping (preparation_area_id, rds_worksite_id)
         SELECT pa.id, w.id

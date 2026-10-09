@@ -277,40 +277,35 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     /// Read-only form for the PDA projection: whether a Kasa Doldu for this
     /// product group could currently resolve a mapped finished-goods destination.
     /// </summary>
-    private static async Task<bool> IsFinishedGoodsDestinationConfiguredAsync(
-        NpgsqlConnection connection,
-        Guid machineId,
-        Guid layoutId,
-        Guid variantId,
-        Guid productGroupId,
-        CancellationToken cancellationToken)
+    private async Task<string?> FinishedGoodsAvailabilityCodeAsync(
+        NpgsqlConnection connection, Guid machineId, Guid layoutId, Guid variantId,
+        Guid productGroupId, CancellationToken cancellationToken)
     {
-        // Registry requests allocate canonical FG endpoints, not legacy layout
-        // delivery slots. The operator projection must use the same mapping path.
-        await using (var registry = new NpgsqlCommand("""
-            SELECT n.status = 'PUBLISHED' AND EXISTS (
-                SELECT 1 FROM integration.profile_shared_endpoint_bindings b
-                JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
-                    AND w.navigation_profile_id = b.navigation_profile_id
-                JOIN ops.store_locations sl ON sl.code = b.business_code AND sl.is_enabled
-                WHERE b.navigation_profile_id = n.id AND b.endpoint_class = 'FINISHED_GOODS'
-                    AND w.last_sync_at IS NOT NULL
-                    AND COALESCE(w.last_disabled, 0) = 0 AND COALESCE(w.last_sync_failed, 0) = 0)
-            FROM ops.machine_runtime_state runtime
+        await using var registry = new NpgsqlCommand("""
+            SELECT n.id, n.status FROM ops.machine_runtime_state runtime
             JOIN master.navigation_profiles n ON n.id = runtime.active_navigation_id
             WHERE runtime.machine_id = @machine AND n.config_json->>'commissioningRegistry' = @registry
-            """, connection))
+            """, connection);
+        registry.Parameters.AddWithValue("machine", machineId);
+        registry.Parameters.AddWithValue("registry", CommissioningRegistry);
+        Guid? profileId = null;
+        string? status = null;
+        await using (var reader = await registry.ExecuteReaderAsync(cancellationToken))
+            if (await reader.ReadAsync(cancellationToken)) { profileId = reader.GetGuid(0); status = reader.GetString(1); }
+        if (profileId is { } id)
         {
-            registry.Parameters.AddWithValue("machine", machineId);
-            registry.Parameters.AddWithValue("registry", CommissioningRegistry);
-            if (await registry.ExecuteScalarAsync(cancellationToken) is bool configured)
-                return configured;
+            var observations = await ReadSharedCandidatesAsync(connection, null, id, "FINISHED_GOODS", cancellationToken);
+            var candidates = observations.Where(c => c.ProfileId == id).ToArray();
+            if (status != "PUBLISHED" || candidates.Length == 0 || !candidates.Any(c => c.StoreEnabled))
+                return "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED";
+            foreach (var candidate in candidates)
+                if (IsPhysicallyAvailable(candidate, observations)
+                    && !await IsSharedEndpointOccupiedGloballyAsync(connection, null, candidate.BusinessCode, cancellationToken)) return null;
+            return SharedUnavailable("FINISHED_GOODS", candidates).Code;
         }
-
-        var slotId = await ResolveFinishedGoodsDestinationSlotAsync(
-            connection, null, layoutId, variantId, productGroupId, cancellationToken);
-        return slotId is { } id
-            && await IsFinishedGoodsDeliverySlotMappedAsync(connection, null, id, lockRows: false, cancellationToken);
+        var slotId = await ResolveFinishedGoodsDestinationSlotAsync(connection, null, layoutId, variantId, productGroupId, cancellationToken);
+        return slotId is { } slot && await IsFinishedGoodsDeliverySlotMappedAsync(connection, null, slot, false, cancellationToken)
+            ? null : "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED";
     }
 
     public async Task<IReadOnlyList<StoreLocationRecord>> ListLocationsAsync(

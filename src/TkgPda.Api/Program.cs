@@ -135,8 +135,10 @@ builder.Services.AddSingleton<RdsIntegrationService>();
 builder.Services.AddSingleton<IRdsWorkSiteReconciler>(services =>
     services.GetRequiredService<RdsIntegrationService>());
 builder.Services.AddSingleton<AdminConfigurationService>();
+builder.Services.AddSingleton(new RdsPhysicalAvailabilityPolicy(TimeSpan.FromSeconds(rdsOptions.WorkSiteFreshnessSeconds)));
 builder.Services.AddSingleton(services =>
-    new PostgresTransportWorkflowStore(services.GetRequiredService<NpgsqlDataSource>()));
+    new PostgresTransportWorkflowStore(services.GetRequiredService<NpgsqlDataSource>(),
+        physicalPolicy: services.GetRequiredService<RdsPhysicalAvailabilityPolicy>()));
 builder.Services.AddSingleton<ITransportWorkflowStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<IContainerActionStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<IPartDemandStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());

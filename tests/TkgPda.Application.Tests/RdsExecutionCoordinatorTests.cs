@@ -7,6 +7,22 @@ namespace TkgPda.Application.Tests;
 
 public sealed class RdsExecutionCoordinatorTests
 {
+    [Theory]
+    [InlineData("WIND_TASK",0,"OCCUPIED","RDS_WORKSITE_OCCUPANCY_CONFLICT")]
+    [InlineData("RDSCORE_NATIVE_ORDER",0,"OCCUPIED","RDS_WORKSITE_OCCUPANCY_CONFLICT")]
+    [InlineData("WIND_TASK",1,"VACANT","RDS_WORKSITE_OCCUPANCY_CONFLICT")]
+    [InlineData("WIND_TASK",null,"OCCUPIED","RDS_WORKSITE_STATE_UNKNOWN")]
+    public async Task Contradictory_or_unknown_mapped_slot_blocks_motion_before_any_task_identity(string mode,int? filled,string occupancy,string expected)
+    {
+        var context=Context() with { TemplateConfig=Json($$"""{"executionMode":"{{mode}}"}"""),
+            Source=Endpoint("ISOLATED") with { Filled=filled,BusinessOccupancy=occupancy } };
+        var fixture=Fixture(context:context);
+        var error=await Assert.ThrowsAsync<RdsExecutionException>(()=>fixture.Coordinator.DispatchOneAsync(RequestId,Guid.NewGuid()));
+        Assert.Equal(expected,error.Code);
+        Assert.Equal(0,fixture.Client.CreateCount);
+        Assert.Equal(0,fixture.Store.EnsureCount);
+    }
+
     [Fact]
     public void Binder_resolves_whitelisted_sources_deterministically()
     {

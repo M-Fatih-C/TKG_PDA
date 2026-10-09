@@ -95,7 +95,9 @@ public sealed record RdsWorkSiteProjectionRecord(
     int? SyncFailed,
     string? Content,
     string? AgvId,
-    DateTimeOffset? LastSyncAt);
+    DateTimeOffset? LastSyncAt,
+    string? PhysicalState = null,
+    string? ConsistencyResult = null);
 
 public sealed record SlotContextDataRecord(
     Guid Id,
@@ -131,7 +133,8 @@ public sealed record PdaExecutionReadinessRecord(
     bool RdsWorkSiteMapped,
     bool IsExecutionReady,
     string? ReadinessCode,
-    string? ReadinessMessage);
+    string? ReadinessMessage,
+    string? ConsistencyResult = null);
 
 public sealed record SlotContextRecord(
     Guid Id,

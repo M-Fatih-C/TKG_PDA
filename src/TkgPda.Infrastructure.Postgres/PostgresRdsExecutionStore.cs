@@ -6,8 +6,32 @@ using TkgPda.Domain;
 
 namespace TkgPda.Infrastructure.Postgres;
 
-public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRdsExecutionStore
+public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPhysicalAvailabilityPolicy? physicalPolicy = null) : IRdsExecutionStore
 {
+    public async Task<string?> ReadPhysicalDispatchBlockAsync(Guid requestId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT r.navigation_id,r.destination_business_code,tt.code
+            FROM ops.transport_requests r JOIN master.task_types tt ON tt.id=r.task_type_id WHERE r.id=@id
+            """,connection);
+        command.Parameters.AddWithValue("id",requestId);
+        Guid? nav = null; string? businessCode = null; string? operation = null;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            if (await reader.ReadAsync(cancellationToken))
+            { nav=reader.IsDBNull(0) ? null : reader.GetGuid(0); businessCode=Text(reader,1); operation=Text(reader,2); }
+        if (nav is not { } profileId || businessCode is null) return null;
+        var endpointClass=operation=="REMOVE_EMPTY" ? "EMPTY_RETURN"
+            : businessCode.StartsWith("FG-",StringComparison.Ordinal) ? "FINISHED_GOODS" : "NON_FINISHED_RETURN";
+        var observations=await PostgresTransportWorkflowStore.ReadSharedCandidatesAsync(connection,null,profileId,endpointClass,cancellationToken);
+        var candidate=observations.SingleOrDefault(c=>c.ProfileId==profileId && c.BusinessCode==businessCode);
+        if (candidate is null) return "RDS_WORKSITE_NOT_MAPPED";
+        if (!candidate.StoreEnabled) return "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED";
+        var policy=physicalPolicy ?? new RdsPhysicalAvailabilityPolicy();
+        return PostgresTransportWorkflowStore.SharedPhysicalAvailability(candidate,observations,policy) ? null
+            : RdsPhysicalAvailabilityPolicy.ErrorCode(policy.State(candidate.Evidence)) ?? "RDS_WORKSITE_OCCUPANCY_CONFLICT";
+    }
+
     private const string RequestSelect =
         """
         SELECT r.id, r.request_no, COALESCE(r.idempotency_key, ''), r.status, tt.code, r.request_origin,
@@ -321,7 +345,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
             throw new RdsExecutionException("RDS_TASK_TEMPLATE_NOT_FOUND", "No active task template matches the request variant, product group and operation.");
         }
 
-        return new RdsDispatchContext(
+        var context = new RdsDispatchContext(
             request,
             reader.GetString(19),
             reader.GetString(20),
@@ -334,6 +358,16 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
             Json(reader.GetString(27)),
             Endpoint(reader, 28),
             Endpoint(reader, 39));
+        await reader.DisposeAsync();
+        async Task<RdsDispatchEndpoint> WithOccupancy(RdsDispatchEndpoint endpoint)
+        {
+            if (endpoint.SlotId is not { } slotId) return endpoint;
+            await using var runtime = new NpgsqlCommand("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot", connection);
+            runtime.Parameters.AddWithValue("slot", slotId);
+            return endpoint with { BusinessOccupancy = await runtime.ExecuteScalarAsync(cancellationToken) as string ?? "UNKNOWN" };
+        }
+        return context with { Source = await WithOccupancy(context.Source), Destination = await WithOccupancy(context.Destination) };
+
     }
 
     public async Task<string?> ReadRegistryDispatchBlockAsync(Guid requestId, CancellationToken cancellationToken = default)

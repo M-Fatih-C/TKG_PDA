@@ -242,7 +242,7 @@ if ($Phase -in @('All', 'MamulKasa')) {
     if ($LASTEXITCODE -eq 0) {
         $results['Mamul Kasa'] = 'PASS'
     } elseif ($LASTEXITCODE -eq 2) {
-        $results['Mamul Kasa'] = 'BLOCKED (ENVIRONMENT_BUSY)'
+        $results['Mamul Kasa'] = 'BLOCKED (ENVIRONMENT_BUSY / PHYSICAL_STATE_UNAVAILABLE)'
     } else {
         $results['Mamul Kasa'] = 'FAIL'
         exit 1

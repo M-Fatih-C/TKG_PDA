@@ -429,8 +429,14 @@ public sealed record GeometryConfirmationDecision(
     int RemainingCount,
     IReadOnlyList<string> Blockers);
 
+public sealed record RdsPhysicalDiagnosticRecord(Guid NavigationProfileId, string BusinessCode, string EndpointClass,
+    Guid? SlotId, string? BusinessOccupancy, bool Reserved, Guid MirroredWorkSiteId, string SiteId,
+    string? ExternalId, string? SiteName, RdsPhysicalEvidence Evidence, string PhysicalState, string ConsistencyResult);
+
 public interface IRdsIntegrationStore
 {
+    Task<IReadOnlyList<RdsPhysicalDiagnosticRecord>> ListPhysicalDiagnosticsAsync(Guid navigationProfileId, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
     Task<IReadOnlyList<RdsNavigationProfileRecord>> ListNavigationProfilesAsync(CancellationToken cancellationToken = default);
     Task<(int Created, int Updated)> SyncWorkSitesAsync(Guid navigationProfileId, IReadOnlyList<RdsWorkSiteSnapshot> workSites, DateTimeOffset syncedAt, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RdsMirroredWorkSiteRecord>> ListWorkSitesAsync(RdsWorkSiteFilter filter, CancellationToken cancellationToken = default);

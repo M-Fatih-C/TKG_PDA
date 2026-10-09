@@ -339,6 +339,8 @@ public sealed class PostgresTransportWorkflowTests
             // 3. BRING_EMPTY without source -> must resolve source to EMPTY_STORAGE
             await ExecuteAsync("UPDATE ops.transport_requests SET status = 'CANCELLED' WHERE id = @id", ("id", removeEmptyReq.Request.Id));
             await SetSlotAsync(emptyStorageSlotId, OccupancyState.Occupied, LoadState.Empty);
+            // Explicit isolated pickup presence; a vacant mirror contradicts this fixture.
+            await ExecuteAsync("UPDATE integration.rds_worksites SET last_filled = 1, last_sync_at = now() WHERE id = @id", ("id", emptyWorkSiteId));
             var bringEmptyReq = await workflowStore.CreateAndQueueAsync(Command(context, TransportTaskType.BringEmpty, "be-test", destination: machineSlots[2]));
             var bringEmptyDispatch = await executionStore.GetDispatchContextAsync(bringEmptyReq.Request.Id);
             Assert.NotNull(bringEmptyDispatch);

@@ -91,6 +91,10 @@ String readinessLabel(String? code) => switch (code) {
     'Eşlenen robot noktası fiziksel taşıma noktası değil.',
   'RDS_WORKSITE_STALE' =>
     'Robot noktası için güncel senkronizasyon kanıtı yok.',
+  'RDS_WORKSITE_OCCUPANCY_CONFLICT' =>
+    'Fiziksel alan ile sistem doluluk bilgisi uyuşmuyor. Alanı doğrulatıp RDS senkronundan sonra yeniden deneyin.',
+  'RDS_WORKSITE_STATE_UNKNOWN' =>
+    'Fiziksel alanın durumu bilinmiyor. RDS senkronunu kontrol edip ekranı yenileyin.',
   'RDS_WORKSITE_DISABLED' => 'Robot noktası kullanım dışı.',
   'RDS_WORKSITE_SYNC_FAILED' => 'Robot noktası senkronize değil.',
   'RDS_WORKSITE_LOCKED' => 'Robot noktası şu anda kullanımda.',

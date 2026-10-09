@@ -131,11 +131,11 @@ UPDATE ops.machine_runtime_state SET active_navigation_id = '$navId' WHERE machi
 
 # Install synthetic shared endpoint bindings in acceptance DB
 & $psql -h $HostName -p $Port -U $User -d $Database -c @"
-INSERT INTO integration.rds_worksites (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, raw_state_json)
-SELECT '$navId', planned_rds_site_id, 1, now(), 0, 0, '{}'::jsonb
+INSERT INTO integration.rds_worksites (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, last_filled, last_locked, raw_state_json)
+SELECT '$navId', planned_rds_site_id, 1, now(), 0, 0, 0, 0, '{"filled":0,"locked":0}'::jsonb
 FROM integration.rds_worksite_plans
 WHERE navigation_profile_id = '$navId' AND planned_rds_site_id IN ('TKG_SH01A_V01_WS_FG01', 'TKG_SH01A_V01_WS_RETURN01', 'TKG_SH01A_V01_WS_EMPTY01')
-ON CONFLICT (navigation_profile_id, rds_site_id) DO UPDATE SET last_sync_at = now(), last_disabled = 0, last_sync_failed = 0;
+ON CONFLICT (navigation_profile_id, rds_site_id) DO UPDATE SET last_sync_at = now(), last_disabled = 0, last_sync_failed = 0, last_filled = 0, last_locked = 0;
 
 INSERT INTO integration.profile_shared_endpoint_bindings
     (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)

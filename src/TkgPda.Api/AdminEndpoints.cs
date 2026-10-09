@@ -90,6 +90,8 @@ public static class AdminEndpoints
         admin.MapGet("/rds/navigation-profiles", (RdsIntegrationService service, CancellationToken ct) => service.ListNavigationProfilesAsync(ct));
         admin.MapPost("/rds/worksites/sync", SyncRdsWorkSitesAsync);
         admin.MapGet("/rds/worksites", ListRdsWorkSitesAsync);
+        admin.MapGet("/rds/physical-evidence", (Guid navigationProfileId, IRdsIntegrationStore store, CancellationToken ct) =>
+            store.ListPhysicalDiagnosticsAsync(navigationProfileId, ct));
         admin.MapGet("/rds/slot-mappings", (Guid? layoutId, RdsIntegrationService service, CancellationToken ct) => service.ListSlotMappingsAsync(layoutId, ct));
         admin.MapPut("/layout-slots/{slotId:guid}/rds-mapping", SetRdsMappingAsync);
         admin.MapDelete("/layout-slots/{slotId:guid}/rds-mapping", RemoveRdsMappingAsync);

@@ -96,6 +96,16 @@ void main() {
           'Uygun boş kasa dönüş alanı bulunamadı.',
       'SHARED_ENDPOINT_CAPACITY_UNAVAILABLE':
           'Uygun boş hedef alan bulunamadı.',
+      'RDS_WORKSITE_LOCKED':
+          'Fiziksel robot noktası kilitli. Alanın serbest bırakılmasını bekleyip ekranı yenileyin.',
+      'RDS_WORKSITE_STALE':
+          'Fiziksel robot noktasının kanıtı güncel değil. RDS senkronunu kontrol edip ekranı yenileyin.',
+      'RDS_WORKSITE_NOT_PHYSICAL':
+          'Eşlenen robot noktası fiziksel değil. Sistem yöneticisine başvurun.',
+      'RDS_WORKSITE_OCCUPANCY_CONFLICT':
+          'Fiziksel alan ile sistem doluluk bilgisi uyuşmuyor. Alanı doğrulatıp RDS senkronundan sonra yeniden deneyin.',
+      'RDS_WORKSITE_STATE_UNKNOWN':
+          'Fiziksel alanın durumu bilinmiyor. RDS senkronunu kontrol edip ekranı yenileyin.',
       'RDS_WORKSITE_DISABLED':
           'Robot çalışma noktası kullanım dışı. Sistem yöneticisine başvurun.',
       'RDS_WORKSITE_SYNC_FAILED':

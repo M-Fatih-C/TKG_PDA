@@ -12,16 +12,18 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
     private const string ActiveStatusesSql = "'CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING'";
     private readonly NpgsqlDataSource _dataSource;
     private readonly bool _ownsDataSource;
+    private readonly RdsPhysicalAvailabilityPolicy _physicalPolicy;
 
     public PostgresTransportWorkflowStore(string connectionString)
         : this(NpgsqlDataSource.Create(connectionString), ownsDataSource: true)
     {
     }
 
-    public PostgresTransportWorkflowStore(NpgsqlDataSource dataSource, bool ownsDataSource = false)
+    public PostgresTransportWorkflowStore(NpgsqlDataSource dataSource, bool ownsDataSource = false, RdsPhysicalAvailabilityPolicy? physicalPolicy = null)
     {
         _dataSource = dataSource ?? throw new ArgumentNullException(nameof(dataSource));
         _ownsDataSource = ownsDataSource;
+        _physicalPolicy = physicalPolicy ?? new RdsPhysicalAvailabilityPolicy();
     }
 
     public Task<CreateTransportResult> CreateAndQueueAsync(
@@ -83,7 +85,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         return new TransportBatchResult(batchId, request.IdempotencyKey, request.MachineId, children, WasIdempotentReplay: false);
     }
 
-    private static async Task<CreateTransportResult> CreateAndQueueWithinTransactionAsync(
+    private async Task<CreateTransportResult> CreateAndQueueWithinTransactionAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         CreateTransportRequest request,
@@ -182,6 +184,13 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             {
                 DestinationSlotId = await ResolveFinishedGoodsDestinationAsync(connection, transaction, request, cancellationToken)
             };
+        }
+
+        foreach (var slotId in new[] { request.SourceSlotId, request.DestinationSlotId }.OfType<Guid>().Distinct().Order())
+        {
+            var slot = slots.TryGetValue(slotId, out var existingSlot) ? existingSlot
+                : await LockSlotAsync(connection, transaction, slotId, cancellationToken);
+            await RequireSlotPhysicalConsistencyAsync(connection, transaction, slot, request.NavigationProfileId, cancellationToken);
         }
 
         var created = await InsertRequestAsync(connection, transaction, request, taskTypeId, batchId, cancellationToken);

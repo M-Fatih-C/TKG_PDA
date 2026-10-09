@@ -1,5 +1,6 @@
 using Npgsql;
 using TkgPda.Domain;
+using TkgPda.Application;
 
 namespace TkgPda.Infrastructure.Postgres;
 
@@ -15,7 +16,7 @@ public sealed partial class PostgresTransportWorkflowStore
     /// </summary>
     private static async Task<Guid?> ActiveNavigationAsync(
         NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
+        NpgsqlTransaction? transaction,
         Guid machineId,
         CancellationToken cancellationToken)
     {
@@ -45,7 +46,7 @@ public sealed partial class PostgresTransportWorkflowStore
 
     private static async Task<bool> TryLockSharedEndpointAsync(
         NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
+        NpgsqlTransaction? transaction,
         string businessCode,
         CancellationToken cancellationToken)
     {
@@ -59,7 +60,7 @@ public sealed partial class PostgresTransportWorkflowStore
 
     private static async Task<bool> IsSharedEndpointOccupiedGloballyAsync(
         NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
+        NpgsqlTransaction? transaction,
         string businessCode,
         CancellationToken cancellationToken)
     {
@@ -77,117 +78,88 @@ public sealed partial class PostgresTransportWorkflowStore
         return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
-    private static async Task RequireSharedCapacityAsync(
-        NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
-        Guid profileId,
-        string endpointClass,
-        int required,
-        string missingCode,
-        CancellationToken cancellationToken)
+    internal sealed record SharedCandidate(string BusinessCode, Guid ProfileId, RdsPhysicalEvidence Evidence, bool StoreEnabled)
     {
-        var candidates = new List<(string BusinessCode, bool Healthy, int Disabled, int SyncFailed)>();
-        await using (var command = new NpgsqlCommand(
-            """
-            SELECT b.business_code,
-                   COALESCE(w.last_disabled, 0),
-                   COALESCE(w.last_sync_failed, 0),
-                   w.last_sync_at IS NOT NULL
-                     AND COALESCE(w.last_disabled, 0) = 0
-                     AND COALESCE(w.last_sync_failed, 0) = 0 AS healthy
+        // EMPTY_SOURCE is the established pool abstraction, not a destination.
+        public bool SourceHealthy => Evidence.LastSyncAt is not null
+            && (Evidence.Disabled ?? 0) == 0 && (Evidence.SyncFailed ?? 0) == 0;
+    }
+
+    internal static async Task<List<SharedCandidate>> ReadSharedCandidatesAsync(
+        NpgsqlConnection connection, NpgsqlTransaction? transaction, Guid profileId,
+        string endpointClass, CancellationToken cancellationToken)
+    {
+        var rows = new List<SharedCandidate>();
+        await using var command = new NpgsqlCommand($"""
+            SELECT b.business_code, b.navigation_profile_id, w.rds_type, w.last_filled,
+                   w.last_locked, w.last_disabled, w.last_sync_failed, w.last_sync_at,
+                   b.endpoint_class <> 'FINISHED_GOODS' OR EXISTS (
+                       SELECT 1 FROM ops.store_locations sl WHERE sl.code = b.business_code AND sl.is_enabled)
             FROM integration.profile_shared_endpoint_bindings b
             JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
-                                             AND w.navigation_profile_id = b.navigation_profile_id
-            WHERE b.navigation_profile_id = @profile
-              AND b.endpoint_class = @class
-            ORDER BY b.business_code
-            """,
-            connection,
-            transaction))
-        {
-            command.Parameters.AddWithValue("profile", profileId);
-            command.Parameters.AddWithValue("class", endpointClass);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                candidates.Add((
-                    reader.GetString(0),
-                    reader.GetBoolean(3),
-                    reader.GetInt32(1),
-                    reader.GetInt32(2)));
-            }
-        }
+                AND w.navigation_profile_id = b.navigation_profile_id
+            WHERE b.endpoint_class = @class AND b.business_code IN (
+                SELECT business_code FROM integration.profile_shared_endpoint_bindings
+                WHERE navigation_profile_id = @profile AND endpoint_class = @class)
+            ORDER BY b.business_code, b.navigation_profile_id, w.id
+            {(transaction is null ? "" : "FOR SHARE OF b, w")}
+            """, connection, transaction);
+        command.Parameters.AddWithValue("profile", profileId);
+        command.Parameters.AddWithValue("class", endpointClass);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            rows.Add(new(reader.GetString(0), reader.GetGuid(1), new(
+                reader.IsDBNull(2) ? null : reader.GetInt32(2),
+                reader.IsDBNull(3) ? null : reader.GetInt32(3),
+                reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                reader.IsDBNull(6) ? null : reader.GetInt32(6),
+                reader.IsDBNull(7) ? null : reader.GetFieldValue<DateTimeOffset>(7)), reader.GetBoolean(8)));
+        return rows;
+    }
 
-        if (candidates.Count == 0)
-        {
-            throw new WorkflowRuleException(missingCode, SharedEndpointMessage(missingCode));
-        }
+    private bool IsPhysicallyAvailable(SharedCandidate candidate, IReadOnlyList<SharedCandidate> observations) =>
+        SharedPhysicalAvailability(candidate, observations, _physicalPolicy);
 
+    internal static bool SharedPhysicalAvailability(SharedCandidate candidate, IReadOnlyList<SharedCandidate> observations,
+        RdsPhysicalAvailabilityPolicy policy) => candidate.StoreEnabled && policy.IsDestinationAvailable(candidate.Evidence)
+        && !observations.Any(other => other.BusinessCode == candidate.BusinessCode
+            && other.ProfileId != candidate.ProfileId && policy.ContradictsEmptyDestination(other.Evidence));
+
+    private WorkflowRuleException SharedUnavailable(string endpointClass, IReadOnlyList<SharedCandidate> candidates)
+    {
+        // Occupancy/cross-NAV contradictions and reservations are capacity, not configuration.
+        if (candidates.Any(c => _physicalPolicy.State(c.Evidence) is "AVAILABLE" or "OCCUPIED"))
+            return CapacityUnavailableException(endpointClass);
+        var state = candidates.Select(c => _physicalPolicy.State(c.Evidence)).FirstOrDefault() ?? "UNKNOWN";
+        var code = RdsPhysicalAvailabilityPolicy.ErrorCode(state) ?? "RDS_WORKSITE_STATE_UNKNOWN";
+        return new(code, "Fiziksel WorkSite kullanıma uygun değil. Alanı ve RDS senkronunu kontrol edip ekranı yenileyin.");
+    }
+
+    private async Task RequireSharedCapacityAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, Guid profileId,
+        string endpointClass, int required, string missingCode, CancellationToken cancellationToken)
+    {
+        var observations = await ReadSharedCandidatesAsync(connection, transaction, profileId, endpointClass, cancellationToken);
+        var candidates = observations.Where(c => c.ProfileId == profileId).ToArray();
+        if (candidates.Length == 0) throw new WorkflowRuleException(missingCode, SharedEndpointMessage(missingCode));
+        if (endpointClass == "FINISHED_GOODS" && !candidates.Any(c => c.StoreEnabled))
+            throw new WorkflowRuleException("FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", FinishedGoodsDestinationNotConfiguredMessage);
         if (!IsSingleCapacityEndpoint(endpointClass))
         {
-            var healthyCount = candidates.Count(c => c.Healthy);
-            if (healthyCount < required)
-            {
-                if (candidates.Any(c => c.Disabled > 0))
-                {
-                    throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
-                }
-
-                throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
-            }
-            return;
+            if (candidates.Count(c => c.SourceHealthy) >= required) return;
+            throw new WorkflowRuleException(candidates.Any(c => c.Evidence.Disabled > 0)
+                ? "RDS_WORKSITE_DISABLED" : "RDS_WORKSITE_SYNC_FAILED", "Boş kasa kaynağı kullanıma uygun değil.");
         }
-
-        // For single-capacity destinations:
-        // Collect and reserve 'required' endpoints in deterministic lexicographical order.
-        var acquired = new List<string>();
-        var anyHealthy = false;
+        var acquired = 0;
         foreach (var candidate in candidates)
         {
-            if (!candidate.Healthy)
-            {
-                continue;
-            }
-
-            anyHealthy = true;
-
-            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken))
-            {
-                continue;
-            }
-
-            var locked = await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken);
-            if (!locked)
-            {
-                continue;
-            }
-
-            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken))
-            {
-                continue;
-            }
-
-            acquired.Add(candidate.BusinessCode);
-            if (acquired.Count == required)
-            {
-                break;
-            }
+            if (!IsPhysicallyAvailable(candidate, observations)) continue;
+            if (!await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
+            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
+            if (++acquired == required) return;
         }
-
-        if (acquired.Count < required)
-        {
-            if (!anyHealthy)
-            {
-                if (candidates.Any(c => c.Disabled > 0))
-                {
-                    throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
-                }
-
-                throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
-            }
-
-            throw CapacityUnavailableException(endpointClass);
-        }
+        throw SharedUnavailable(endpointClass, candidates);
     }
 
     private static async Task<bool> IsCommissioningRegistryProfileAsync(
@@ -215,7 +187,7 @@ public sealed partial class PostgresTransportWorkflowStore
         return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
-    private static async Task<CreateTransportRequest> AssignRegistrySharedEndpointAsync(
+    private async Task<CreateTransportRequest> AssignRegistrySharedEndpointAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         CreateTransportRequest request,
@@ -277,7 +249,7 @@ public sealed partial class PostgresTransportWorkflowStore
         return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
-    private static async Task RequireSharedEndpointAsync(
+    private async Task RequireSharedEndpointAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid profileId,
@@ -288,112 +260,30 @@ public sealed partial class PostgresTransportWorkflowStore
         _ = await AllocateSharedBusinessCodeAsync(connection, transaction, profileId, endpointClass, missingCode, cancellationToken);
     }
 
-    private static async Task<string> AllocateSharedBusinessCodeAsync(
-        NpgsqlConnection connection,
-        NpgsqlTransaction transaction,
-        Guid profileId,
-        string endpointClass,
-        string missingCode,
-        CancellationToken cancellationToken)
+    private async Task<string> AllocateSharedBusinessCodeAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, Guid profileId,
+        string endpointClass, string missingCode, CancellationToken cancellationToken)
     {
-        var candidates = new List<(string BusinessCode, bool Healthy, int Disabled, int SyncFailed)>();
-        await using (var command = new NpgsqlCommand(
-            """
-            SELECT b.business_code,
-                   COALESCE(w.last_disabled, 0),
-                   COALESCE(w.last_sync_failed, 0),
-                   w.last_sync_at IS NOT NULL
-                     AND COALESCE(w.last_disabled, 0) = 0
-                     AND COALESCE(w.last_sync_failed, 0) = 0 AS healthy
-            FROM integration.profile_shared_endpoint_bindings b
-            JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
-                                             AND w.navigation_profile_id = b.navigation_profile_id
-            WHERE b.navigation_profile_id = @profile
-              AND b.endpoint_class = @class
-            ORDER BY b.business_code
-            """,
-            connection,
-            transaction))
-        {
-            command.Parameters.AddWithValue("profile", profileId);
-            command.Parameters.AddWithValue("class", endpointClass);
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                candidates.Add((
-                    reader.GetString(0),
-                    reader.GetBoolean(3),
-                    reader.GetInt32(1),
-                    reader.GetInt32(2)));
-            }
-        }
-
-        if (candidates.Count == 0)
-        {
-            throw new WorkflowRuleException(missingCode, SharedEndpointMessage(missingCode));
-        }
-
-        // For non-single-capacity endpoints (e.g. EMPTY_SOURCE pool):
+        var observations = await ReadSharedCandidatesAsync(connection, transaction, profileId, endpointClass, cancellationToken);
+        var candidates = observations.Where(c => c.ProfileId == profileId).ToArray();
+        if (candidates.Length == 0) throw new WorkflowRuleException(missingCode, SharedEndpointMessage(missingCode));
+        if (endpointClass == "FINISHED_GOODS" && !candidates.Any(c => c.StoreEnabled))
+            throw new WorkflowRuleException("FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", FinishedGoodsDestinationNotConfiguredMessage);
         if (!IsSingleCapacityEndpoint(endpointClass))
         {
-            var healthySource = candidates.FirstOrDefault(c => c.Healthy);
-            if (healthySource.BusinessCode is not null)
-            {
-                return healthySource.BusinessCode;
-            }
-
-            if (candidates.Any(c => c.Disabled > 0))
-            {
-                throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
-            }
-
-            throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
+            var source = candidates.FirstOrDefault(c => c.SourceHealthy);
+            if (source is not null) return source.BusinessCode;
+            throw new WorkflowRuleException(candidates.Any(c => c.Evidence.Disabled > 0)
+                ? "RDS_WORKSITE_DISABLED" : "RDS_WORKSITE_SYNC_FAILED", "Boş kasa kaynağı kullanıma uygun değil.");
         }
-
-        // For single-capacity destinations:
-        // Deterministically iterate in lexicographical business_code order.
-        // Lock the canonical endpoint identity via PostgreSQL transaction advisory lock,
-        // then verify that no active request holds it globally.
-        var anyHealthy = false;
         foreach (var candidate in candidates)
         {
-            if (!candidate.Healthy)
-            {
-                continue;
-            }
-
-            anyHealthy = true;
-
-            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken))
-            {
-                continue;
-            }
-
-            var locked = await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken);
-            if (!locked)
-            {
-                continue;
-            }
-
-            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken))
-            {
-                continue;
-            }
-
+            if (!IsPhysicallyAvailable(candidate, observations)) continue;
+            if (!await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
+            if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
             return candidate.BusinessCode;
         }
-
-        if (!anyHealthy)
-        {
-            if (candidates.Any(c => c.Disabled > 0))
-            {
-                throw new WorkflowRuleException("RDS_WORKSITE_DISABLED", "Bağlı WorkSite kapalı. Taşıma oluşturulmadı.");
-            }
-
-            throw new WorkflowRuleException("RDS_WORKSITE_SYNC_FAILED", "Bağlı WorkSite senkronu başarısız. Taşıma oluşturulmadı.");
-        }
-
-        throw CapacityUnavailableException(endpointClass);
+        throw SharedUnavailable(endpointClass, candidates);
     }
 
     private static string SharedEndpointMessage(string code) => code switch

@@ -21,8 +21,9 @@ public sealed partial class PostgresTransportWorkflowStore
         var result = new List<ContainerPositionRecord>(rows.Count);
         var eta = new TransportEtaService();
         // WP-08: Kasa Doldu is only offered while its finished-goods destination is configured.
-        var finishedGoodsConfigured = await IsFinishedGoodsDestinationConfiguredAsync(
+        var finishedGoodsCode = await FinishedGoodsAvailabilityCodeAsync(
             connection, query.MachineId, query.LayoutId, query.VariantId, query.ProductGroupId, cancellationToken);
+        var navigationId = await ActiveNavigationAsync(connection, null, query.MachineId, cancellationToken);
         foreach (var row in rows)
         {
             var transportState = row.ActiveRequest is null ? "READY" : ProjectExecutionState(row.ActiveRequest);
@@ -32,14 +33,23 @@ public sealed partial class PostgresTransportWorkflowStore
                 actor,
                 canOperate,
                 transportState,
-                finishedGoodsConfigured);
+                finishedGoodsCode);
             var empty = Availability(
                 OperatorContainerAction.Empty,
                 row,
                 actor,
                 canOperate,
                 transportState,
-                finishedGoodsConfigured);
+                finishedGoodsCode);
+            if (row.ActiveRequest is null)
+            {
+                var physicalCode = await SlotPhysicalBlockAsync(connection, null, row.SlotId, navigationId, row.Occupancy.ToDatabase(), cancellationToken);
+                if (physicalCode is not null)
+                {
+                    full = new(false, "READY", physicalCode, "TKG konumu ve fiziksel RDS durumunu doğrulayıp ekranı yenileyin.");
+                    empty = new(false, "READY", physicalCode, "TKG konumu ve fiziksel RDS durumunu doğrulayıp ekranı yenileyin.");
+                }
+            }
             var etaProjection = row.ActiveRequest is null
                 ? eta.Unavailable()
                 : eta.Project(
@@ -794,7 +804,7 @@ public sealed partial class PostgresTransportWorkflowStore
         PdaActorContext actor,
         bool canOperate,
         string transportState,
-        bool finishedGoodsConfigured)
+        string? finishedGoodsCode)
     {
         if (row.ActiveRequest is not null)
         {
@@ -820,9 +830,10 @@ public sealed partial class PostgresTransportWorkflowStore
         try
         {
             var resolution = ContainerActionResolutionPolicy.ResolveSingle(action, row.Occupancy, row.Load);
-            if (resolution.Operation == TransportTaskType.RemoveFull && !finishedGoodsConfigured)
+            if (resolution.Operation == TransportTaskType.RemoveFull && finishedGoodsCode is not null)
             {
-                return new(false, "READY", "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", FinishedGoodsDestinationNotConfiguredMessage);
+                return new(false, "READY", finishedGoodsCode, finishedGoodsCode == "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED"
+                    ? FinishedGoodsDestinationNotConfiguredMessage : "Uygun fiziksel bitmiş ürün alanı yok. Alanı ve RDS durumunu kontrol edip ekranı yenileyin.");
             }
 
             return new(true, "READY", null, null);

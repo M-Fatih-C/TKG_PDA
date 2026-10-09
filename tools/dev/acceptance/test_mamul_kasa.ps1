@@ -64,6 +64,19 @@ function Get-SH01Pos1 {
     return $res | Where-Object { $_.positionNumber -eq 1 }
 }
 
+# A persistent matrix cannot invent three physical WorkSite observations.
+# Keep mandatory matrix assertions in isolated DB/API tests; report a blocker,
+# never PASS, before modifying any business row on a mirrored physical target.
+$operational = Invoke-RestMethod -Uri "$ApiBaseUrl/api/v1/machines/$mId/operational-context" -Method Get -Headers $headers
+$physicalSlot = @($operational.slots | Where-Object { $_.id -eq $slot1Id })
+if ($physicalSlot.Count -ne 1) { throw 'Physical slot preflight could not be verified.' }
+if ($physicalSlot[0].executionReadiness.rdsWorkSiteMapped) {
+    $reason = $physicalSlot[0].executionReadiness.readinessCode
+    if (-not $reason) { $reason = 'PHYSICAL_MATRIX_REQUIRES_ISOLATION' }
+    Write-Host "BLOCKED: PHYSICAL_STATE_UNAVAILABLE ($reason) — persistent WorkSite evidence cannot be fabricated for a state matrix; no runtime mutation performed." -ForegroundColor Yellow
+    exit 2
+}
+
 $allPass = $true
 $fieldBlockedStates = 0
 function Test-FullAvailability($Position) {

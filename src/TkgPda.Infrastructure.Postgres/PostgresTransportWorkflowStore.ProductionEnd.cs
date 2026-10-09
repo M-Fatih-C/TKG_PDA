@@ -192,7 +192,7 @@ public sealed partial class PostgresTransportWorkflowStore
         return removals;
     }
 
-    private static async Task ValidateProductionEndPlanAsync(
+    private async Task ValidateProductionEndPlanAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         ProductionSessionRecord session,

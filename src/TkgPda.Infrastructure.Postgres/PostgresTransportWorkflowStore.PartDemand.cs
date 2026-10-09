@@ -160,7 +160,7 @@ public sealed partial class PostgresTransportWorkflowStore
             : throw new WorkflowRuleException("IDEMPOTENCY_KEY_REUSED", "The part-demand batch key could not be reused.");
     }
 
-    private static async Task<PartDemandResult> CreatePartDemandWithinTransactionAsync(
+    private async Task<PartDemandResult> CreatePartDemandWithinTransactionAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         PartDemandCommand command,

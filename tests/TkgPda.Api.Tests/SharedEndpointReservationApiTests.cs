@@ -14,8 +14,15 @@ namespace TkgPda.Api.Tests;
 /// Verifies global capacity exclusivity across machines and navigation profiles
 /// while preserving profile-scoped physical RDS WorkSite resolution.
 /// </summary>
-public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
+public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>, IAsyncLifetime
 {
+    public Task InitializeAsync() => Task.CompletedTask;
+    public async Task DisposeAsync()
+    {
+        await RemoveIsolatedPhysicalFixturesAsync();
+        await fixture.ResetAsync();
+    }
+
     [Theory]
     [InlineData(0, true)]
     [InlineData(1, false)]
@@ -44,7 +51,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             Assert.Equal(HttpStatusCode.Created, response.StatusCode);
             Assert.Equal("FG-01", await fixture.ScalarAsync<string>("SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @machine", ("machine", scene.MachineId)));
         }
-        else Assert.Equal("FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", position.FullAction.DisabledCode);
+        else Assert.Equal(blocker switch { 1 => "RDS_WORKSITE_DISABLED", 2 => "RDS_WORKSITE_STALE", _ => "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED" }, position.FullAction.DisabledCode);
     }
 
     [Fact]
@@ -963,8 +970,282 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
 
     // Helper setups
 
+    [Theory]
+    [InlineData("store_disabled", 1, "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED")]
+    [InlineData("filled", 1, "FINISHED_GOODS_CAPACITY_UNAVAILABLE")]
+    [InlineData("filled", null, "RDS_WORKSITE_STATE_UNKNOWN")]
+    [InlineData("filled", 2, "RDS_WORKSITE_STATE_UNKNOWN")]
+    [InlineData("locked", 1, "RDS_WORKSITE_LOCKED")]
+    [InlineData("locked", null, "RDS_WORKSITE_STATE_UNKNOWN")]
+    [InlineData("disabled", 1, "RDS_WORKSITE_DISABLED")]
+    [InlineData("sync_failed", 1, "RDS_WORKSITE_SYNC_FAILED")]
+    [InlineData("never_synced", null, "RDS_WORKSITE_STALE")]
+    [InlineData("stale", null, "RDS_WORKSITE_STALE")]
+    public async Task Physical_fg_gate_agrees_between_mamul_projection_and_creation(string field, int? value, string code)
+    {
+        bool? originalStoreEnabled = null;
+        try
+        {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
+        var scene = setup.SceneA;
+        if (field == "store_disabled") originalStoreEnabled = await fixture.ScalarAsync<bool>("SELECT is_enabled FROM ops.store_locations WHERE code = 'FG-01'");
+        using var client = await fixture.LoginClientAsync(scene.Operator);
+        await StartAsync(client, scene);
+        var assignment = field switch
+        {
+            "never_synced" => "last_sync_at = NULL",
+            "stale" => "last_sync_at = now() - interval '1 hour'",
+            _ => $"last_{field} = {(value.HasValue ? value.Value.ToString() : "NULL")}"
+        };
+        if (field == "store_disabled") await fixture.ExecuteAsync("UPDATE ops.store_locations SET is_enabled = false WHERE code = 'FG-01'");
+        else await fixture.ExecuteAsync($"UPDATE integration.rds_worksites SET {assignment} WHERE navigation_profile_id = @nav AND rds_site_id LIKE '%WS_FG%'", ("nav", scene.NavigationId));
+        var positions = await client.GetFromJsonAsync<ContainerPositionRecord[]>(
+            $"/api/v1/machines/{scene.MachineId}/container-positions?variantId={scene.VariantId}&layoutId={scene.LayoutId}&productGroupId={scene.Group}&partId={scene.MainPart}");
+        Assert.False(Assert.Single(positions!).FullAction.Enabled);
+        Assert.Equal(code, positions![0].FullAction.DisabledCode);
+        var response = await client.SendAsync(CreateFullContainerActionRequest(scene, "physical-fg"));
+        Assert.False(response.IsSuccessStatusCode);
+        Assert.Contains(code, await response.Content.ReadAsStringAsync());
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        }
+        finally
+        {
+            if (field == "store_disabled" && originalStoreEnabled.HasValue)
+                await fixture.ExecuteAsync("UPDATE ops.store_locations SET is_enabled = @enabled WHERE code = 'FG-01'", ("enabled", originalStoreEnabled.Value));
+        }
+    }
+
+    [Fact]
+    public async Task Conflicting_current_cross_nav_physical_occupancy_blocks_both_allocators()
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
+        await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_filled = 1 WHERE navigation_profile_id = @nav AND rds_site_id LIKE '%WS_FG%'", ("nav", setup.SceneB.NavigationId));
+        using var clientA = await fixture.LoginClientAsync(setup.SceneA.Operator);
+        using var clientB = await fixture.LoginClientAsync(setup.SceneB.Operator);
+        await StartAsync(clientA, setup.SceneA);
+        await StartAsync(clientB, setup.SceneB);
+        var responses = await Task.WhenAll(clientA.SendAsync(CreateFullContainerActionRequest(setup.SceneA, "contradict-a")),
+            clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "contradict-b")));
+        foreach (var response in responses)
+        {
+            Assert.False(response.IsSuccessStatusCode);
+            Assert.Contains("FINISHED_GOODS_CAPACITY_UNAVAILABLE", await response.Content.ReadAsStringAsync());
+        }
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Theory]
+    [InlineData("FINISHED_GOODS", "FG-", "FULL", false)]
+    [InlineData("NON_FINISHED_RETURN", "RETURN-", "FULL", false)]
+    [InlineData("EMPTY_RETURN", "EMPTY-", "EMPTY", false)]
+    [InlineData("FINISHED_GOODS", "FG-", "FULL", true)]
+    [InlineData("NON_FINISHED_RETURN", "RETURN-", "FULL", true)]
+    [InlineData("EMPTY_RETURN", "EMPTY-", "EMPTY", true)]
+    public async Task End_skips_physically_filled_destination_or_atomically_rejects_all_filled(string endpointClass, string prefix, string load, bool allFilled)
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: true, includeReturn02: true);
+        var scene = setup.SceneA;
+        if (endpointClass == "EMPTY_RETURN")
+            await fixture.ExecuteAsync("""
+                INSERT INTO integration.profile_shared_endpoint_bindings(navigation_profile_id, endpoint_class, business_code, rds_worksite_id)
+                SELECT n.id, 'EMPTY_RETURN', 'EMPTY-02', w.id
+                FROM master.navigation_profiles n JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id AND p.object_family = 'EMPTY' AND p.ordinal = 2
+                JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
+                WHERE n.id = @nav
+                """, ("nav", scene.NavigationId));
+        var container = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+        await MapOccupiedAsync(scene.Slot, endpointClass == "NON_FINISHED_RETURN" ? scene.AltPart : scene.MainPart, load, container);
+        await fixture.ExecuteAsync("""
+            UPDATE integration.rds_worksites w SET last_filled = 1
+            FROM integration.profile_shared_endpoint_bindings b WHERE w.id = b.rds_worksite_id
+            AND b.navigation_profile_id = @nav AND b.endpoint_class = @class AND (@all OR b.business_code = @first)
+            """, ("nav", scene.NavigationId), ("class", endpointClass), ("all", allFilled), ("first", prefix + "01"));
+        await fixture.ExecuteAsync("INSERT INTO master.production_end_priorities(operation_code,priority) VALUES ('REMOVE_FULL',40),('REMOVE_EMPTY',70) ON CONFLICT(operation_code) DO UPDATE SET priority=EXCLUDED.priority");
+        using var client = await fixture.LoginClientAsync(scene.Operator);
+        await StartAsync(client, scene);
+        var session = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.production_sessions WHERE machine_id=@m AND status='ACTIVE'", ("m",scene.MachineId));
+        var end = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{scene.MachineId}/production-sessions/{session}/end");
+        end.Headers.Add(ApiHeaders.IdempotencyKey,"physical-end");
+        var response = await client.SendAsync(end);
+        if (allFilled)
+        {
+            Assert.False(response.IsSuccessStatusCode);
+            Assert.Contains(endpointClass + "_CAPACITY_UNAVAILABLE", await response.Content.ReadAsStringAsync());
+            Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+            Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
+            Assert.Equal("ACTIVE", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_sessions WHERE id=@id",("id",session)));
+        }
+        else
+        {
+            Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+            Assert.Equal(prefix+"02", await fixture.ScalarAsync<string>("SELECT destination_business_code FROM ops.transport_requests WHERE machine_id=@m",("m",scene.MachineId)));
+        }
+    }
+
+    [Fact]
+    public async Task End_three_finished_pallets_requires_three_physically_available_endpoints_before_creating_children()
+    {
+        try
+        {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02:true);
+        var scene=setup.SceneA;
+        var slots=await ThreeSlotsAsync(scene.LayoutId);
+        var container=await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+        foreach(var slot in slots) await MapOccupiedAsync(slot,scene.MainPart,"FULL",container);
+        // Three mappings, but only two physical vacancies.
+        await fixture.ExecuteAsync("""
+            INSERT INTO integration.rds_worksites(navigation_profile_id,rds_site_id,rds_type,last_filled,last_locked,last_disabled,last_sync_failed,last_sync_at,raw_state_json)
+            VALUES(@nav,'ISOLATED-FG03',1,1,0,0,0,now(),'{"filled":1}'::jsonb);
+            INSERT INTO integration.profile_shared_endpoint_bindings(navigation_profile_id,endpoint_class,business_code,rds_worksite_id,store_location_id)
+            SELECT @nav,'FINISHED_GOODS','FG-03',w.id,l.id FROM integration.rds_worksites w CROSS JOIN ops.store_locations l
+            WHERE w.navigation_profile_id=@nav AND w.rds_site_id='ISOLATED-FG03' AND l.code='FG-03';
+            INSERT INTO master.production_end_priorities(operation_code,priority) VALUES('REMOVE_FULL',40) ON CONFLICT(operation_code) DO UPDATE SET priority=40;
+            """,("nav",scene.NavigationId));
+        using var client=await fixture.LoginClientAsync(scene.Operator);
+        await StartAsync(client,scene);
+        var session=await fixture.ScalarAsync<Guid>("SELECT id FROM ops.production_sessions WHERE machine_id=@m AND status='ACTIVE'",("m",scene.MachineId));
+        var end=new HttpRequestMessage(HttpMethod.Post,$"/api/v1/machines/{scene.MachineId}/production-sessions/{session}/end");
+        end.Headers.Add(ApiHeaders.IdempotencyKey,"three-physical");
+        var response=await client.SendAsync(end);
+        Assert.False(response.IsSuccessStatusCode);
+        Assert.Contains("FINISHED_GOODS_CAPACITY_UNAVAILABLE",await response.Content.ReadAsStringAsync());
+        Assert.Equal(0L,await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(0L,await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
+        Assert.Equal("ACTIVE",await fixture.ScalarAsync<string>("SELECT status FROM ops.production_sessions WHERE id=@id",("id",session)));
+        }
+        finally { await RemoveIsolatedPhysicalFixturesAsync(); }
+    }
+
+    [Theory]
+    [InlineData(0,"PHYSICAL_STATE_MISMATCH","RDS_WORKSITE_OCCUPANCY_CONFLICT")]
+    [InlineData(1,"CONSISTENT",null)]
+    [InlineData(null,"PHYSICAL_STATE_UNKNOWN","RDS_WORKSITE_STATE_UNKNOWN")]
+    public async Task Mapped_slot_reconciliation_is_read_only_and_blocks_contradiction(int? filled,string consistency,string? code)
+    {
+        try
+        {
+        var setup=await PrepareTwoMachineScenesAsync(includeFg02:false);
+        var scene=setup.SceneA;
+        var before=await fixture.ScalarAsync<string>("SELECT row_to_json(s)::text FROM ops.slot_runtime_state s WHERE layout_slot_id=@slot",("slot",scene.Slot));
+        var worksite=await fixture.ScalarAsync<Guid>("""
+            INSERT INTO integration.rds_worksites(navigation_profile_id,rds_site_id,rds_type,last_filled,last_locked,last_disabled,last_sync_failed,last_sync_at,raw_state_json)
+            VALUES(@nav,'ISOLATED-MACHINE-POSITION',1,@filled,0,0,0,now(),'{"siteName":"Isolated physical position"}'::jsonb) RETURNING id
+            """,("nav",scene.NavigationId),("filled",(object?)filled ?? DBNull.Value));
+        await fixture.ExecuteAsync("INSERT INTO integration.layout_slot_rds_profile_mapping(layout_slot_id,navigation_profile_id,rds_worksite_id) VALUES(@slot,@nav,@w)",
+            ("slot",scene.Slot),("nav",scene.NavigationId),("w",worksite));
+        using var client=await fixture.LoginClientAsync(scene.Operator);
+        await StartAsync(client,scene);
+        var admin=await fixture.SeedIdentityAsync(role:RoleCodes.Admin,machineCode:"SH-01-A",bindDeviceToMachine:false);
+        using var adminClient=await fixture.AdminLoginClientAsync(admin);
+        var report=await adminClient.GetFromJsonAsync<RdsPhysicalDiagnosticRecord[]>($"/api/v1/admin/rds/physical-evidence?navigationProfileId={scene.NavigationId}");
+        Assert.Contains(report!, r => r.SlotId is null);
+        Assert.All(report!.Where(r => r.SlotId is null), r => Assert.Null(r.BusinessOccupancy));
+        var diagnostic=Assert.Single(report!,r=>r.SlotId==scene.Slot);
+        Assert.Equal(consistency,diagnostic.ConsistencyResult);
+        Assert.Equal("OCCUPIED",diagnostic.BusinessOccupancy);
+        Assert.Equal(filled,diagnostic.Evidence.Filled);
+        Assert.Equal("Isolated physical position",diagnostic.SiteName);
+        Assert.Equal(HttpStatusCode.Forbidden,(await client.GetAsync($"/api/v1/admin/rds/physical-evidence?navigationProfileId={scene.NavigationId}")).StatusCode);
+        Assert.Equal(before,await fixture.ScalarAsync<string>("SELECT row_to_json(s)::text FROM ops.slot_runtime_state s WHERE layout_slot_id=@slot",("slot",scene.Slot)));
+        var response=await client.SendAsync(CreateFullContainerActionRequest(scene,"slot-reconcile"));
+        if(code is null) Assert.True(response.IsSuccessStatusCode,await response.Content.ReadAsStringAsync());
+        else
+        {
+            Assert.False(response.IsSuccessStatusCode);
+            Assert.Contains(code,await response.Content.ReadAsStringAsync());
+            Assert.Equal(0L,await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+            Assert.Equal(before,await fixture.ScalarAsync<string>("SELECT row_to_json(s)::text FROM ops.slot_runtime_state s WHERE layout_slot_id=@slot",("slot",scene.Slot)));
+        }
+        }
+        finally { await RemoveIsolatedPhysicalFixturesAsync(); }
+    }
+
+    [Fact]
+    public async Task Reserved_destination_rechecks_physical_evidence_before_dispatch_including_other_nav()
+    {
+        var setup=await PrepareTwoMachineScenesAsync(includeFg02:false);
+        using var client=await fixture.LoginClientAsync(setup.SceneA.Operator);
+        await StartAsync(client,setup.SceneA);
+        Assert.True((await client.SendAsync(CreateFullContainerActionRequest(setup.SceneA,"physical-dispatch"))).IsSuccessStatusCode);
+        var request=await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests WHERE machine_id=@m",("m",setup.SceneA.MachineId));
+        await using var dataSource=NpgsqlDataSource.Create(fixture.ConnectionString);
+        var execution=new PostgresRdsExecutionStore(dataSource);
+        Assert.Null(await execution.ReadPhysicalDispatchBlockAsync(request));
+        await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_filled=1 WHERE navigation_profile_id=@nav AND rds_site_id LIKE '%WS_FG%'",("nav",setup.SceneB.NavigationId));
+        Assert.Equal("RDS_WORKSITE_OCCUPANCY_CONFLICT",await execution.ReadPhysicalDispatchBlockAsync(request));
+        await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_filled=0 WHERE navigation_profile_id=@nav AND rds_site_id LIKE '%WS_FG%'",("nav",setup.SceneB.NavigationId));
+        await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_locked=1 WHERE navigation_profile_id=@nav AND rds_site_id LIKE '%WS_FG%'",("nav",setup.SceneA.NavigationId));
+        Assert.Equal("RDS_WORKSITE_LOCKED",await execution.ReadPhysicalDispatchBlockAsync(request));
+        Assert.Equal(0L,await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(null)]
+    public async Task Empty_source_keeps_pool_presence_semantics_without_destination_occupancy_rule(int? filled)
+    {
+        var setup=await PrepareTwoMachineScenesAsync(includeFg02:false);
+        var scene=setup.SceneA;
+        await fixture.SetSlotAsync(scene.Slot,"VACANT","UNKNOWN");
+        await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_filled=@filled WHERE navigation_profile_id=@nav AND rds_site_id LIKE '%WS_EMPTY%'",
+            ("filled",(object?)filled ?? DBNull.Value),("nav",scene.NavigationId));
+        using var client=await fixture.LoginClientAsync(scene.Operator);
+        await StartAsync(client,scene);
+        var action=new HttpRequestMessage(HttpMethod.Post,$"/api/v1/machines/{scene.MachineId}/container-actions")
+        { Content=JsonContent.Create(new CreateContainerActionHttpRequest(scene.VariantId,scene.LayoutId,null,scene.Group,scene.MainPart,scene.Position,"EMPTY")) };
+        action.Headers.Add(ApiHeaders.IdempotencyKey,"pool-source");
+        var response=await client.SendAsync(action);
+        Assert.True(response.IsSuccessStatusCode,await response.Content.ReadAsStringAsync());
+        Assert.Equal("BRING_EMPTY",await fixture.ScalarAsync<string>("SELECT tt.code FROM ops.transport_requests r JOIN master.task_types tt ON tt.id=r.task_type_id"));
+        Assert.Equal(0L,await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests WHERE destination_business_code IS NOT NULL"));
+    }
+
+    [Fact]
+    public async Task Mixed_disabled_filled_and_reserved_destinations_select_next_free_business_code_deterministically()
+    {
+        try
+        {
+        var setup=await PrepareTwoMachineScenesAsync(includeFg02:true);
+        var scene=setup.SceneA;
+        await fixture.ExecuteAsync("""
+            UPDATE integration.rds_worksites w SET last_disabled=CASE WHEN b.business_code='FG-01' THEN 1 ELSE 0 END,
+                last_filled=CASE WHEN b.business_code='FG-02' THEN 1 ELSE 0 END
+            FROM integration.profile_shared_endpoint_bindings b WHERE w.id=b.rds_worksite_id AND b.navigation_profile_id=@nav AND b.endpoint_class='FINISHED_GOODS';
+            INSERT INTO integration.rds_worksites(navigation_profile_id,rds_site_id,rds_type,last_filled,last_locked,last_disabled,last_sync_failed,last_sync_at,raw_state_json)
+            VALUES(@nav,'ISOLATED-FG03',1,0,0,0,0,now(),'{"filled":0}'::jsonb),(@nav,'ISOLATED-FG04',1,0,0,0,0,now(),'{"filled":0}'::jsonb);
+            INSERT INTO integration.profile_shared_endpoint_bindings(navigation_profile_id,endpoint_class,business_code,rds_worksite_id,store_location_id)
+            SELECT @nav,'FINISHED_GOODS',l.code,w.id,l.id FROM integration.rds_worksites w CROSS JOIN ops.store_locations l
+            WHERE w.navigation_profile_id=@nav AND ((w.rds_site_id='ISOLATED-FG03' AND l.code='FG-03') OR (w.rds_site_id='ISOLATED-FG04' AND l.code='FG-04'));
+            INSERT INTO ops.transport_requests(request_origin,requested_by,machine_id,variant_id,layout_id,navigation_id,task_type_id,status,priority,destination_business_code)
+            SELECT 'API',@user,@machine,@variant,@layout,@otherNav,id,'QUEUED',10,'FG-03' FROM master.task_types WHERE code='REMOVE_FULL';
+            """,("nav",scene.NavigationId),("user",setup.SceneB.Operator.UserId),("machine",setup.SceneB.MachineId),
+            ("variant",setup.SceneB.VariantId),("layout",setup.SceneB.LayoutId),("otherNav",setup.SceneB.NavigationId));
+        using var client=await fixture.LoginClientAsync(scene.Operator);
+        await StartAsync(client,scene);
+        var response=await client.SendAsync(CreateFullContainerActionRequest(scene,"mixed-physical"));
+        Assert.True(response.IsSuccessStatusCode,await response.Content.ReadAsStringAsync());
+        Assert.Equal("FG-04",await fixture.ScalarAsync<string>("SELECT destination_business_code FROM ops.transport_requests WHERE machine_id=@m",("m",scene.MachineId)));
+        }
+        finally { await RemoveIsolatedPhysicalFixturesAsync(); }
+    }
+
+    private async Task RemoveIsolatedPhysicalFixturesAsync()
+    {
+        if (new NpgsqlConnectionStringBuilder(fixture.ConnectionString).Database != "tkg_pda_phase04")
+            throw new InvalidOperationException("Physical evidence fixtures require the isolated phase04 database.");
+        await fixture.ExecuteAsync("""
+            DELETE FROM integration.layout_slot_rds_profile_mapping WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id IN ('ISOLATED-MACHINE-POSITION','ISOLATED-FG03','ISOLATED-FG04'));
+            DELETE FROM integration.profile_shared_endpoint_bindings WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id IN ('ISOLATED-MACHINE-POSITION','ISOLATED-FG03','ISOLATED-FG04'));
+            DELETE FROM integration.rds_worksites WHERE rds_site_id IN ('ISOLATED-MACHINE-POSITION','ISOLATED-FG03','ISOLATED-FG04');
+            """);
+    }
+
     private async Task<TwoMachineSetup> PrepareTwoMachineScenesAsync(bool includeFg02 = true, bool includeReturn02 = true)
     {
+        await RemoveIsolatedPhysicalFixturesAsync();
         await fixture.ResetAsync();
 
         var sceneA = await PrepareSceneAsync("SH-01-A", "1", "TKG_SH01A_V01_NAV", includeFg02, includeReturn02);
@@ -1045,8 +1326,8 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
 
         await fixture.ExecuteAsync("""
             INSERT INTO integration.rds_worksites
-                (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, raw_state_json)
-            SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, '{}'::jsonb
+                (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, last_filled, last_locked, raw_state_json)
+            SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, 0, 0, '{"filled":0,"locked":0}'::jsonb
             FROM integration.rds_worksite_plans p
             JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id
             WHERE n.code = @code
@@ -1148,6 +1429,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
 
     private async Task<TwoMachineSetup> PrepareTwoMachineScenesUnboundAsync()
     {
+        await RemoveIsolatedPhysicalFixturesAsync();
         await fixture.ResetAsync();
 
         var sceneA = await PrepareSceneUnboundAsync("SH-01-A", "1", "TKG_SH01A_V01_NAV");
@@ -1225,8 +1507,8 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             WHERE code = @code;
 
             INSERT INTO integration.rds_worksites
-                (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, raw_state_json)
-            SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, '{}'::jsonb
+                (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, last_filled, last_locked, raw_state_json)
+            SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, 0, 0, '{"filled":0,"locked":0}'::jsonb
             FROM integration.rds_worksite_plans p
             JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id
             WHERE n.code = @code

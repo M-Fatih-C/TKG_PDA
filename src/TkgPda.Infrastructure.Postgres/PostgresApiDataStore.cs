@@ -6,7 +6,7 @@ using TkgPda.Domain;
 
 namespace TkgPda.Infrastructure.Postgres;
 
-public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiDataStore, IOperatorTransportQueueStore
+public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysicalAvailabilityPolicy? physicalPolicy = null) : IApiDataStore, IOperatorTransportQueueStore
 {
     private const string AuthUserSelect =
         """
@@ -534,6 +534,11 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                         NullableString(reader, 29),
                         NullableString(reader, 30),
                         NullableDateTimeOffset(reader, 31));
+                var policy = physicalPolicy ?? new RdsPhysicalAvailabilityPolicy();
+                var evidence = new RdsPhysicalEvidence(rdsWorkSite.Type, rdsWorkSite.Filled, rdsWorkSite.Locked,
+                    rdsWorkSite.Disabled, rdsWorkSite.SyncFailed, rdsWorkSite.LastSyncAt);
+                rdsWorkSite = rdsWorkSite with { PhysicalState = policy.State(evidence),
+                    ConsistencyResult = policy.Consistency(reader.GetString(12), evidence) };
                 slots.Add(new SlotContextDataRecord(
                     reader.GetGuid(0),
                     reader.GetString(1),

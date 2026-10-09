@@ -43,7 +43,8 @@ public sealed record RdsDispatchEndpoint(
     int? Disabled,
     int? SyncFailed,
     DateTimeOffset? LastSyncAt,
-    bool IsMapped);
+    bool IsMapped,
+    string? BusinessOccupancy = null);
 
 public sealed record RdsDispatchContext(
     TransportRequestSnapshot Request,
@@ -108,6 +109,7 @@ public interface IRdsExecutionLease : IAsyncDisposable;
 
 public interface IRdsExecutionStore
 {
+    Task<string?> ReadPhysicalDispatchBlockAsync(Guid requestId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     Task<IReadOnlyList<Guid>> ListQueuedRequestIdsAsync(int limit, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RdsTaskProjection>> ListActiveTasksAsync(int limit, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Guid>> ListPendingWorkSiteRefreshRequestIdsAsync(int limit, CancellationToken cancellationToken = default);
@@ -471,6 +473,37 @@ public sealed class RdsExecutionCoordinator(
         {
             await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_BLOCKED", "EXECUTION_MODE_UNRESOLVED", "The task template configuration does not define an explicit executionMode.", correlationId, cancellationToken);
             return new(requestId, requestId.ToString(), false, false, "EXECUTION_MODE_UNRESOLVED", "The task template configuration does not define an explicit executionMode.");
+        }
+
+        if (await store.ReadPhysicalDispatchBlockAsync(requestId, cancellationToken) is { } physicalBlock)
+        {
+            await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_BLOCKED", physicalBlock,
+                "Reserved destination no longer has consistent physical availability.", correlationId, cancellationToken);
+            return new(requestId, requestId.ToString(), false, false, physicalBlock, "Fiziksel hedef alanını ve RDS senkronunu doğrulayın.");
+        }
+        var physicalPolicy = new RdsPhysicalAvailabilityPolicy(settings.WorkSiteFreshness, timeProvider);
+        foreach (var endpoint in new[] { context.Source, context.Destination })
+        {
+            if (endpoint.BusinessOccupancy is null) continue;
+            ValidateEndpoint(endpoint, "mapped slot");
+            var evidence = new RdsPhysicalEvidence(endpoint.Type, endpoint.Filled, endpoint.Locked,
+                endpoint.Disabled, endpoint.SyncFailed, endpoint.LastSyncAt);
+            if (RdsPhysicalAvailabilityPolicy.ErrorCode(physicalPolicy.State(evidence)) is { } stateCode)
+                throw new RdsExecutionException(stateCode, "Mapped WorkSite health must be known before dispatch.");
+            var consistency = physicalPolicy.Consistency(endpoint.BusinessOccupancy, evidence);
+            if (consistency != "CONSISTENT") throw new RdsExecutionException(
+                consistency == "PHYSICAL_STATE_MISMATCH" ? "RDS_WORKSITE_OCCUPANCY_CONFLICT" : "RDS_WORKSITE_STATE_UNKNOWN",
+                "TKG slot occupancy and physical WorkSite evidence must agree before dispatch.");
+        }
+        if (context.Request.DestinationBusinessCode is not null)
+        {
+            ValidateEndpoint(context.Destination, "shared destination");
+            var destination = context.Destination;
+            var state = physicalPolicy.State(new(destination.Type, destination.Filled, destination.Locked,
+                destination.Disabled, destination.SyncFailed, destination.LastSyncAt));
+            if (state != "AVAILABLE") throw new RdsExecutionException(
+                RdsPhysicalAvailabilityPolicy.ErrorCode(state) ?? "RDS_WORKSITE_OCCUPANCY_CONFLICT",
+                "The reserved shared destination is no longer physically available.");
         }
 
         var isNative = string.Equals(executionModeStr, "RDSCORE_NATIVE_ORDER", StringComparison.OrdinalIgnoreCase);
