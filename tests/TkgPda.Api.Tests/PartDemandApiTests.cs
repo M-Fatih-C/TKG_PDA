@@ -57,6 +57,38 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
+    public async Task Restart_alt_chain_preserves_dependency_and_releases_successor_once()
+    {
+        await using var api = new RestartApiProcess(fixture.ConnectionString);
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        await api.StartAsync();
+        using var client = await api.LoginAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        var created = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "restart-alt"));
+        var predecessor = await RequestIdAsync(created.PredecessorRequestNo!.Value);
+        var successor = await RequestIdAsync(created.RequestNo);
+        await MarkPreparedAsync(setup, successor);
+        Assert.Equal(0L, await EligibleCountAsync(successor));
+        await api.RestartAsync();
+        using var restarted = await api.LoginAsync(setup.Operator);
+        var replay = await ReadDemandAsync(await DemandAsync(restarted, setup, setup.AltPart, "restart-alt"));
+        Assert.Equal(created.RequestNo, replay.RequestNo);
+        Assert.Equal(created.PredecessorRequestNo, replay.PredecessorRequestNo);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies WHERE predecessor_request_id=@p AND successor_request_id=@s", ("p", predecessor), ("s", successor)));
+        Assert.Equal(0L, await EligibleCountAsync(successor));
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        await store.RecordExecutionTransitionAsync(predecessor, TransportRequestStatus.SentToRds);
+        await store.RecordExecutionTransitionAsync(predecessor, TransportRequestStatus.Running);
+        await store.RecordExecutionTransitionAsync(predecessor, TransportRequestStatus.Completed);
+        await store.RecordExecutionTransitionAsync(predecessor, TransportRequestStatus.Completed);
+        Assert.Equal(1L, await EligibleCountAsync(successor));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_events WHERE transport_request_id=@id AND event_type='REQUEST_COMPLETED'", ("id", predecessor)));
+        Assert.Equal("QUEUED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id=@id", ("id", successor)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
+    }
+
+    [Fact]
     public async Task Concurrent_alt_clicks_create_one_demand_and_reject_the_second()
     {
         var setup = await SetupAsync();

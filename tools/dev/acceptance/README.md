@@ -74,3 +74,9 @@ The persistent snapshots include sessions, requests, dependencies, slot/machine 
 `FIELD READY` additionally requires source-backed customer layout/metadata, approved priorities, published real NAV, physical geometry/calibration and real profile-specific FG/RETURN/EMPTY WorkSite bindings. A simulated completion or a stored geometry flag alone does not establish that evidence. PARK/CHARGE must never be substituted for material-flow endpoints.
 
 The 2026-10-09 audit, meeting-note traceability, exact test counts and external blockers are recorded in `docs/customer/TKG_POST_ACCEPTANCE_AUDIT.md`.
+
+## Production End forensics
+
+`inspect_production_end.ps1 -SessionId <uuid>` performs an exact-session inspection in a read-only repeatable-read transaction. It has no Apply/cleanup operation; unknown ownership and historical dispatch cannot authorize automatic recovery. Failed cleanup remains ENDING until an authorized normal End command with a fresh key safely re-plans. Same-key replay does not re-plan. Verify field state before retry.
+
+The real OS-process restart/transaction interruption regressions and the PDA recovery gate are documented in `docs/customer/TKG_PRODUCTION_END_RESTART_PROOF.md`. An idle alternative browser machine must have equivalent configured Mamul capabilities and terminal authority; choosing one never replaces nine-machine acceptance.

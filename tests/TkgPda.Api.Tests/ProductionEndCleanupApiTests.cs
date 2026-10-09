@@ -12,6 +12,173 @@ namespace TkgPda.Api.Tests;
 public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
+    public async Task Restart_multi_child_end_preserves_chain_and_finishes_once()
+    {
+        await using var api = new RestartApiProcess(fixture.ConnectionString);
+        var setup = await OccupyAsync(3, "FULL");
+        await api.StartAsync();
+        using var client = await api.LoginAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "restart-multi")).EnsureSuccessStatusCode();
+        var requests = await IdsAsync("SELECT transport_request_id FROM ops.production_end_run_items ORDER BY sequence_no");
+        Assert.Equal(3, requests.Length);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
+        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        await api.RestartAsync();
+        using var restarted = await api.LoginAsync(setup.User);
+        var replay = await ReadAsync(await EndAsync(restarted, setup, session.Id, "restart-multi"));
+        Assert.True(replay.WasIdempotentReplay);
+        Assert.Equal(requests, await IdsAsync("SELECT transport_request_id FROM ops.production_end_run_items ORDER BY sequence_no"));
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        for (var index = 0; index < requests.Length; index++)
+        {
+            await CompleteAsync(store, requests[index]); // Isolated outcome evidence, no robot call.
+            Assert.Equal(index == requests.Length - 1 ? "ENDED" : "ENDING", await StatusAsync(session.Id));
+        }
+        await api.RestartAsync();
+        using var final = await api.LoginAsync(setup.User);
+        var ended = await ReadAsync(await EndAsync(final, setup, session.Id, "restart-multi"));
+        Assert.Equal("ENDED", ended.Session.Status);
+        Assert.NotNull(ended.Session.EndedAt);
+        Assert.Equal("COMPLETED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
+        Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Restart_failed_or_cancelled_cleanup_replays_old_key_and_replans_new_key(bool cancel)
+    {
+        await using var api = new RestartApiProcess(fixture.ConnectionString);
+        var setup = await OccupyAsync(2, "FULL");
+        await api.StartAsync();
+        using var client = await api.LoginAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "failed-original")).EnsureSuccessStatusCode();
+        var original = await IdsAsync("SELECT transport_request_id FROM ops.production_end_run_items ORDER BY sequence_no");
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        if (cancel) await store.CancelAsync(original[0], setup.User.UserId);
+        else
+        {
+            await store.RecordExecutionTransitionAsync(original[0], TransportRequestStatus.SentToRds);
+            await store.RecordExecutionTransitionAsync(original[0], TransportRequestStatus.Running);
+            await store.RecordExecutionOutcomeAsync(original[0], new ExecutionOutcome(TransportRequestStatus.Failed, "RESTART_PROOF", "isolated cleanup failure"));
+        }
+        Assert.Equal("FAILED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
+        Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id=@id", ("id", original[1])));
+        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        await api.RestartAsync();
+        using var restarted = await api.LoginAsync(setup.User);
+        Assert.True((await ReadAsync(await EndAsync(restarted, setup, session.Id, "failed-original"))).WasIdempotentReplay);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        (await EndAsync(restarted, setup, session.Id, "failed-new-key")).EnsureSuccessStatusCode();
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
+        var retried = await IdsAsync("SELECT i.transport_request_id FROM ops.production_end_run_items i JOIN ops.production_end_runs r ON r.id=i.run_id WHERE r.status='RUNNING' ORDER BY i.sequence_no");
+        Assert.Equal(2, retried.Length);
+        Assert.DoesNotContain(retried, id => original.Contains(id));
+        foreach (var request in retried) await CompleteAsync(store, request);
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs WHERE status='FAILED'"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs WHERE status='COMPLETED'"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action='PRODUCTION_ENDED'"));
+    }
+
+    [Fact]
+    public async Task Restart_after_final_child_commit_keeps_session_ended_without_callback_replay()
+    {
+        await using var api = new RestartApiProcess(fixture.ConnectionString);
+        var setup = await OccupyAsync(2, "FULL");
+        await api.StartAsync();
+        using var client = await api.LoginAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "completed-before-restart")).EnsureSuccessStatusCode();
+        await using (var store = new PostgresTransportWorkflowStore(fixture.ConnectionString))
+        {
+            foreach (var request in await IdsAsync("SELECT transport_request_id FROM ops.production_end_run_items ORDER BY sequence_no"))
+                await CompleteAsync(store, request);
+        }
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
+        await api.RestartAsync();
+        using var restarted = await api.LoginAsync(setup.User);
+        var active = await restarted.GetAsync($"/api/v1/machines/{setup.Context.MachineId}/production-sessions/active");
+        Assert.Equal(HttpStatusCode.NoContent, active.StatusCode);
+        Assert.Equal("COMPLETED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action='PRODUCTION_ENDED'"));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_events WHERE event_type='REQUEST_COMPLETED'"));
+    }
+
+    [Fact]
+    public async Task Restart_kill_during_run_advancement_rolls_back_child_run_and_slot_together()
+    {
+        await using var api = new RestartApiProcess(fixture.ConnectionString);
+        var setup = await OccupyAsync(1, "FULL");
+        await api.StartAsync();
+        using var client = await api.LoginAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "crash-window")).EnsureSuccessStatusCode();
+        var request = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
+        var run = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.production_end_runs");
+        var childBefore = await fixture.ScalarAsync<string>("SELECT row_to_json(r)::text FROM ops.transport_requests r WHERE id=@id", ("id", request));
+        var slotBefore = await fixture.ScalarAsync<string>("SELECT row_to_json(s)::text FROM ops.slot_runtime_state s WHERE layout_slot_id=@slot", ("slot", setup.Slots[0]));
+        var gate = Random.Shared.NextInt64(1, long.MaxValue);
+        await using var blocker = new NpgsqlConnection(fixture.ConnectionString);
+        await blocker.OpenAsync();
+        await using (var command = new NpgsqlCommand("SELECT pg_advisory_lock(@gate)", blocker))
+        {
+            command.Parameters.AddWithValue("gate", gate);
+            await command.ExecuteNonQueryAsync();
+        }
+        try
+        {
+            // Exact run guard; the database trigger holds the real API inside
+            // its transaction after child cancellation, before run advancement.
+            await fixture.ExecuteAsync($"""
+                CREATE FUNCTION ops.restart_proof_gate() RETURNS trigger LANGUAGE plpgsql AS $fn$
+                BEGIN PERFORM pg_advisory_xact_lock({gate}); RETURN NEW; END $fn$;
+                CREATE TRIGGER restart_proof_gate BEFORE UPDATE ON ops.production_end_runs
+                FOR EACH ROW WHEN (OLD.id='{run}') EXECUTE FUNCTION ops.restart_proof_gate();
+                """);
+            var pending = client.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{request}/cancel", null);
+            var waiting = false;
+            for (var attempt = 0; attempt < 100 && !waiting; attempt++)
+            {
+                waiting = await fixture.ScalarAsync<long>("SELECT count(*) FROM pg_stat_activity WHERE application_name=@name AND wait_event='advisory'", ("name", api.ApplicationName)) > 0;
+                if (!waiting) await Task.Delay(50);
+            }
+            Assert.True(waiting, "The real API must overlap the injected advancement gate.");
+            await api.KillAsync();
+            try { await pending; Assert.Fail("Killed API must not report successful cancellation."); }
+            catch (HttpRequestException) { }
+            catch (TaskCanceledException) { }
+        }
+        finally
+        {
+            await using var release = new NpgsqlCommand("SELECT pg_advisory_unlock(@gate)", blocker);
+            release.Parameters.AddWithValue("gate", gate);
+            await release.ExecuteNonQueryAsync();
+            await fixture.ExecuteAsync("DROP TRIGGER IF EXISTS restart_proof_gate ON ops.production_end_runs; DROP FUNCTION IF EXISTS ops.restart_proof_gate()");
+        }
+        var gone = false;
+        for (var attempt = 0; attempt < 100 && !gone; attempt++)
+        {
+            gone = await fixture.ScalarAsync<long>("SELECT count(*) FROM pg_stat_activity WHERE application_name=@name", ("name", api.ApplicationName)) == 0;
+            if (!gone) await Task.Delay(50);
+        }
+        Assert.True(gone, "Killed API database transactions must close before checking rollback.");
+        Assert.Equal(childBefore, await fixture.ScalarAsync<string>("SELECT row_to_json(r)::text FROM ops.transport_requests r WHERE id=@id", ("id", request)));
+        Assert.Equal(slotBefore, await fixture.ScalarAsync<string>("SELECT row_to_json(s)::text FROM ops.slot_runtime_state s WHERE layout_slot_id=@slot", ("slot", setup.Slots[0])));
+        Assert.Equal("RUNNING", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
+        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_events WHERE event_type='REQUEST_CANCELLED'"));
+        await api.StartAsync();
+        using var restarted = await api.LoginAsync(setup.User);
+        (await restarted.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{request}/cancel", null)).EnsureSuccessStatusCode();
+        Assert.Equal("FAILED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
+        Assert.Equal("ENDING", await StatusAsync(session.Id));
+    }
+
+    [Fact]
     public async Task Product_specific_return_group_wins_over_a_generic_destination_group()
     {
         var setup = await SetupAsync();
