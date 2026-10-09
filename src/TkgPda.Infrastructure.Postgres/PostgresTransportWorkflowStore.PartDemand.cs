@@ -11,6 +11,8 @@ public sealed partial class PostgresTransportWorkflowStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        // Production start/end and callbacks acquire machine before session/slot/request.
+        await LockMachineRuntimeAsync(connection, transaction, command.MachineId, cancellationToken, requireConfigured: false);
         var result = await CreatePartDemandWithinTransactionAsync(connection, transaction, command, batchId: null, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return result;
@@ -26,6 +28,7 @@ public sealed partial class PostgresTransportWorkflowStore
 
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        await LockMachineRuntimeAsync(connection, transaction, command.MachineId, cancellationToken, requireConfigured: false);
         var key = command.IdempotencyKey.Trim();
         await LockIdempotencyKeyAsync(connection, transaction, key, cancellationToken);
         var existing = await FindPartDemandBatchAsync(connection, transaction, key, cancellationToken);

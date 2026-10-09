@@ -715,7 +715,5 @@ bool _isConfigurationIssue(ContainerActionAvailability availability) {
   final code = availability.disabledCode;
   if (code == null) return false;
   final upper = code.toUpperCase();
-  return _knownConfigurationErrorCodes.contains(upper) ||
-      upper.endsWith('_NOT_CONFIGURED') ||
-      upper.endsWith('_MAPPING_MISSING');
+  return _knownConfigurationErrorCodes.contains(upper);
 }

@@ -16,6 +16,37 @@ namespace TkgPda.Api.Tests;
 /// </summary>
 public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    [InlineData(3, false)]
+    public async Task Mamul_projection_uses_healthy_registry_fg_binding_without_legacy_delivery_slots(int blocker, bool enabled)
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
+        var scene = setup.SceneA;
+        await fixture.ExecuteAsync("DELETE FROM ops.store_location_delivery_slots");
+        if (blocker == 1)
+            await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_disabled = 1 WHERE navigation_profile_id = @nav", ("nav", scene.NavigationId));
+        if (blocker == 2)
+            await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_sync_at = NULL WHERE navigation_profile_id = @nav", ("nav", scene.NavigationId));
+        if (blocker == 3)
+            await fixture.ExecuteAsync("DELETE FROM integration.profile_shared_endpoint_bindings WHERE navigation_profile_id = @nav AND endpoint_class = 'FINISHED_GOODS'", ("nav", scene.NavigationId));
+        using var client = await fixture.LoginClientAsync(scene.Operator);
+        var positions = await client.GetFromJsonAsync<ContainerPositionRecord[]>(
+            $"/api/v1/machines/{scene.MachineId}/container-positions?variantId={scene.VariantId}&layoutId={scene.LayoutId}&productGroupId={scene.Group}&partId={scene.MainPart}");
+        var position = Assert.Single(positions!);
+        Assert.Equal(enabled, position.FullAction.Enabled);
+        Assert.False(position.EmptyAction.Enabled);
+        if (enabled)
+        {
+            var response = await client.SendAsync(CreateFullContainerActionRequest(scene, "projected-full"));
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            Assert.Equal("FG-01", await fixture.ScalarAsync<string>("SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @machine", ("machine", scene.MachineId)));
+        }
+        else Assert.Equal("FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", position.FullAction.DisabledCode);
+    }
+
     [Fact]
     public async Task Two_machines_on_different_nav_profiles_competing_for_finished_goods_reserve_distinct_endpoints()
     {

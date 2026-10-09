@@ -206,7 +206,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
                   AND t.task_type_id = r.task_type_id
                   AND t.is_active
                   AND (t.product_group_id = r.product_group_id OR t.product_group_id IS NULL)
-                ORDER BY (t.product_group_id = r.product_group_id) DESC, t.id
+                ORDER BY (t.product_group_id = r.product_group_id) DESC NULLS LAST, t.id
                 LIMIT 1
             ) template ON true
             LEFT JOIN LATERAL (

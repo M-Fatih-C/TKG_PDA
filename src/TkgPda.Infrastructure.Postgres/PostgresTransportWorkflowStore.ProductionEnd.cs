@@ -367,7 +367,7 @@ public sealed partial class PostgresTransportWorkflowStore
                   AND t.is_active
                   AND t.destination_slot_group_id IS NOT NULL
                   AND (t.product_group_id = @group OR t.product_group_id IS NULL)
-                ORDER BY (t.product_group_id = @group) DESC, t.id
+                ORDER BY (t.product_group_id = @group) DESC NULLS LAST, t.id
                 LIMIT 1
             )
             SELECT ls.id

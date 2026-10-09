@@ -10,6 +10,33 @@ namespace TkgPda.Api.Tests;
 public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
+    public async Task Bound_line_terminal_can_start_and_end_without_legacy_user_machine_permissions()
+    {
+        var setup = await SetupAsync();
+        await fixture.ExecuteAsync("DELETE FROM auth.user_machine_permissions WHERE user_id = @user", ("user", setup.User.UserId));
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var started = await StartAsync(client, setup, "terminal-start");
+        Assert.Equal(HttpStatusCode.Created, started.StatusCode);
+        var session = (await ReadAsync(started)).Session;
+        var ended = await EndAsync(client, setup, session.Id);
+        Assert.Equal(HttpStatusCode.OK, ended.StatusCode);
+        Assert.Equal("ENDED", (await ReadAsync(ended)).Session.Status);
+    }
+
+    [Fact]
+    public async Task Storage_boundary_rejects_line_terminal_rebound_to_another_machine()
+    {
+        var setup = await SetupAsync();
+        var other = await fixture.ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = 'SH-01-B'");
+        await fixture.ExecuteAsync("UPDATE audit.client_devices SET machine_id = @machine WHERE id = @device", ("machine", other), ("device", setup.User.DeviceId));
+        await using var store = new TkgPda.Infrastructure.Postgres.PostgresTransportWorkflowStore(fixture.ConnectionString);
+        var error = await Assert.ThrowsAsync<TkgPda.Domain.WorkflowRuleException>(() => store.StartAsync(new(
+            setup.Context.MachineId, setup.Context.VariantId, setup.Group, setup.MainPart, setup.User.UserId, setup.User.DeviceId, "rebound")));
+        Assert.Equal("PRODUCTION_ACCESS_DENIED", error.Code);
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_sessions"));
+    }
+
+    [Fact]
     public async Task Start_end_and_retries_persist_server_time_actor_device_and_one_audit_each()
     {
         var setup = await SetupAsync();

@@ -333,12 +333,10 @@ public sealed record TransportEtaProjection(int? Seconds, string State);
 
 /// <summary>
 /// Deterministic and conservative ETA projection. Consumes real RDSCore remaining_time
-/// telemetry when available; falls back to active runtime progress and queue position.
+/// telemetry when available. Runtime elapsed time and queue position do not prove an ETA.
 /// </summary>
 public sealed class TransportEtaService
 {
-    public const int AverageCycleTimeSeconds = 120;
-
     public TransportEtaProjection Unavailable() => new(null, "UNAVAILABLE");
 
     public TransportEtaProjection FromReliableRemainingTime(int? seconds) =>
@@ -369,27 +367,6 @@ public sealed class TransportEtaService
             }
         }
 
-        var currentUtc = now ?? DateTimeOffset.UtcNow;
-
-        if (status == TransportRequestStatus.Running || (status == TransportRequestStatus.SentToRds && !string.IsNullOrWhiteSpace(agvId)))
-        {
-            if (startedAt.HasValue)
-            {
-                var elapsed = Math.Max(0, (int)(currentUtc - startedAt.Value).TotalSeconds);
-                var remaining = Math.Max(15, AverageCycleTimeSeconds - elapsed);
-                return new(remaining, "AVAILABLE");
-            }
-
-            return new(AverageCycleTimeSeconds, "AVAILABLE");
-        }
-
-        if (status is TransportRequestStatus.Queued or TransportRequestStatus.Created or TransportRequestStatus.Validating or TransportRequestStatus.SentToRds)
-        {
-            var pos = queuePosition.GetValueOrDefault(1);
-            var estimated = Math.Max(AverageCycleTimeSeconds, pos * AverageCycleTimeSeconds);
-            return new(estimated, "AVAILABLE");
-        }
-
         return Unavailable();
     }
 
@@ -398,7 +375,7 @@ public sealed class TransportEtaService
         seconds = 0;
         if (element.TryGetProperty("remaining_time", out var prop) && prop.ValueKind == JsonValueKind.Number)
         {
-            if (prop.TryGetDouble(out var d) && d >= 0)
+            if (prop.TryGetDouble(out var d) && double.IsFinite(d) && d >= 0 && d <= int.MaxValue)
             {
                 seconds = (int)Math.Round(d);
                 return true;
@@ -406,7 +383,7 @@ public sealed class TransportEtaService
         }
         if (element.TryGetProperty("remainingTime", out prop) && prop.ValueKind == JsonValueKind.Number)
         {
-            if (prop.TryGetDouble(out var d) && d >= 0)
+            if (prop.TryGetDouble(out var d) && double.IsFinite(d) && d >= 0 && d <= int.MaxValue)
             {
                 seconds = (int)Math.Round(d);
                 return true;

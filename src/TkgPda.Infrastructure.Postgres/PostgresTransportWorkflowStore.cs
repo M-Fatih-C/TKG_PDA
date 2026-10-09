@@ -39,6 +39,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
 
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        await LockMachineRuntimeAsync(connection, transaction, request.MachineId, cancellationToken);
         var result = await CreateAndQueueWithinTransactionAsync(connection, transaction, request, batchId: null, eventContext, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return result;
@@ -60,6 +61,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
 
+        await LockMachineRuntimeAsync(connection, transaction, request.MachineId, cancellationToken);
         await LockIdempotencyKeyAsync(connection, transaction, request.IdempotencyKey, cancellationToken);
         var existingBatch = await FindBatchByIdempotencyKeyAsync(connection, transaction, request.IdempotencyKey, cancellationToken);
         if (existingBatch is not null)
@@ -768,14 +770,15 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid machineId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireConfigured = true)
     {
         await using var command = new NpgsqlCommand(
             "SELECT machine_id FROM ops.machine_runtime_state WHERE machine_id = @machine_id FOR UPDATE",
             connection,
             transaction);
         command.Parameters.AddWithValue("machine_id", machineId);
-        if (await command.ExecuteScalarAsync(cancellationToken) is null)
+        if (await command.ExecuteScalarAsync(cancellationToken) is null && requireConfigured)
         {
             throw new WorkflowRuleException("RUNTIME_STATE_NOT_CONFIGURED", "Machine runtime state must exist before changing workflow state.");
         }

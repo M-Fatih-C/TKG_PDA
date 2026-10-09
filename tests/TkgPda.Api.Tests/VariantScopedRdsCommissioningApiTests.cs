@@ -7,6 +7,32 @@ namespace TkgPda.Api.Tests;
 public sealed class VariantScopedRdsCommissioningApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
+    public async Task Dispatch_prefers_active_product_group_override_and_falls_back_to_generic_when_inactive()
+    {
+        await fixture.ResetAsync();
+        var slot = await SharedSlotAsync();
+        var profile = await ProfileAsync("TKG_SH01P1P2_V01_NAV");
+        var request = await InsertDispatchRequestAsync(slot, profile, "template-override");
+        var group = await fixture.ScalarAsync<Guid>("SELECT id FROM master.product_groups WHERE variant_id = (SELECT variant_id FROM ops.transport_requests WHERE id = @id) ORDER BY id LIMIT 1", ("id", request));
+        await fixture.ExecuteAsync("UPDATE ops.transport_requests SET product_group_id = @group WHERE id = @id", ("group", group), ("id", request));
+        var specific = await fixture.ScalarAsync<Guid>("""
+            INSERT INTO master.task_templates (variant_id, product_group_id, task_type_id, rds_task_label, priority, config_json)
+            SELECT variant_id, @group, task_type_id, 'TEST-SPECIFIC', 7, '{"override":true}'::jsonb
+            FROM ops.transport_requests WHERE id = @id RETURNING id
+            """, ("group", group), ("id", request));
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var store = new PostgresRdsExecutionStore(source);
+        var selected = await store.GetDispatchContextAsync(request);
+        Assert.Equal(specific, selected!.TaskTemplateId);
+        Assert.Equal("TEST-SPECIFIC", selected.RdsTaskLabel);
+        Assert.True(selected.TemplateConfig.GetProperty("override").GetBoolean());
+        await fixture.ExecuteAsync("UPDATE master.task_templates SET is_active = false WHERE id = @id", ("id", specific));
+        var fallback = await store.GetDispatchContextAsync(request);
+        Assert.NotEqual(specific, fallback!.TaskTemplateId);
+        Assert.True(await fixture.ScalarAsync<bool>("SELECT product_group_id IS NULL FROM master.task_templates WHERE id = @id", ("id", fallback.TaskTemplateId)));
+    }
+
+    [Fact]
     public async Task All_twenty_five_variants_have_one_distinct_planned_navigation_identity()
     {
         await fixture.ResetAsync();

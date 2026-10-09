@@ -22,7 +22,7 @@ public sealed partial class PostgresTransportWorkflowStore
         var eta = new TransportEtaService();
         // WP-08: Kasa Doldu is only offered while its finished-goods destination is configured.
         var finishedGoodsConfigured = await IsFinishedGoodsDestinationConfiguredAsync(
-            connection, query.LayoutId, query.VariantId, query.ProductGroupId, cancellationToken);
+            connection, query.MachineId, query.LayoutId, query.VariantId, query.ProductGroupId, cancellationToken);
         foreach (var row in rows)
         {
             var transportState = row.ActiveRequest is null ? "READY" : ProjectExecutionState(row.ActiveRequest);
@@ -69,6 +69,7 @@ public sealed partial class PostgresTransportWorkflowStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        await LockMachineRuntimeAsync(connection, transaction, command.MachineId, cancellationToken);
         await LockIdempotencyKeyAsync(connection, transaction, command.IdempotencyKey, cancellationToken);
 
         var query = new ContainerPositionQuery(
@@ -165,6 +166,7 @@ public sealed partial class PostgresTransportWorkflowStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        await LockMachineRuntimeAsync(connection, transaction, command.MachineId, cancellationToken);
         await LockIdempotencyKeyAsync(connection, transaction, command.IdempotencyKey, cancellationToken);
         var existing = await FindBatchByIdempotencyKeyAsync(connection, transaction, command.IdempotencyKey, cancellationToken);
         if (existing is not null)
@@ -323,6 +325,7 @@ public sealed partial class PostgresTransportWorkflowStore
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        await LockMachineRuntimeAsync(connection, transaction, command.MachineId, cancellationToken);
         await LockIdempotencyKeyAsync(connection, transaction, command.IdempotencyKey, cancellationToken);
         var existing = await FindBatchByIdempotencyKeyAsync(connection, transaction, command.IdempotencyKey, cancellationToken);
 

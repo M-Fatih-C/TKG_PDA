@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Npgsql;
 using TkgPda.Api;
 using TkgPda.Application;
 using TkgPda.Domain;
@@ -10,6 +11,64 @@ namespace TkgPda.Api.Tests;
 
 public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Alt_demand_waits_for_machine_before_locking_the_production_session(bool batch)
+    {
+        var setup = await SetupAsync();
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        await using var blocker = new NpgsqlConnection(fixture.ConnectionString);
+        await blocker.OpenAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await using (var machineLock = new NpgsqlCommand("SELECT 1 FROM ops.machine_runtime_state WHERE machine_id = @machine FOR UPDATE", blocker, transaction))
+        {
+            machineLock.Parameters.AddWithValue("machine", setup.Context.MachineId);
+            await machineLock.ExecuteScalarAsync();
+        }
+
+        var pending = batch
+            ? BatchAsync(client, setup, [setup.AltPart], "concurrent-batch")
+            : DemandAsync(client, setup, setup.AltPart, "concurrent-single");
+        try
+        {
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            var waiting = false;
+            while (DateTimeOffset.UtcNow < deadline && !pending.IsCompleted)
+            {
+                waiting = await fixture.ScalarAsync<bool>("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE @pid = ANY(pg_blocking_pids(pid)))", ("pid", blocker.ProcessID));
+                if (waiting) break;
+                await Task.Delay(25);
+            }
+            Assert.True(waiting, "Demand must actually overlap the held machine lock.");
+            // An End transaction already holding machine must be able to acquire session.
+            // The old session -> machine order causes PostgreSQL 55P03 here.
+            await using var sessionLock = new NpgsqlCommand("SELECT 1 FROM ops.production_sessions WHERE machine_id = @machine AND ended_at IS NULL FOR UPDATE NOWAIT", blocker, transaction);
+            sessionLock.Parameters.AddWithValue("machine", setup.Context.MachineId);
+            Assert.NotNull(await sessionLock.ExecuteScalarAsync());
+        }
+        finally
+        {
+            await transaction.RollbackAsync();
+        }
+        Assert.Equal(HttpStatusCode.Created, (await pending.WaitAsync(TimeSpan.FromSeconds(10))).StatusCode);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Concurrent_alt_clicks_create_one_demand_and_reject_the_second()
+    {
+        var setup = await SetupAsync();
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        var responses = await Task.WhenAll(DemandAsync(client, setup, setup.AltPart, "click-a"), DemandAsync(client, setup, setup.AltPart, "click-b"));
+        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Created);
+        var conflict = Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Conflict);
+        Assert.Equal("PART_REQUEST_ALREADY_ACTIVE", await ApiTestFixture.ErrorCodeAsync(conflict));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
     [Fact]
     public async Task Alt_part_without_container_type_is_rejected_before_a_request_exists()
     {

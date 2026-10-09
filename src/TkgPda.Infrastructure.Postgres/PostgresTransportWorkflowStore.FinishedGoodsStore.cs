@@ -228,7 +228,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                 WHERE t.variant_id = @variant_id
                   AND t.is_active
                   AND (t.product_group_id = @product_group_id OR t.product_group_id IS NULL)
-                ORDER BY (t.product_group_id = @product_group_id) DESC, t.id
+                ORDER BY (t.product_group_id = @product_group_id) DESC NULLS LAST, t.id
                 LIMIT 1
             )
             SELECT ls.id
@@ -279,11 +279,34 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     /// </summary>
     private static async Task<bool> IsFinishedGoodsDestinationConfiguredAsync(
         NpgsqlConnection connection,
+        Guid machineId,
         Guid layoutId,
         Guid variantId,
         Guid productGroupId,
         CancellationToken cancellationToken)
     {
+        // Registry requests allocate canonical FG endpoints, not legacy layout
+        // delivery slots. The operator projection must use the same mapping path.
+        await using (var registry = new NpgsqlCommand("""
+            SELECT n.status = 'PUBLISHED' AND EXISTS (
+                SELECT 1 FROM integration.profile_shared_endpoint_bindings b
+                JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
+                    AND w.navigation_profile_id = b.navigation_profile_id
+                JOIN ops.store_locations sl ON sl.code = b.business_code AND sl.is_enabled
+                WHERE b.navigation_profile_id = n.id AND b.endpoint_class = 'FINISHED_GOODS'
+                    AND w.last_sync_at IS NOT NULL
+                    AND COALESCE(w.last_disabled, 0) = 0 AND COALESCE(w.last_sync_failed, 0) = 0)
+            FROM ops.machine_runtime_state runtime
+            JOIN master.navigation_profiles n ON n.id = runtime.active_navigation_id
+            WHERE runtime.machine_id = @machine AND n.config_json->>'commissioningRegistry' = @registry
+            """, connection))
+        {
+            registry.Parameters.AddWithValue("machine", machineId);
+            registry.Parameters.AddWithValue("registry", CommissioningRegistry);
+            if (await registry.ExecuteScalarAsync(cancellationToken) is bool configured)
+                return configured;
+        }
+
         var slotId = await ResolveFinishedGoodsDestinationSlotAsync(
             connection, null, layoutId, variantId, productGroupId, cancellationToken);
         return slotId is { } id

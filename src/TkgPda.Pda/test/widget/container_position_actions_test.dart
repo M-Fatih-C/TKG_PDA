@@ -9,6 +9,46 @@ import 'package:tkg_pda/data/models/pda_models.dart';
 import '../support/fakes.dart';
 
 void main() {
+  testWidgets(
+    'Unknown runtime business state is not classified as missing configuration',
+    (tester) async {
+      const blocked = ContainerActionAvailability(
+        enabled: false,
+        status: 'READY',
+        disabledCode: 'BUSINESS_RULE_NOT_CONFIGURED',
+        disabledMessage: 'Kasa konumunun mevcut durumu bilinmiyor.',
+      );
+      final repository = FakePdaRepository()
+        ..containerPositionsValue = [
+          const ContainerPosition(
+            positionNumber: 1,
+            label: '1. Kasa',
+            fullAction: blocked,
+            emptyAction: blocked,
+            transportState: 'READY',
+            queuePosition: null,
+            etaSeconds: null,
+            etaState: 'UNAVAILABLE',
+          ),
+        ];
+      final harness = await _harness(tester, repository: repository);
+      expect(find.text('Kasa Doldu'), findsOneWidget);
+      expect(find.text('Boş Kasa Getir'), findsOneWidget);
+      expect(find.text('Hazır'), findsNothing);
+      expect(find.text('Yapılandırma Eksik'), findsNothing);
+      expect(find.text('Hazır Değil'), findsOneWidget);
+      for (final operation in ['REMOVE_FULL', 'BRING_EMPTY']) {
+        expect(
+          tester.widget<ElevatedButton>(
+            find.byKey(Key('direct-action-$operation-1')),
+          ).enabled,
+          isFalse,
+        );
+      }
+      harness.dispose();
+    },
+  );
+
   group('TKG PDA — Mamul Kasa Two-Action UI Consistency', () {
     testWidgets('A — vacant position: both visible, Kasa Doldu disabled, Boş Kasa Getir enabled', (
       tester,

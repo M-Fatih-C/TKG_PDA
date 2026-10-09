@@ -12,6 +12,26 @@ namespace TkgPda.Api.Tests;
 public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
+    public async Task Product_specific_return_group_wins_over_a_generic_destination_group()
+    {
+        var setup = await SetupAsync();
+        await MapAltAsync(setup, setup.Slots);
+        var specificGroup = await CreateReturnGroupAsync(setup);
+        var specificSlot = await AddReturnSlotAsync(setup, specificGroup, priority: 1, displayOrder: 9800);
+        var genericGroup = await CreateReturnGroupAsync(setup);
+        await AddReturnSlotAsync(setup, genericGroup, priority: 1, displayOrder: 9801);
+        await SeedAltRemovalAsync(setup, specificGroup);
+        await fixture.ExecuteAsync("""
+            INSERT INTO master.task_templates (variant_id, task_type_id, destination_slot_group_id, is_active)
+            SELECT @variant, id, @destination, true FROM master.task_types WHERE code = 'REMOVE_FULL'
+            """, ("variant", setup.Context.VariantId), ("destination", genericGroup));
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+        (await EndAsync(client, setup, session.Id, "specific-return")).EnsureSuccessStatusCode();
+        Assert.Equal(specificSlot, await fixture.ScalarAsync<Guid>("SELECT destination_slot_id FROM ops.transport_requests"));
+    }
+
+    [Fact]
     public async Task All_vacant_positions_end_immediately_with_no_cleanup_requests()
     {
         var setup = await SetupAsync();

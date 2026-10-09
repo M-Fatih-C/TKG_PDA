@@ -129,8 +129,18 @@ public sealed partial class PostgresTransportWorkflowStore : IProductionSessionS
                           WHERE ur.user_id = u.id AND r.code IN ('ADMIN','SUPERVISOR','LINE_OPERATOR'))
               AND (EXISTS (SELECT 1 FROM auth.user_roles ur JOIN auth.roles r ON r.id = ur.role_id
                            WHERE ur.user_id = u.id AND r.code = 'ADMIN')
-                   OR EXISTS (SELECT 1 FROM auth.user_machine_permissions p
-                              WHERE p.user_id = u.id AND p.machine_id = @machine AND p.can_operate))
+                   OR (EXISTS (SELECT 1 FROM auth.user_roles ur JOIN auth.roles r ON r.id = ur.role_id
+                               WHERE ur.user_id = u.id AND r.code = 'LINE_OPERATOR')
+                       AND NOT EXISTS (SELECT 1 FROM auth.user_roles ur JOIN auth.roles r ON r.id = ur.role_id
+                                       WHERE ur.user_id = u.id AND r.code = 'SUPERVISOR')
+                       AND EXISTS (SELECT 1 FROM audit.client_devices d
+                                   WHERE d.id = @device AND d.is_active AND d.machine_id = @machine)
+                       AND COALESCE((SELECT p.can_operate FROM auth.user_machine_permissions p
+                                     WHERE p.user_id = u.id AND p.machine_id = @machine), true))
+                   OR (EXISTS (SELECT 1 FROM auth.user_roles ur JOIN auth.roles r ON r.id = ur.role_id
+                               WHERE ur.user_id = u.id AND r.code = 'SUPERVISOR')
+                       AND EXISTS (SELECT 1 FROM auth.user_machine_permissions p
+                                   WHERE p.user_id = u.id AND p.machine_id = @machine AND p.can_operate)))
             """, connection, transaction);
         command.Parameters.AddWithValue("actor", actorId);
         command.Parameters.AddWithValue("device", deviceId);
