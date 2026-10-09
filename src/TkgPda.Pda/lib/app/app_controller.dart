@@ -206,12 +206,14 @@ class AppController extends ChangeNotifier {
       _batchCart.isEmpty &&
       !hasAmbiguousSubmission &&
       !hasAmbiguousBatchSubmission;
+  // A failed cleanup intentionally stays ENDING. An explicit fresh-key End
+  // may re-plan when there are no active transports; the server still rejects
+  // a RUNNING cleanup under the machine lock.
   bool get canEndProduction =>
       usesProductionWorkflow &&
       mutationEnabled &&
       production.verified &&
       production.active != null &&
-      production.active?.isEnding != true &&
       !production.hasPending &&
       (_context?.machine.permissions.canOperate ?? false) &&
       (_context?.activeTransportRequests.isEmpty ?? false) &&

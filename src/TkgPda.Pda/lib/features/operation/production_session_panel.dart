@@ -381,6 +381,14 @@ class ProductionSessionPanel extends StatelessWidget {
                 icon: const Icon(Icons.stop_circle_outlined, size: 22),
                 label: const Text('Üretimi Bitir'),
               ),
+              if (active.isEnding && controller.canEndProduction)
+                const Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: Text(
+                    'Bitiş henüz tamamlanmadı. Saha durumunu doğruladıktan sonra yeniden deneyin.',
+                    key: Key('production-end-retry-guidance'),
+                  ),
+                ),
               if (openCount > 0) ...[
                 const SizedBox(height: 6),
                 Text(
@@ -555,6 +563,14 @@ class _CompactActiveHeader extends StatelessWidget {
                 ),
               ],
             ),
+            if (active.isEnding && controller.canEndProduction)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text(
+                  'Bitiş henüz tamamlanmadı. Saha durumunu doğruladıktan sonra yeniden deneyin.',
+                  key: Key('production-end-retry-guidance'),
+                ),
+              ),
             if (state.loading || state.inFlight)
               const Padding(
                 padding: EdgeInsets.only(top: 6),

@@ -16,6 +16,7 @@ import '../support/fakes.dart';
 ProductionSession productionRecord({
   String id = 'production-1',
   bool ended = false,
+  String status = 'ACTIVE',
 }) => ProductionSession(
   id: id,
   machineId: testMachine.id,
@@ -24,9 +25,38 @@ ProductionSession productionRecord({
   mainPartId: testMainPartId,
   startedAt: DateTime.utc(2026, 9, 15, 8),
   endedAt: ended ? DateTime.utc(2026, 9, 15, 9) : null,
+  status: ended ? 'ENDED' : status,
 );
 
 void main() {
+  test('ENDING recovery with no active transport uses a fresh End key', () async {
+    final ending = productionRecord(status: 'ENDING');
+    final repo = FakePdaRepository()
+      ..productionValue = ending
+      ..productionEndSession = ending
+      ..contextValue = testContext();
+    final c = await controller(repo);
+    expect(c.canStartProduction, isFalse);
+    expect(c.canEndProduction, isTrue);
+    await c.endProduction();
+    await c.endProduction();
+    expect(repo.productionEndIds, ['production-1', 'production-1']);
+    expect(repo.productionEndKeys.toSet(), hasLength(2));
+    expect(c.production.active!.isEnding, isTrue);
+    expect(repo.productionStartCount, 0);
+  });
+
+  test('ENDING recovery stays blocked while a child transport is active', () async {
+    final repo = FakePdaRepository()
+      ..productionValue = productionRecord(status: 'ENDING')
+      ..contextValue = testContext(activeRequests: [testActiveRequest]);
+    final c = await controller(repo);
+    expect(c.canEndProduction, isFalse);
+    await c.endProduction();
+    expect(repo.productionEndCount, 0);
+    expect(repo.contextValue.activeTransportRequests, hasLength(1));
+  });
+
   test('alt part demand does not retarget the mamul container', () async {
     final repo = FakePdaRepository();
     final c = await controller(repo);

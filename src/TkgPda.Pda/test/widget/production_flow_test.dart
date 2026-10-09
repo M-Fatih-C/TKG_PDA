@@ -9,6 +9,27 @@ import 'package:tkg_pda/data/models/pda_models.dart';
 import '../support/fakes.dart';
 
 void main() {
+  testWidgets('ENDING retry requires confirmation and explains field verification', (tester) async {
+    final original = activeRecord();
+    final ending = ProductionSession(
+      id: original.id,
+      machineId: original.machineId,
+      variantId: original.variantId,
+      productGroupId: original.productGroupId,
+      mainPartId: original.mainPartId,
+      startedAt: original.startedAt,
+      status: 'ENDING',
+    );
+    final repo = FakePdaRepository()..productionValue = ending;
+    await harness(tester, repo);
+    expect(find.byKey(const Key('production-end-retry-guidance')), findsOneWidget);
+    expect(find.textContaining('Saha durumunu doğruladıktan'), findsOneWidget);
+    await tap(tester, const Key('production-end'));
+    expect(repo.productionEndCount, 0);
+    await tap(tester, const Key('confirm-production-end'));
+    expect(repo.productionEndCount, 1);
+  });
+
   testWidgets(
     'start is on workspace; no quantity or transport before production',
     (tester) async {
