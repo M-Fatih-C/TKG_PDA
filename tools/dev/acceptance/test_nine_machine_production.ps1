@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-    Acceptance test for 9-machine production start and clean end matrix.
+    Acceptance test for 9-machine production start and owned-session retirement.
 .DESCRIPTION
     Dynamically resolves real active machine, source-backed variant, published layout,
     product group, and main part from the database for all 9 machines:
     412B, GAR, PAH-01-A, PAH-02-A, SEALER, SH-01-A, SH-01-B, SH-01-P1--SH-01-P2, SH-02-P1 -SH-02-P2.
-    Tests production start, verifies active session, and performs clean production end.
+    Tests production start and active session. SQL retirement is test cleanup,
+    not evidence of Production End behavior; the isolated workflow/API tests prove End.
     
     SAFETY HARDENED:
     - Never mutates or ends pre-existing active sessions.
@@ -95,8 +96,8 @@ if ($preexistingBusy.Count -gt 0) {
         Write-Host "  - BLOCKED — PREEXISTING_ACTIVE_SESSION: $busy" -ForegroundColor Yellow
     }
     Write-Host "Per acceptance safety rules, pre-existing sessions will NOT be mutated or ended." -ForegroundColor Yellow
-    Write-Host "RESULT: FAIL (ENVIRONMENT_BUSY - machine currently in production)" -ForegroundColor Red
-    exit 1
+    Write-Host "RESULT: BLOCKED (ENVIRONMENT_BUSY - machine currently in production)" -ForegroundColor Red
+    exit 2
 }
 
 $runGuid = [Guid]::NewGuid().ToString('N')

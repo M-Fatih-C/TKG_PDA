@@ -382,28 +382,8 @@ WHERE layout_slot_id IN (
     $resetSimSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
 }
 
-# Clean up any leftover test parts, test slots, or test users from integration test suites
-$testCleanupSql = @"
-DELETE FROM ops.transport_requests 
-WHERE part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%')
-   OR idempotency_key LIKE 'wp33-%'
-   OR product_group_id IN (SELECT id FROM master.product_groups WHERE main_part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%'));
-UPDATE ops.slot_runtime_state 
-SET current_part_id = NULL, current_container_type_id = NULL, occupancy_state = 'VACANT', load_state = 'UNKNOWN'
-WHERE current_part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%');
-DELETE FROM ops.slot_runtime_state
-WHERE layout_slot_id IN (SELECT id FROM master.layout_slots WHERE code LIKE 'BUFFER-TEST-%');
-DELETE FROM master.layout_slot_parts
-WHERE part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%')
-   OR layout_slot_id IN (SELECT id FROM master.layout_slots WHERE code LIKE 'BUFFER-TEST-%');
-DELETE FROM master.layout_slots WHERE code LIKE 'BUFFER-TEST-%';
-DELETE FROM master.product_groups WHERE main_part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%');
-DELETE FROM master.parts WHERE part_code LIKE 'WP33-%';
-DELETE FROM auth.user_roles WHERE user_id IN (SELECT id FROM auth.users WHERE username = 'user-3c55a45bff');
-DELETE FROM auth.users WHERE username = 'user-3c55a45bff';
-DELETE FROM audit.client_devices WHERE device_code = 'PDA-3c55a45bff';
-"@
-$testCleanupSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
+# Persistent startup never owns historical test-prefixed operational records.
+# Test harnesses retire their exact owned IDs in their isolated database.
 
 # Resolve development password
 $plainPassword = $null

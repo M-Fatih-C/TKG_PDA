@@ -21,6 +21,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $true
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 
 # STRICT SAFETY GATE. This script drops and recreates its target.
@@ -118,6 +119,10 @@ VALUES
   ('DEV-WAREHOUSE', 'Development Warehouse Terminal', 'PDA', true)
 ON CONFLICT (device_code) DO UPDATE SET name = EXCLUDED.name, is_active = true;
 
+-- The synthetic line terminal obeys the same terminal -> machine contract.
+UPDATE audit.client_devices SET machine_id = (SELECT id FROM master.machines WHERE code = 'SH-01-A')
+WHERE device_code = 'DEV-LINE';
+
 INSERT INTO auth.user_machine_permissions (user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
 SELECT u.id, m.id, true, true, true, false
 FROM auth.users u CROSS JOIN master.machines m
@@ -181,7 +186,7 @@ nav_candidates AS (
         ) as rn
     FROM selected_machine_defaults smd
     JOIN master.variant_navigation_profile_assignments vnpa ON vnpa.variant_id = smd.variant_id AND vnpa.machine_id = smd.machine_id
-    JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id
+    JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id AND np.status = 'PUBLISHED'
 )
 INSERT INTO ops.machine_runtime_state (machine_id, active_variant_id, active_layout_id, active_navigation_id)
 SELECT smd.machine_id, smd.variant_id, smd.layout_id, nc.navigation_id

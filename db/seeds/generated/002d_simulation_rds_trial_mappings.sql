@@ -97,11 +97,9 @@ BEGIN
         ('c1000000-0000-0000-0000-000000000008', v_nav_a_id, 'PP80', 'PARK', 'PARK', 1, 0, 0, 0, null, null, 0, now(), '{}'),
         ('c1000000-0000-0000-0000-000000000009', v_nav_a_id, 'AP84', 'LINE', 'FEED', 1, 0, 0, 0, null, null, 0, now(), '{}'),
         ('c1000000-0000-0000-0000-00000000000a', v_nav_a_id, 'AP85', 'LINE', 'FEED', 1, 0, 0, 0, null, null, 0, now(), '{}')
-    ON CONFLICT (id) DO UPDATE SET 
-        rds_site_id = EXCLUDED.rds_site_id,
-        area = EXCLUDED.area,
-        group_name = EXCLUDED.group_name,
-        last_sync_at = now();
+    -- Static seeds must not refresh or overwrite already observed WorkSite evidence.
+    -- In particular, restarting the stack is not a successful live synchronization.
+    ON CONFLICT (id) DO NOTHING;
 
     -- 4. Ensure BUFFER-001 (EMPTY_STORAGE) and DROP-001 (DROP) slots exist on Variant 1 and Variant 2 layouts
     INSERT INTO master.layout_slots (

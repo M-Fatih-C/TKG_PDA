@@ -23,6 +23,8 @@ import time
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
+from pathlib import Path
 
 def check_environment():
     try:
@@ -85,90 +87,99 @@ def get_machine_active_session(api_base, device_code, employee_number, machine_c
                     return m_id, None
                 return m_id, json.loads(raw)
         except urllib.error.HTTPError as he:
-            if he.code in (204, 404):
+            if he.code == 204:
                 return m_id, None
             raise
-        except json.JSONDecodeError:
-            return m_id, None
+        except json.JSONDecodeError as error:
+            raise RuntimeError('Active-session response was not valid JSON; refusing browser mutation.') from error
     except Exception as e:
         print(f"Active session query note: {e}")
-        return None, None
+        raise RuntimeError("Active-session preflight could not be verified.") from e
 
-def cleanup_exact_session(api_base, device_code, employee_number, machine_id, session_id):
-    if not machine_id or not session_id:
-        return
-    try:
-        login_url = f"{api_base}/api/v1/auth/login"
-        req_data = json.dumps({"employeeNumber": employee_number}).encode("utf-8")
-        req = urllib.request.Request(
-            login_url,
-            data=req_data,
-            headers={"Content-Type": "application/json", "X-Device-Code": device_code}
-        )
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            login_res = json.loads(resp.read().decode("utf-8"))
-            token = login_res.get("accessToken")
+def authenticated_read(api_base, device_code, employee_number, path):
+    login = urllib.request.Request(f"{api_base}/api/v1/auth/login",
+        data=json.dumps({"employeeNumber": employee_number}).encode(),
+        headers={"Content-Type": "application/json", "X-Device-Code": device_code})
+    with urllib.request.urlopen(login, timeout=5) as response:
+        token = json.load(response)["accessToken"]
+    request = urllib.request.Request(api_base + path,
+        headers={"Authorization": f"Bearer {token}", "X-Device-Code": device_code})
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.load(response)
 
-        if not token:
-            return
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "X-Device-Code": device_code,
-            "Content-Type": "application/json",
-            "Idempotency-Key": f"acceptance:browser-cleanup:{session_id}"
-        }
+def validate_projection(positions, cards):
+    if not positions or len(positions) != len(cards):
+        return False
+    active = {"REQUESTED", "QUEUED", "ROBOT_ASSIGNED", "IN_PROGRESS", "WAITING_PREPARATION"}
+    for position, card in zip(sorted(positions, key=lambda p: p["positionNumber"]), cards):
+        for action, key in (("fullAction", "fullEnabled"), ("emptyAction", "emptyEnabled")):
+            if key not in card or card[key] != position[action]["enabled"]:
+                return False
+        if position["transportState"] in active and (card["fullEnabled"] or card["emptyEnabled"]):
+            return False
+        executable = position["fullAction"]["enabled"] or position["emptyAction"]["enabled"]
+        if not executable and re.search(r"Taşıma durumu Hazır(?:$|\s*·)", card.get("badge", "")):
+            return False
+        if not card.get("badge"):
+            return False
+    return True
 
-        end_url = f"{api_base}/api/v1/machines/{machine_id}/production-sessions/{session_id}/end"
-        end_req = urllib.request.Request(end_url, data=b"{}", headers=headers)
-        with urllib.request.urlopen(end_req, timeout=20) as end_resp:
-            ended = json.loads(end_resp.read().decode("utf-8"))
-        status = ((ended.get("session") or {}).get("status") or "").upper()
-        if status != "ENDED":
-            # Occupied positions leave the owned session ENDING and create
-            # child requests. Retire only this session id. Do not touch slots.
-            retire_owned_session(session_id)
-        print(f"Cleaned up browser-owned session {session_id} on SH-01-A.")
-    except Exception as e:
-        print(f"Session cleanup note: {e}")
-        if session_id:
-            try:
-                retire_owned_session(session_id)
-                print(f"Cleaned up browser-owned session {session_id} on SH-01-A.")
-            except Exception as retire_error:
-                print(f"Session cleanup note: {retire_error}")
 
-def retire_owned_session(session_id):
-    if not re.fullmatch(r"[0-9a-fA-F-]{36}", session_id or ""):
-        raise RuntimeError("Refusing to retire a session without an exact id.")
-    psql = os.environ.get("PSQL_PATH", r"C:\Program Files\PostgreSQL\18\bin\psql.exe")
+def all_verifications_pass(verifications):
+    return bool(verifications) and all(v.get("pass") is True for v in verifications.values())
+
+
+def capture_mutations(driver):
+    requests, responses = {}, []
+    for entry in driver.get_log("performance"):
+        message = json.loads(entry["message"])["message"]
+        params = message.get("params", {})
+        if message["method"] == "Network.requestWillBeSent":
+            request = params["request"]
+            if request.get("method") == "POST" and ("/production-sessions" in request["url"] or "/container-actions" in request["url"]):
+                requests[params["requestId"]] = request
+        if message["method"] == "Network.responseReceived":
+            responses.append(params)
+    result = []
+    for response in responses:
+        request = requests.get(response["requestId"])
+        if request and response["response"]["status"] in (200, 201):
+            body = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": response["requestId"]})
+            result.append((request, json.loads(body["body"])))
+    return result
+
+
+def retire_owned_session(session_id, start_key, request_numbers):
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", session_id or "") or not start_key:
+        raise RuntimeError("Exact browser-created session id and observed start key are required.")
+    database = os.environ.get("TKG_TEST_DATABASE", "tkg_pda_dev")
+    if database not in ("tkg_pda_dev", "tkg_pda_acceptance"):
+        raise RuntimeError("Unsupported browser test database.")
+    key = start_key.replace("'", "''")
+    numbers = ",".join(str(int(n)) for n in request_numbers) or "-1"
     sql = f"""
 BEGIN;
-DELETE FROM ops.production_end_run_items
-WHERE run_id IN (SELECT id FROM ops.production_end_runs WHERE production_session_id = '{session_id}');
-DELETE FROM ops.transport_request_dependencies
-WHERE predecessor_request_id IN (SELECT id FROM ops.transport_requests WHERE production_session_id = '{session_id}')
-   OR successor_request_id IN (SELECT id FROM ops.transport_requests WHERE production_session_id = '{session_id}');
-DELETE FROM ops.transport_requests WHERE production_session_id = '{session_id}';
-DELETE FROM ops.production_end_runs WHERE production_session_id = '{session_id}';
-UPDATE ops.production_sessions
-SET ended_at = GREATEST(clock_timestamp(), started_at),
-    ended_by = started_by,
-    ended_device_id = started_device_id,
-    status = 'ENDED'
-WHERE id = '{session_id}' AND ended_at IS NULL;
+DO $guard$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM ops.production_sessions WHERE id='{session_id}' AND start_key='{key}')
+ THEN RAISE EXCEPTION 'Browser session ownership mismatch'; END IF;
+ IF EXISTS (SELECT 1 FROM ops.transport_requests WHERE production_session_id='{session_id}' AND request_no NOT IN ({numbers}))
+ THEN RAISE EXCEPTION 'Unowned requests attached to browser session; preserving all rows'; END IF;
+END $guard$;
+DELETE FROM ops.transport_requests WHERE production_session_id='{session_id}' AND request_no IN ({numbers});
+UPDATE ops.production_sessions SET ended_at=GREATEST(clock_timestamp(),started_at),
+ ended_by=started_by, ended_device_id=started_device_id, status='ENDED'
+WHERE id='{session_id}' AND start_key='{key}' AND ended_at IS NULL;
 COMMIT;
 """
-    completed = subprocess.run(
-        [psql, "-h", "127.0.0.1", "-p", "55450", "-U", "postgres", "-d", "tkg_pda_dev", "-v", "ON_ERROR_STOP=1", "-c", sql],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or "Owned session retire failed.")
+    psql=os.environ.get("PSQL_PATH", r"C:\Program Files\PostgreSQL\18\bin\psql.exe")
+    completed=subprocess.run([psql,"-X","-h",os.environ.get("TKG_TEST_PG_HOST","127.0.0.1"),
+        "-p",os.environ.get("TKG_TEST_PG_PORT","55450"),"-U",os.environ.get("TKG_TEST_PG_USER","postgres"),
+        "-d",database,"-v","ON_ERROR_STOP=1"],input=sql,capture_output=True,text=True)
+    if completed.returncode:
+        raise RuntimeError("Browser-owned cleanup failed; preserve database rows for investigation.")
 
-def run_browser_e2e():
+def run_browser_e2e(report):
     chrome_path = check_environment()
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
@@ -190,8 +201,12 @@ def run_browser_e2e():
         s_id = preexisting_session.get("id")
         print(f"\nENVIRONMENT_BUSY: Pre-existing active session {s_id} detected on SH-01-A.")
         print("Per acceptance safety rules, browser E2E will NOT mutate or end pre-existing sessions.")
+        report["reason"] = "ENVIRONMENT_BUSY — pre-existing production on SH-01-A"
         print("RESULT: SKIP (ENVIRONMENT_BUSY - machine currently in production)")
         sys.exit(2)
+
+    if not sh01a_id:
+        raise RuntimeError("Target machine preflight failed; browser must not mutate.")
 
     # Ensure Flutter Web server bundle is completely compiled before launching Chrome
     bundle_ready = False
@@ -214,11 +229,12 @@ def run_browser_e2e():
     opts.add_argument("--disable-gpu")
     opts.add_argument("--window-size=1366,768")
     opts.binary_location = chrome_path
-    opts.set_capability("goog:loggingPrefs", {"browser": "ALL"})
+    opts.set_capability("goog:loggingPrefs", {"browser": "ALL", "performance": "ALL"})
 
     driver = webdriver.Chrome(options=opts)
-    report = {"status": "FAIL", "steps": [], "verifications": {}}
     created_session_id = None
+    created_start_key = None
+    owned_request_numbers = []
 
     def wait_and_enable_semantics():
         for attempt in range(45):
@@ -341,7 +357,8 @@ def run_browser_e2e():
                 }
                 return false;
             """)
-            print(f"Start button clicked: {start_clicked}")
+            if not start_clicked:
+                raise RuntimeError("Production start was not clicked.")
             report["steps"].append("6. Clicked 'Üretime Başla'")
 
         # Step 7: Reach rendered Mamul Kasa UI (wait up to 15s)
@@ -361,11 +378,16 @@ def run_browser_e2e():
             raise Exception("Mamul Kasa panel not rendered on machine workspace.")
         report["steps"].append("7. Reached rendered Mamul Kasa UI")
 
-        # Capture exact session ID created by browser test
-        _, active_after_start = get_machine_active_session(api_base, device_code, employee_number, "SH-01-A")
-        if active_after_start and active_after_start.get("id"):
-            created_session_id = active_after_start.get("id")
-            print(f"Browser test captured owned session ID: {created_session_id}")
+        # Ownership comes from this Chrome instance's actual POST response.
+        for request, body in capture_mutations(driver):
+            if request["url"].endswith("/production-sessions"):
+                created_session_id = body["session"]["id"]
+                created_start_key = next((v for k,v in request["headers"].items() if k.lower()=="idempotency-key"), None)
+        if not created_session_id or not created_start_key:
+            raise RuntimeError("No browser-owned production-start response was observed.")
+        _, active_after_start = get_machine_active_session(api_base, device_code, employee_number)
+        if not active_after_start or active_after_start["id"] != created_session_id:
+            raise RuntimeError("Active session does not match the browser-created session.")
 
         # Step 8: Verify BOTH buttons exist: 'Kasa Doldu' and 'Boş Kasa Getir'
         has_kasa_doldu = "Kasa Doldu" in all_text
@@ -387,35 +409,28 @@ def run_browser_e2e():
         }
         print(f"9. Deprecated labels absent: Alan Boş={not has_alan_bos}, Kasam Doldu={not has_kasam_doldu}")
 
-        # Step 10: Verify enabled/disabled state matches API container-position projection
-        try:
-            pos_req = urllib.request.Request(
-                f"{api_base}/api/v1/machines/{m_id}/container-positions",
-                headers={"X-Device-Code": device_code}
-            )
-            with urllib.request.urlopen(pos_req, timeout=4) as p_resp:
-                api_positions = json.loads(p_resp.read().decode("utf-8"))
-        except Exception as ex:
-            api_positions = []
-
-        kd_buttons = [n for n in nodes if n.get("text") == "Kasa Doldu" and n.get("role") == "button"]
-        bk_buttons = [n for n in nodes if n.get("text") == "Boş Kasa Getir" and n.get("role") == "button"]
-
-        projection_match = (len(kd_buttons) >= 2 and len(bk_buttons) >= 2)
-        report["verifications"]["projection_action_state_match"] = {
-            "api_positions_count": len(api_positions),
-            "kasa_doldu_rendered_count": len(kd_buttons),
-            "bos_kasa_getir_rendered_count": len(bk_buttons),
-            "pass": projection_match
-        }
-        print(f"10. Projection action state match: {projection_match} ({len(kd_buttons)} Kasa Doldu, {len(bk_buttons)} Boş Kasa Getir buttons rendered)")
-
-        # Step 11: Badge honesty
-        badge_nodes = [n for n in nodes if "Hazır" in (n.get("text") or "") or "Yapılandırma Eksik" in (n.get("text") or "")]
-        report["verifications"]["badge_honesty"] = {
-            "badge_count": len(badge_nodes),
-            "pass": True
-        }
+        # Fetch the actual authenticated projection, including the active context.
+        context = authenticated_read(api_base,device_code,employee_number,f"/api/v1/machines/{sh01a_id}/operational-context")
+        params = urllib.parse.urlencode({"variantId":active_after_start["variantId"],
+            "layoutId":context["activeLayoutId"],"productGroupId":active_after_start["productGroupId"],
+            "partId":active_after_start["mainPartId"]})
+        api_positions = authenticated_read(api_base,device_code,employee_number,f"/api/v1/machines/{sh01a_id}/container-positions?{params}")
+        cards = driver.execute_script("""
+            const text=e=>e.getAttribute('aria-label') || e.innerText || '';
+            const action=(e,label)=>Array.from(e.querySelectorAll('[role=button]')).filter(b=>text(b).trim()===label);
+            const enabled=e=>e.getAttribute('aria-disabled')!=='true' && !e.disabled;
+            const result=[];
+            for(const full of Array.from(document.querySelectorAll('[role=button]')).filter(e=>text(e).trim()==='Kasa Doldu')) {
+                let card=full.parentElement;
+                while(card && !(action(card,'Kasa Doldu').length===1 && action(card,'Boş Kasa Getir').length===1 && Array.from(card.querySelectorAll('[aria-label]')).some(e=>text(e).startsWith('Taşıma durumu ')))) card=card.parentElement;
+                if(card) result.push({fullEnabled:enabled(full),emptyEnabled:enabled(action(card,'Boş Kasa Getir')[0]),badge:Array.from(card.querySelectorAll('[aria-label]')).map(text).filter(t=>t.startsWith('Taşıma durumu ')).join(' ')});
+            }
+            return result;
+        """)
+        matched = validate_projection(api_positions, cards)
+        report["verifications"]["projection_and_badges"]={"pass":matched,"positions":len(api_positions),"cards":len(cards)}
+        if not matched:
+            raise RuntimeError("Rendered per-position disabled state or readiness badge disagrees with the API.")
 
         # Step 12: Trigger safe active transport & verify UI update
         print("12. Triggering 'Boş Kasa Getir' on Position 2...")
@@ -428,13 +443,20 @@ def run_browser_e2e():
 
         after_nodes = get_nodes()
         after_text = " ".join((n.get("text") or "") + " " + (n.get("ariaLabel") or "") for n in after_nodes)
-        has_active_transport = ("Aktif Taşımalar" in after_text) or ("Aktif Taşıma" in after_text) or ("İşlemde" in after_text)
+        for request, body in capture_mutations(driver):
+            if request["url"].endswith("/container-actions"):
+                owned_request_numbers.append(body["requestNo"])
+        fresh=authenticated_read(api_base,device_code,employee_number,f"/api/v1/machines/{sh01a_id}/operational-context")
+        active_numbers={r["requestNo"] for r in fresh["activeTransportRequests"]}
+        has_active_transport=bool(owned_request_numbers) and all(n in active_numbers and str(n) in after_text for n in owned_request_numbers)
         report["verifications"]["active_transport_rendered"] = {
             "active_transport_present": has_active_transport,
             "pass": has_active_transport
         }
         print(f"12. Active transport rendered in UI: {has_active_transport}")
 
+        if not all_verifications_pass(report["verifications"]):
+            raise RuntimeError("At least one required browser verification failed.")
         report["status"] = "PASS"
         print("\nRESULT: PASS (All browser E2E criteria met)")
 
@@ -444,9 +466,19 @@ def run_browser_e2e():
         print(f"\nRESULT: FAIL ({e})")
     finally:
         if created_session_id:
-            cleanup_exact_session(api_base, device_code, employee_number, sh01a_id, created_session_id)
+            try:
+                retire_owned_session(created_session_id, created_start_key, owned_request_numbers)
+            except Exception as cleanup_error:
+                report["status"]="FAIL"
+                print(str(cleanup_error))
         else:
             print("No browser-created session to clean up.")
+        try:
+            screenshot = Path(__file__).resolve().parents[3] / "scratch" / "operator_web_e2e_evidence.png"
+            driver.save_screenshot(str(screenshot))
+            report["screenshot"] = str(screenshot)
+        except Exception:
+            pass
         try:
             driver.quit()
         except Exception:
@@ -458,4 +490,26 @@ def run_browser_e2e():
         sys.exit(1)
 
 if __name__ == "__main__":
-    run_browser_e2e()
+    report_path = Path(__file__).resolve().parents[3] / "scratch" / "operator_web_e2e_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report = {"status": "RUNNING", "steps": [], "verifications": {},
+              "runUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    # Replace stale PASS evidence before even the tooling/preflight checks.
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    exit_code = 1
+    try:
+        run_browser_e2e(report)
+    except SystemExit as outcome:
+        exit_code = outcome.code
+        if exit_code == 2:
+            report["status"] = "SKIP"
+            report.setdefault("reason", "Tooling unavailable")
+        elif exit_code != 0:
+            report["status"] = "FAIL"
+    except Exception as error:
+        report["status"] = "FAIL"
+        report["error"] = str(error)
+        print(f"RESULT: FAIL ({error})")
+    finally:
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    sys.exit(exit_code)

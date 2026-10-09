@@ -3,7 +3,7 @@
     Reports static RDS WorkSite plans and dynamic live WorkSite mirrors.
 .DESCRIPTION
     Validates the 1775 fixed worksite plans breakdown and provides a real-time
-    SQL breakdown of live mirrored worksites (e.g. 1888), explaining the dynamic
+    SQL breakdown of live mirrored worksites, explaining the dynamic
     operational transit nodes (MAP_SWITCH_AREA).
 #>
 [CmdletBinding()]
@@ -112,18 +112,13 @@ $transitProfiles = [int]$transitParts[0]
 $transitNodes = [int]$transitParts[1]
 
 Write-Host "`n3. DYNAMIC TRANSIT DISCOVERY (MAP_SWITCH_AREA)" -ForegroundColor Yellow
-Write-Host "   - Navigation Profiles with Map Switch: $transitProfiles (25 registered)"
-Write-Host "   - Transit Points Total Count:          $transitNodes (100 expected: 25 x 4 points)"
+Write-Host "   - Navigation Profiles with Map Switch: $transitProfiles (observed mirrored profiles)"
+Write-Host "   - Transit Points Total Count:          $transitNodes (observed; no fixed equality invariant)"
 
 Write-Host "`n--------------------------------------------------" -ForegroundColor Cyan
-Write-Host "WORKSITE ARITHMETIC RECONCILIATION:" -ForegroundColor Cyan
-Write-Host "  1775 Static Planned Sites"
-Write-Host "  +100 Dynamic Map Switch Transit Points (25 profiles x 4 points)"
-Write-Host "  + 10 Simulation Overlay Points (002d seed)"
-Write-Host "  +  3 Trial Endpoint Bindings (TKG_SH01A_V01_NAV)"
-Write-Host "  ================================================="
-Write-Host "  1888 Total Mirrored RDS Sites"
-Write-Host "--------------------------------------------------" -ForegroundColor Cyan
+Write-Host "WORKSITE RECONCILIATION (observed):" -ForegroundColor Cyan
+Write-Host "  Static plans: $planTotal | Mirrored: $liveTotal | Map-switch transit: $transitNodes"
+Write-Host "  Mirror minus static-plan count: $($liveTotal - $planTotal) (dynamic; not an equality invariant)"
 
 if ($planPass) {
     Write-Host "`nRESULT: PASS (Plans: 1775, Live: $liveTotal)" -ForegroundColor Green

@@ -31,6 +31,9 @@ if ($Database -ne 'tkg_pda_acceptance') {
     Write-Host "It requires the isolated 'tkg_pda_acceptance' database, but was called with: '$Database'." -ForegroundColor Red
     throw "Synthetic acceptance requires isolated tkg_pda_acceptance database."
 }
+if ($ApiBaseUrl.TrimEnd('/') -ne 'http://127.0.0.1:5001') {
+    throw 'Synthetic acceptance requires its dedicated isolated API on http://127.0.0.1:5001.'
+}
 
 $psql = 'C:\Program Files\PostgreSQL\18\bin\psql.exe'
 if (-not (Test-Path -LiteralPath $psql)) {
@@ -74,7 +77,7 @@ JOIN master.parts p_main ON p_main.id = pg.main_part_id
 JOIN master.product_group_parts pgp ON pgp.product_group_id = pg.id AND pgp.relation_type = 'ALT_PART'
 JOIN master.parts p_alt ON p_alt.id = pgp.part_id AND p_alt.part_code = '67116BN050-40'
 JOIN master.variant_navigation_profile_assignments vnpa ON vnpa.variant_id = v.id
-JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id
+JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id AND np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
 JOIN master.layouts l ON l.machine_id = m.id AND l.code = 'CUSTOMER-PHYSICAL-V1'
 JOIN master.layout_slots s1 ON s1.layout_id = l.id AND s1.code = 'SLOT-001'
 JOIN master.layout_slots s2 ON s2.layout_id = l.id AND s2.code = 'SLOT-002'
@@ -319,6 +322,9 @@ try {
         $reader.ReadToEnd()
     }
     $errObj = $errBody | ConvertFrom-Json
+    if ([int]$_.Exception.Response.StatusCode -ne 422 -or $errObj.code -ne 'FINISHED_GOODS_CAPACITY_UNAVAILABLE') {
+        throw "Expected HTTP 422 FINISHED_GOODS_CAPACITY_UNAVAILABLE, got $($errObj.code)."
+    }
     Write-Host "PASS: Insufficient capacity correctly blocked: $($errObj.code) - $($errObj.detail)" -ForegroundColor Green
 }
 

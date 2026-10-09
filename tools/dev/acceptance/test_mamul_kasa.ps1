@@ -4,12 +4,11 @@
 .DESCRIPTION
     Validates the container action state matrix across all logical states:
     - VACANT + UNKNOWN  => Kasa Doldu disabled, Boş Kasa Getir enabled
-    - OCCUPIED + EMPTY  => Kasa Doldu enabled, Boş Kasa Getir disabled
-    - OCCUPIED + FULL   => Kasa Doldu enabled, Boş Kasa Getir disabled
-    - ACTIVE TRANSPORT  => Both buttons visible, both disabled
-    - Zero actions      => Badge honesty: must NOT report green "Hazır"
+    - OCCUPIED + EMPTY/FULL => Kasa Doldu requires configured FG; Boş Kasa Getir disabled
+    - Active-transport and rendered badge honesty are covered by API/widget/browser tests.
     - Absence of deprecated labels: "Alan Boş" and "Kasam Doldu" must never appear.
-    Tests across all 9 machines and safely restores tested slot state in finally.
+    Reads action presence across 9 machines; tests the state matrix on SH-01-A only.
+    Busy targets are rejected before mutation; full original runtime row is restored.
 #>
 [CmdletBinding()]
 param(
@@ -42,29 +41,22 @@ $headers = @{
     'X-Device-Code' = 'DEV-SUPERVISOR'
 }
 
-# 2. Derive SH-01-A target slot and IDs
-$mId = '2384d0fc-4dea-4174-b477-347fb365f645' # SH-01-A
-$vId = '3e5be5cf-2771-432a-a60b-0f87f4f0cf5b' # Variant 1
-$lId = 'ae8d65cb-53fa-434a-bbc8-891c5443bfa1' # CUSTOMER-PHYSICAL-V1
-$pgId = 'bc6e5f9b-e17e-4e09-a8d7-d5716f58e7ae' # 67115BN050-10-HAOS
-$partId = '1a19039f-85c4-42dd-9718-929bc955f849' # 67115BN050-10-HAOS
-$containerId = '2694fe17-d871-4613-a406-7f84537a5f09' # ARABA
-
-$slot1Sql = @"
-SELECT ls.id::text
-FROM master.layout_slots ls
-JOIN master.layouts l ON l.id = ls.layout_id
-WHERE l.id = '$lId' AND ls.code = 'SLOT-001';
-"@
-$slot1Id = (& $psql -h $HostName -p $Port -U $User -d $Database -t -A -c $slot1Sql).Trim()
-
-# Snapshot original slot state
-$readSql = "SELECT occupancy_state, load_state, coalesce(current_part_id::text,''), coalesce(current_container_type_id::text,'') FROM ops.slot_runtime_state WHERE layout_slot_id = '$slot1Id';"
-$origRaw = (& $psql -h $HostName -p $Port -U $User -d $Database -t -A -F ',' -c $readSql).Trim().Split(',')
-$origOcc = $origRaw[0]
-$origLoad = $origRaw[1]
-$origPart = $origRaw[2]
-$origCont = $origRaw[3]
+. (Join-Path $PSScriptRoot 'persistent_safety.ps1')
+$context = (Invoke-AcceptanceSql @"
+SELECT m.id, v.id, l.id, g.id, g.main_part_id, c.id, ls.id
+FROM master.machines m
+JOIN master.variants v ON v.machine_id = m.id AND v.code = '1'
+JOIN master.layouts l ON l.machine_id = m.id AND l.code = 'CUSTOMER-PHYSICAL-V1'
+JOIN master.product_groups g ON g.variant_id = v.id AND g.is_active
+JOIN master.layout_slots ls ON ls.layout_id = l.id AND ls.is_enabled AND ls.slot_role NOT IN ('MACHINE','EMPTY_STORAGE')
+JOIN master.layout_slot_parts lp ON lp.layout_slot_id = ls.id AND lp.part_id = g.main_part_id
+JOIN master.container_types c ON c.code = 'ARABA'
+WHERE m.code = 'SH-01-A' ORDER BY ls.display_order, ls.code, g.id LIMIT 1;
+"@).Split('|')
+if ($context.Count -ne 7) { throw 'Mamul Kasa context unavailable.' }
+$mId, $vId, $lId, $pgId, $partId, $containerId, $slot1Id = $context
+Assert-PersistentTargetIdle @($mId)
+$originalSlot = Invoke-AcceptanceSql "SELECT row_to_json(s)::text FROM ops.slot_runtime_state s WHERE layout_slot_id = '$slot1Id';"
 
 function Get-SH01Pos1 {
     $uri = "$ApiBaseUrl/api/v1/machines/$mId/container-positions?variantId=$vId&layoutId=$lId&productGroupId=$pgId&partId=$partId"
@@ -73,6 +65,17 @@ function Get-SH01Pos1 {
 }
 
 $allPass = $true
+$fieldBlockedStates = 0
+function Test-FullAvailability($Position) {
+    if ($Position.fullAction.enabled) { return $true }
+    if ($Position.fullAction.disabledCode -eq 'FINISHED_GOODS_DESTINATION_NOT_CONFIGURED' -and
+        -not [string]::IsNullOrWhiteSpace($Position.fullAction.disabledMessage)) {
+        $script:fieldBlockedStates++
+        Write-Host '  FIELD BLOCKED: finished-goods destination is absent; full action correctly disabled.' -ForegroundColor Yellow
+        return $true
+    }
+    return $false
+}
 
 try {
     Write-Host "`n--- Part 1: State Matrix Acceptance on Logical Position 1 ---" -ForegroundColor Yellow
@@ -80,7 +83,7 @@ try {
     # State A: VACANT + UNKNOWN
     & $psql -h $HostName -p $Port -U $User -d $Database -c "UPDATE ops.slot_runtime_state SET occupancy_state = 'VACANT', load_state = 'UNKNOWN', current_part_id = NULL, current_container_type_id = NULL WHERE layout_slot_id = '$slot1Id';" | Out-Null
     $pos = Get-SH01Pos1
-    $fullOk = ($pos.fullAction -and -not $pos.fullAction.enabled)
+    $fullOk = ($pos.fullAction -and -not $pos.fullAction.enabled -and $pos.fullAction.disabledCode -eq 'OCCUPIED_CONTAINER_REQUIRED')
     $emptyOk = ($pos.emptyAction -and $pos.emptyAction.enabled)
     Write-Host "State A [VACANT]:"
     Write-Host ("  Kasa Doldu:     Enabled={0} (DisabledCode={1})" -f $pos.fullAction.enabled, $pos.fullAction.disabledCode)
@@ -95,13 +98,13 @@ try {
     # State B: OCCUPIED + EMPTY
     & $psql -h $HostName -p $Port -U $User -d $Database -c "UPDATE ops.slot_runtime_state SET occupancy_state = 'OCCUPIED', load_state = 'EMPTY', current_part_id = '$partId', current_container_type_id = '$containerId' WHERE layout_slot_id = '$slot1Id';" | Out-Null
     $pos = Get-SH01Pos1
-    $fullOk = ($pos.fullAction -and $pos.fullAction.enabled)
-    $emptyOk = ($pos.emptyAction -and -not $pos.emptyAction.enabled)
+    $fullOk = Test-FullAvailability $pos
+    $emptyOk = ($pos.emptyAction -and -not $pos.emptyAction.enabled -and $pos.emptyAction.disabledCode -eq 'CONTAINER_POSITION_OCCUPIED')
     Write-Host "`nState B [OCCUPIED + EMPTY]:"
     Write-Host ("  Kasa Doldu:     Enabled={0}" -f $pos.fullAction.enabled)
     Write-Host ("  Boş Kasa Getir: Enabled={0} (DisabledCode={1})" -f $pos.emptyAction.enabled, $pos.emptyAction.disabledCode)
     if ($fullOk -and $emptyOk) {
-        Write-Host "  -> PASS: Kasa Doldu enabled, Boş Kasa Getir disabled" -ForegroundColor Green
+        Write-Host '  -> PASS: FULL availability respects destination configuration; EMPTY rejects occupied position.' -ForegroundColor Green
     } else {
         Write-Host "  -> FAIL" -ForegroundColor Red
         $allPass = $false
@@ -110,19 +113,19 @@ try {
     # State C: OCCUPIED + FULL
     & $psql -h $HostName -p $Port -U $User -d $Database -c "UPDATE ops.slot_runtime_state SET occupancy_state = 'OCCUPIED', load_state = 'FULL', current_part_id = '$partId', current_container_type_id = '$containerId' WHERE layout_slot_id = '$slot1Id';" | Out-Null
     $pos = Get-SH01Pos1
-    $fullOk = ($pos.fullAction -and $pos.fullAction.enabled)
-    $emptyOk = ($pos.emptyAction -and -not $pos.emptyAction.enabled)
+    $fullOk = Test-FullAvailability $pos
+    $emptyOk = ($pos.emptyAction -and -not $pos.emptyAction.enabled -and $pos.emptyAction.disabledCode -eq 'CONTAINER_POSITION_OCCUPIED')
     Write-Host "`nState C [OCCUPIED + FULL]:"
     Write-Host ("  Kasa Doldu:     Enabled={0} (Triggers REMOVE_FULL)" -f $pos.fullAction.enabled)
     Write-Host ("  Boş Kasa Getir: Enabled={0} (DisabledCode={1})" -f $pos.emptyAction.enabled, $pos.emptyAction.disabledCode)
     if ($fullOk -and $emptyOk) {
-        Write-Host "  -> PASS: Kasa Doldu enabled, Boş Kasa Getir disabled" -ForegroundColor Green
+        Write-Host '  -> PASS: FULL availability respects destination configuration; EMPTY rejects occupied position.' -ForegroundColor Green
     } else {
         Write-Host "  -> FAIL" -ForegroundColor Red
         $allPass = $false
     }
 
-    # Part 2: Proving Absence of Deprecated Labels
+    # Part 2: API copy check (rendered labels are independently tested in Flutter/browser).
     Write-Host "`n--- Part 2: Forbidden Labels Absence Audit ---" -ForegroundColor Yellow
     $allJson = (Invoke-RestMethod -Uri "$ApiBaseUrl/api/v1/machines/$mId/container-positions?variantId=$vId&layoutId=$lId&productGroupId=$pgId&partId=$partId" -Headers $headers) | ConvertTo-Json -Depth 5
     $forbiddenFound = ($allJson -match 'Alan Boş' -or $allJson -match 'Kasam Doldu')
@@ -187,16 +190,12 @@ ORDER BY m.code;
     }
 }
 finally {
-    # Restore original slot state
-    Write-Host "`nRestoring original slot state..."
-    $pParam = if ([string]::IsNullOrWhiteSpace($origPart)) { "NULL" } else { "'$origPart'" }
-    $cParam = if ([string]::IsNullOrWhiteSpace($origCont)) { "NULL" } else { "'$origCont'" }
-    & $psql -h $HostName -p $Port -U $User -d $Database -c "UPDATE ops.slot_runtime_state SET occupancy_state = '$origOcc', load_state = '$origLoad', current_part_id = $pParam, current_container_type_id = $cParam, updated_at = now() WHERE layout_slot_id = '$slot1Id';" | Out-Null
-    Write-Host "Slot state restored to: $origOcc / $origLoad"
+    Restore-RuntimeRow $originalSlot
+
 }
 
 if ($allPass) {
-    Write-Host "`nRESULT: PASS (Mamul Kasa actions & state matrix verified)" -ForegroundColor Green
+    Write-Host "`nRESULT: PASS (projection semantics verified; $fieldBlockedStates states FIELD BLOCKED, executable actions covered by DB API tests)" -ForegroundColor Green
     exit 0
 } else {
     Write-Host "`nRESULT: FAIL" -ForegroundColor Red

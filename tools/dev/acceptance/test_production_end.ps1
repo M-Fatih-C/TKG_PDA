@@ -58,7 +58,7 @@ JOIN master.parts p_main ON p_main.id = pg.main_part_id
 JOIN master.product_group_parts pgp ON pgp.product_group_id = pg.id AND pgp.relation_type = 'ALT_PART'
 JOIN master.parts p_alt ON p_alt.id = pgp.part_id AND p_alt.part_code = '67116BN050-40'
 JOIN master.variant_navigation_profile_assignments vnpa ON vnpa.variant_id = v.id
-JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id
+JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id AND np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
 JOIN master.layouts l ON l.machine_id = m.id AND l.code = 'CUSTOMER-PHYSICAL-V1'
 JOIN master.layout_slots s1 ON s1.layout_id = l.id AND s1.code = 'SLOT-001'
 JOIN master.layout_slots s2 ON s2.layout_id = l.id AND s2.code = 'SLOT-002'
@@ -91,25 +91,13 @@ $preExistingSessionId = "$(& $psql -h $HostName -p $Port -U $User -d $Database -
 if ($preExistingSessionId) {
     Write-Host "`nBLOCKED - PREEXISTING_ACTIVE_SESSION: SH-01-A has active session ($preExistingSessionId)" -ForegroundColor Yellow
     Write-Host "Per acceptance safety rules, pre-existing sessions will NOT be mutated or ended." -ForegroundColor Yellow
-    Write-Host "RESULT: FAIL (ENVIRONMENT_BUSY - machine currently in production)" -ForegroundColor Red
-    exit 1
+    Write-Host "RESULT: BLOCKED (ENVIRONMENT_BUSY - machine currently in production)" -ForegroundColor Red
+    exit 2
 }
 
 # Snapshot original machine runtime state
 $origNavId = "$(& $psql -h $HostName -p $Port -U $User -d $Database -t -A -c "SELECT coalesce(active_navigation_id::text, '') FROM ops.machine_runtime_state WHERE machine_id = '$machineId';")".Trim()
 
-# Snapshot original slot states
-function Get-SlotSnapshot {
-    param([string]$SlotId)
-    $q = "SELECT occupancy_state, load_state, coalesce(current_part_id::text, ''), coalesce(current_container_type_id::text, '') FROM ops.slot_runtime_state WHERE layout_slot_id = '$SlotId';"
-    $snapRaw = "$(& $psql -h $HostName -p $Port -U $User -d $Database -t -A -F ',' -c $q)".Trim()
-    if (-not $snapRaw) { return $null }
-    return $snapRaw.Split(',')
-}
-
-$origSlot1 = Get-SlotSnapshot $slot1Id
-$origSlot2 = Get-SlotSnapshot $slot2Id
-$origSlot3 = Get-SlotSnapshot $slot3Id
 $priorityBefore = "$(& $psql -h $HostName -p $Port -U $User -d $Database -t -A -c "SELECT md5(coalesce(string_agg(operation_code || ':' || priority::text, ',' ORDER BY operation_code), '')) FROM master.production_end_priorities;")".Trim()
 $requestCountBefore = "$(& $psql -h $HostName -p $Port -U $User -d $Database -t -A -c "SELECT count(*) FROM ops.transport_requests WHERE machine_id = '$machineId';")".Trim()
 
@@ -155,12 +143,16 @@ try {
         Write-Host "UNEXPECTED: Session started while profile was DRAFT!" -ForegroundColor Red
         exit 1
     } catch {
+        $httpStatus = [int]$_.Exception.Response.StatusCode
         $draftBlocked = $true
         $errBody = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else {
             $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
             $reader.ReadToEnd()
         }
         $errObj = $errBody | ConvertFrom-Json
+        if ($httpStatus -ne 409 -or $errObj.code -ne 'NAVIGATION_PROFILE_CONFLICT') {
+            throw "Expected HTTP 409 NAVIGATION_PROFILE_CONFLICT, got HTTP $httpStatus / $($errObj.code)."
+        }
         Write-Host "PASS: Production start correctly blocked when navigation profile is DRAFT: $($errObj.code)" -ForegroundColor Green
         Write-Host "Detail: $($errObj.detail)" -ForegroundColor Gray
     }
@@ -232,18 +224,4 @@ ORDER BY object_family;
     $navRestoreSql = if ([string]::IsNullOrWhiteSpace($origNavId)) { "NULL" } else { "'$origNavId'::uuid" }
     & $psql -h $HostName -p $Port -U $User -d $Database -c "UPDATE ops.machine_runtime_state SET active_navigation_id = $navRestoreSql WHERE machine_id = '$machineId';" | Out-Null
 
-    # 2. Restore exact slot states
-    function Restore-Slot {
-        param([string]$SlotId, [string[]]$Snap)
-        if ($null -eq $Snap -or $Snap.Count -lt 4 -or [string]::IsNullOrWhiteSpace($Snap[0])) { return }
-        $occ = $Snap[0]
-        $load = $Snap[1]
-        $partParam = if ([string]::IsNullOrWhiteSpace($Snap[2])) { "NULL" } else { "'$($Snap[2])'::uuid" }
-        $contParam = if ([string]::IsNullOrWhiteSpace($Snap[3])) { "NULL" } else { "'$($Snap[3])'::uuid" }
-        & $psql -h $HostName -p $Port -U $User -d $Database -c "UPDATE ops.slot_runtime_state SET occupancy_state = '$occ', load_state = '$load', current_part_id = $partParam, current_container_type_id = $contParam WHERE layout_slot_id = '$SlotId';" | Out-Null
-    }
-
-    Restore-Slot $slot1Id $origSlot1
-    Restore-Slot $slot2Id $origSlot2
-    Restore-Slot $slot3Id $origSlot3
 }

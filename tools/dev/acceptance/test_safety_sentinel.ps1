@@ -21,14 +21,20 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ApiBaseUrl = 'http://127.0.0.1:5000',
+    [string]$ApiBaseUrl = 'http://127.0.0.1:5001',
     [string]$HostName = '127.0.0.1',
     [int]$Port = 55450,
-    [string]$Database = 'tkg_pda_dev',
+    [string]$Database = 'tkg_pda_acceptance',
     [string]$User = 'postgres'
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Database -ne 'tkg_pda_acceptance') {
+    throw 'Synthetic sentinel setup requires isolated tkg_pda_acceptance database.'
+}
+if ($ApiBaseUrl.TrimEnd('/') -ne 'http://127.0.0.1:5001') {
+    throw 'Synthetic sentinel requires its dedicated isolated API on http://127.0.0.1:5001.'
+}
 $psql = 'C:\Program Files\PostgreSQL\18\bin\psql.exe'
 if (-not (Test-Path -LiteralPath $psql)) {
     $psql = (Get-Command psql.exe -ErrorAction SilentlyContinue)?.Source
@@ -156,7 +162,7 @@ function Get-SentinelSnapshot {
     & pwsh -NoProfile -File $nmScript -ApiBaseUrl $ApiBaseUrl -HostName $HostName -Port $Port -Database $Database -User $User
     $nmExit = $LASTEXITCODE
 
-    if ($nmExit -ne 0) {
+    if ($nmExit -eq 2) {
         Write-Host "PASS: 9-Machine runner safely rejected execution due to active sentinel session (exited with ENVIRONMENT_BUSY code $nmExit)." -ForegroundColor Green
     } else {
         Write-Host "FAIL: 9-Machine runner did not reject active session on machine 412B!" -ForegroundColor Red
@@ -185,7 +191,7 @@ function Get-SentinelSnapshot {
     Write-Host "`n4. Running Mamul Kasa State Matrix Test..."
     $mkScript = Join-Path $scriptDir 'test_mamul_kasa.ps1'
     & pwsh -NoProfile -File $mkScript -ApiBaseUrl $ApiBaseUrl -HostName $HostName -Port $Port -Database $Database -User $User
-    if ($LASTEXITCODE -ne 0) {
+    if ($LASTEXITCODE -notin @(0, 2)) {
         Write-Host "FAIL: Mamul Kasa failed!" -ForegroundColor Red
         exit 1
     }
