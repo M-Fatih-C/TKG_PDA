@@ -7,6 +7,7 @@ import 'core/config/app_config.dart';
 import 'core/config/runtime_config_loader.dart';
 import 'core/network/api_client.dart';
 import 'core/platform/platform_info.dart';
+import 'features/warehouse/internal_notification_client_provider.dart';
 import 'core/storage/device_code_store_factory.dart';
 import 'data/repositories/pda_repository.dart';
 
@@ -30,6 +31,9 @@ Future<void> main() async {
     repository: PdaRepository(api),
     deviceCodeStore: createDeviceCodeStore(),
     session: session,
+    notificationClient: createInternalNotificationClient(
+      baseUrl: appConfig.apiBaseUri.toString(),
+    ),
   );
   await controller.initialize();
   runApp(TkgPdaApp(controller: controller));

@@ -19,6 +19,10 @@ var jwtOptions = new JwtOptions(
     builder.Configuration.GetValue("Authentication:Jwt:ExpiryMinutes", 15),
     builder.Configuration.GetValue("Authentication:Jwt:ClockSkewSeconds", 30));
 jwtOptions.Validate();
+var fieldSessionOptions = new FieldSessionOptions(
+    builder.Configuration.GetValue("Authentication:FieldSession:LeaseSeconds", 120),
+    builder.Configuration.GetValue("Authentication:FieldSession:HeartbeatSeconds", 30));
+fieldSessionOptions.Validate();
 var rdsOptions = RdsOptions.FromConfiguration(builder.Configuration);
 var rdsCoreDiscoveryOptions = RdsCoreDiscoveryOptions.FromConfiguration(builder.Configuration);
 var rdsCoreExecutionOptions = RdsCoreExecutionOptions.FromConfiguration(builder.Configuration);
@@ -51,6 +55,7 @@ builder.Services.Configure<JsonOptions>(options =>
     options.SerializerOptions.WriteIndented = false;
 });
 builder.Services.AddSingleton(jwtOptions);
+builder.Services.AddSingleton(fieldSessionOptions);
 builder.Services.AddSingleton(rdsOptions);
 builder.Services.AddSingleton(rdsCoreDiscoveryOptions);
 builder.Services.AddSingleton(rdsCoreExecutionOptions);
@@ -59,6 +64,8 @@ builder.Services.AddSingleton<Pbkdf2PasswordHasher>();
 builder.Services.AddSingleton<IPasswordHashService>(services => services.GetRequiredService<Pbkdf2PasswordHasher>());
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton(NpgsqlDataSource.Create(connectionString));
+builder.Services.AddSingleton<PostgresFieldSessionStore>();
+builder.Services.AddSingleton<IFieldSessionStore>(services => services.GetRequiredService<PostgresFieldSessionStore>());
 builder.Services.AddSingleton<PostgresApiDataStore>();
 builder.Services.AddSingleton<IApiDataStore>(services => services.GetRequiredService<PostgresApiDataStore>());
 builder.Services.AddSingleton<IOperatorTransportQueueStore>(services => services.GetRequiredService<PostgresApiDataStore>());
@@ -128,15 +135,23 @@ builder.Services.AddSingleton<RdsIntegrationService>();
 builder.Services.AddSingleton<IRdsWorkSiteReconciler>(services =>
     services.GetRequiredService<RdsIntegrationService>());
 builder.Services.AddSingleton<AdminConfigurationService>();
+builder.Services.AddSingleton(new RdsPhysicalAvailabilityPolicy(TimeSpan.FromSeconds(rdsOptions.WorkSiteFreshnessSeconds)));
 builder.Services.AddSingleton(services =>
-    new PostgresTransportWorkflowStore(services.GetRequiredService<NpgsqlDataSource>()));
+    new PostgresTransportWorkflowStore(services.GetRequiredService<NpgsqlDataSource>(),
+        physicalPolicy: services.GetRequiredService<RdsPhysicalAvailabilityPolicy>()));
 builder.Services.AddSingleton<ITransportWorkflowStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<IContainerActionStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
+builder.Services.AddSingleton<IPartDemandStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
+builder.Services.AddSingleton<PartDemandService>();
 builder.Services.AddSingleton<TransportWorkflowService>();
 builder.Services.AddSingleton<IProductionSessionStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<ProductionSessionService>();
 builder.Services.AddSingleton<IWarehousePreparationStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<WarehousePreparationService>();
+builder.Services.Configure<DeviceNotificationOptions>(builder.Configuration.GetSection("DeviceNotifications"));
+builder.Services.AddSingleton<IDeviceNotificationStore, PostgresDeviceNotificationStore>();
+builder.Services.AddSingleton<IOperationalEvidenceStore, PostgresOperationalEvidenceStore>();
+builder.Services.AddSingleton<IOperationalReportStore, PostgresOperationalReportStore>();
 builder.Services.AddSingleton<IFinishedGoodsStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<FinishedGoodsStoreService>();
 builder.Services.AddSingleton<ContainerActionService>();
@@ -150,6 +165,7 @@ builder.Services.AddSingleton(new RdsExecutionSettings(
     rdsOptions.FullContentValue));
 builder.Services.AddSingleton<RdsExecutionCoordinator>();
 builder.Services.AddHostedService<RdsExecutionWorker>();
+builder.Services.AddHostedService<RdsAlarmObservationWorker>();
 builder.Services.AddCors(options => options.AddPolicy("OperatorWeb", policy =>
 {
     if (operatorWebOrigins.Length > 0)
@@ -207,6 +223,12 @@ builder.Services.AddAuthorization(options =>
         .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
     options.AddPolicy(PolicyNames.WarehousePreparation, policy => policy
         .RequireRole(RoleCodes.WarehousePreparationRoles)
+        .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
+    options.AddPolicy(PolicyNames.SemiFinishedWarehouse, policy => policy
+        .RequireRole(RoleCodes.SemiFinishedWarehouseRoles)
+        .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
+    options.AddPolicy(PolicyNames.FinishedGoodsWarehouse, policy => policy
+        .RequireRole(RoleCodes.FinishedGoodsWarehouseRoles)
         .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
     options.AddPolicy(PolicyNames.ProductionOperator, policy => policy
         .RequireRole(RoleCodes.Admin, RoleCodes.Supervisor, RoleCodes.LineOperator)
@@ -268,6 +290,7 @@ app.UseCors("OperatorWeb");
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<DeviceContextMiddleware>();
+app.UseMiddleware<FieldSessionValidationMiddleware>();
 app.UseAuthorization();
 
 app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnonymous();
@@ -282,6 +305,7 @@ app.MapTkgPdaApi();
 app.MapProductionSessions();
 app.MapWarehousePreparation();
 app.MapFinishedGoodsStore();
+app.MapDeviceNotifications();
 app.MapTkgPdaAdminApi();
 app.MapTkgPdaRdsIntegrationApi();
 

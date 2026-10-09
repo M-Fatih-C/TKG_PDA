@@ -10,6 +10,33 @@ namespace TkgPda.Api.Tests;
 public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
+    public async Task Bound_line_terminal_can_start_and_end_without_legacy_user_machine_permissions()
+    {
+        var setup = await SetupAsync();
+        await fixture.ExecuteAsync("DELETE FROM auth.user_machine_permissions WHERE user_id = @user", ("user", setup.User.UserId));
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var started = await StartAsync(client, setup, "terminal-start");
+        Assert.Equal(HttpStatusCode.Created, started.StatusCode);
+        var session = (await ReadAsync(started)).Session;
+        var ended = await EndAsync(client, setup, session.Id);
+        Assert.Equal(HttpStatusCode.OK, ended.StatusCode);
+        Assert.Equal("ENDED", (await ReadAsync(ended)).Session.Status);
+    }
+
+    [Fact]
+    public async Task Storage_boundary_rejects_line_terminal_rebound_to_another_machine()
+    {
+        var setup = await SetupAsync();
+        var other = await fixture.ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = 'SH-01-B'");
+        await fixture.ExecuteAsync("UPDATE audit.client_devices SET machine_id = @machine WHERE id = @device", ("machine", other), ("device", setup.User.DeviceId));
+        await using var store = new TkgPda.Infrastructure.Postgres.PostgresTransportWorkflowStore(fixture.ConnectionString);
+        var error = await Assert.ThrowsAsync<TkgPda.Domain.WorkflowRuleException>(() => store.StartAsync(new(
+            setup.Context.MachineId, setup.Context.VariantId, setup.Group, setup.MainPart, setup.User.UserId, setup.User.DeviceId, "rebound")));
+        Assert.Equal("PRODUCTION_ACCESS_DENIED", error.Code);
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_sessions"));
+    }
+
+    [Fact]
     public async Task Start_end_and_retries_persist_server_time_actor_device_and_one_audit_each()
     {
         var setup = await SetupAsync();
@@ -135,7 +162,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var session = (await ReadAsync(await StartAsync(client, setup, "session"))).Session;
         (await BringAsync(client, setup, "bring")).EnsureSuccessStatusCode();
         var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests WHERE idempotency_key = 'bring'");
-        (await client.PostAsync($"/api/v1/transport-requests/{requestId}/cancel", null)).EnsureSuccessStatusCode();
+        (await client.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{requestId}/cancel", null)).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.OK, (await EndAsync(client, setup, session.Id)).StatusCode);
         Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests"));
     }
@@ -399,9 +426,9 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var otherVariant = await fixture.ContextAsync("SH-01-A", "2");
         var invalid = await Assert.ThrowsAsync<PostgresException>(() => fixture.ExecuteAsync("""
             INSERT INTO ops.production_sessions(machine_id, variant_id, product_group_id, main_part_id, start_key,
-                started_by, started_device_id, started_at, ended_by, ended_device_id, ended_at)
+                started_by, started_device_id, started_at, ended_by, ended_device_id, ended_at, status)
             SELECT machine_id, @wrong_variant, product_group_id, main_part_id, 'wrong-group-variant',
-                started_by, started_device_id, started_at, started_by, started_device_id, clock_timestamp()
+                started_by, started_device_id, started_at, started_by, started_device_id, clock_timestamp(), 'ENDED'
             FROM ops.production_sessions
             """, ("wrong_variant", otherVariant.VariantId)));
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, invalid.SqlState);
@@ -445,7 +472,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var session = (await ReadAsync(await StartAsync(client, setup, "start"))).Session;
         (await BringAsync(client, setup, "bring", session.Id)).EnsureSuccessStatusCode();
         var id = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
-        (await client.PostAsync($"/api/v1/transport-requests/{id}/cancel", null)).EnsureSuccessStatusCode();
+        (await client.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{id}/cancel", null)).EnsureSuccessStatusCode();
         (await EndAsync(client, setup, session.Id)).EnsureSuccessStatusCode();
         (await BringAsync(client, setup, "bring", session.Id)).EnsureSuccessStatusCode();
         var wrong = await BringAsync(client, setup, "bring", Guid.NewGuid());
@@ -503,7 +530,12 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         if (key is not null) request.Headers.Add(ApiHeaders.IdempotencyKey, key);
         return client.SendAsync(request);
     }
-    private static Task<HttpResponseMessage> EndAsync(HttpClient client, Setup setup, Guid id) => client.PostAsync(Path(setup) + $"/{id}/end", null);
+    private static Task<HttpResponseMessage> EndAsync(HttpClient client, Setup setup, Guid id)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, Path(setup) + $"/{id}/end");
+        request.Headers.Add(ApiHeaders.IdempotencyKey, "production-end");
+        return client.SendAsync(request);
+    }
     private static async Task<ProductionSessionResult> ReadAsync(HttpResponseMessage response)
     {
         response.EnsureSuccessStatusCode();

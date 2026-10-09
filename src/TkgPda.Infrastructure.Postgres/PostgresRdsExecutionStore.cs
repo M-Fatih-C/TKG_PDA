@@ -6,8 +6,32 @@ using TkgPda.Domain;
 
 namespace TkgPda.Infrastructure.Postgres;
 
-public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRdsExecutionStore
+public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPhysicalAvailabilityPolicy? physicalPolicy = null) : IRdsExecutionStore
 {
+    public async Task<string?> ReadPhysicalDispatchBlockAsync(Guid requestId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT r.navigation_id,r.destination_business_code,tt.code
+            FROM ops.transport_requests r JOIN master.task_types tt ON tt.id=r.task_type_id WHERE r.id=@id
+            """,connection);
+        command.Parameters.AddWithValue("id",requestId);
+        Guid? nav = null; string? businessCode = null; string? operation = null;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            if (await reader.ReadAsync(cancellationToken))
+            { nav=reader.IsDBNull(0) ? null : reader.GetGuid(0); businessCode=Text(reader,1); operation=Text(reader,2); }
+        if (nav is not { } profileId || businessCode is null) return null;
+        var endpointClass=operation=="REMOVE_EMPTY" ? "EMPTY_RETURN"
+            : businessCode.StartsWith("FG-",StringComparison.Ordinal) ? "FINISHED_GOODS" : "NON_FINISHED_RETURN";
+        var observations=await PostgresTransportWorkflowStore.ReadSharedCandidatesAsync(connection,null,profileId,endpointClass,cancellationToken);
+        var candidate=observations.SingleOrDefault(c=>c.ProfileId==profileId && c.BusinessCode==businessCode);
+        if (candidate is null) return "RDS_WORKSITE_NOT_MAPPED";
+        if (!candidate.StoreEnabled) return "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED";
+        var policy=physicalPolicy ?? new RdsPhysicalAvailabilityPolicy();
+        return PostgresTransportWorkflowStore.SharedPhysicalAvailability(candidate,observations,policy) ? null
+            : RdsPhysicalAvailabilityPolicy.ErrorCode(policy.State(candidate.Evidence)) ?? "RDS_WORKSITE_OCCUPANCY_CONFLICT";
+    }
+
     private const string RequestSelect =
         """
         SELECT r.id, r.request_no, COALESCE(r.idempotency_key, ''), r.status, tt.code, r.request_origin,
@@ -39,6 +63,12 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
             FROM ops.transport_requests
             WHERE status = 'QUEUED'
               AND readiness_state <> 'WAITING_PREPARATION'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM ops.transport_request_dependencies d
+                  JOIN ops.transport_requests pred ON pred.id = d.predecessor_request_id
+                  WHERE d.successor_request_id = ops.transport_requests.id
+                    AND pred.status <> 'COMPLETED')
             ORDER BY priority, queued_at, id
             LIMIT @limit
             """,
@@ -200,7 +230,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
                   AND t.task_type_id = r.task_type_id
                   AND t.is_active
                   AND (t.product_group_id = r.product_group_id OR t.product_group_id IS NULL)
-                ORDER BY (t.product_group_id = r.product_group_id) DESC, t.id
+                ORDER BY (t.product_group_id = r.product_group_id) DESC NULLS LAST, t.id
                 LIMIT 1
             ) template ON true
             LEFT JOIN LATERAL (
@@ -210,8 +240,8 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
                 FROM master.layout_slots ls
                 LEFT JOIN master.slot_group_members sgm ON sgm.layout_slot_id = ls.id
                 LEFT JOIN master.slot_groups sg ON sg.id = sgm.slot_group_id
-                LEFT JOIN integration.layout_slot_rds_mapping map ON map.layout_slot_id = ls.id
-                LEFT JOIN integration.rds_worksites rw ON rw.id = map.rds_worksite_id
+                LEFT JOIN integration.rds_worksites rw
+                    ON rw.id = integration.resolve_slot_worksite(ls.id, r.navigation_id)
                 WHERE (r.source_slot_id IS NOT NULL AND ls.id = r.source_slot_id)
                    OR (r.source_slot_id IS NULL AND template.source_slot_group_id IS NOT NULL
                        AND sgm.slot_group_id = template.source_slot_group_id AND ls.layout_id = r.layout_id)
@@ -224,40 +254,80 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
                 LIMIT 1
             ) src ON true
             LEFT JOIN LATERAL (
-                SELECT NULL::uuid AS slot_id, pa.display_name AS slot_code,
-                       NULL::varchar AS slot_group_code, 'SHARED'::varchar AS slot_role,
-                       rw.rds_site_id AS site_id, rw.rds_type, rw.last_filled,
-                       rw.last_locked, rw.last_disabled, rw.last_sync_failed, rw.last_sync_at
-                FROM ops.preparation_pallets pp
-                JOIN ops.preparation_areas pa ON pa.id = pp.preparation_area_id AND pa.is_enabled
-                JOIN integration.preparation_area_rds_mapping pm ON pm.preparation_area_id = pa.id
-                JOIN integration.rds_worksites rw ON rw.id = pm.rds_worksite_id
-                                                 AND rw.navigation_profile_id = r.navigation_id
-                WHERE tt.code = 'BRING_FULL'
-                  AND pp.transport_request_id = r.id
-                  AND pp.released_at IS NULL
-                  AND pp.ready_at IS NOT NULL
+                SELECT slot_id, slot_code, slot_group_code, slot_role, site_id, rds_type,
+                       last_filled, last_locked, last_disabled, last_sync_failed, last_sync_at
+                FROM (
+                    SELECT NULL::uuid AS slot_id, pa.display_name AS slot_code,
+                           NULL::varchar AS slot_group_code, 'SHARED'::varchar AS slot_role,
+                           rw.rds_site_id AS site_id, rw.rds_type, rw.last_filled,
+                           rw.last_locked, rw.last_disabled, rw.last_sync_failed, rw.last_sync_at
+                    FROM ops.preparation_pallets pp
+                    JOIN ops.preparation_areas pa ON pa.id = pp.preparation_area_id AND pa.is_enabled
+                    JOIN integration.preparation_area_rds_mapping pm ON pm.preparation_area_id = pa.id
+                    JOIN integration.rds_worksites rw ON rw.id = pm.rds_worksite_id
+                                                     AND rw.navigation_profile_id = r.navigation_id
+                    WHERE tt.code = 'BRING_FULL'
+                      AND pp.transport_request_id = r.id
+                      AND pp.released_at IS NULL
+                      AND pp.ready_at IS NOT NULL
+                    UNION ALL
+                    SELECT NULL::uuid, b.business_code, NULL::varchar, 'SHARED'::varchar,
+                           rw.rds_site_id, rw.rds_type, rw.last_filled,
+                           rw.last_locked, rw.last_disabled, rw.last_sync_failed, rw.last_sync_at
+                    FROM integration.profile_shared_endpoint_bindings b
+                    JOIN integration.rds_worksites rw ON rw.id = b.rds_worksite_id
+                                                     AND rw.navigation_profile_id = r.navigation_id
+                    WHERE tt.code = 'BRING_EMPTY'
+                      AND r.source_slot_id IS NULL
+                      AND b.navigation_profile_id = r.navigation_id
+                      AND b.endpoint_class = 'EMPTY_SOURCE'
+                ) shared_source
+                ORDER BY slot_code
                 LIMIT 1
             ) prep ON true
             LEFT JOIN LATERAL (
-                SELECT ls.id AS slot_id, ls.code AS slot_code, sg.code AS slot_group_code,
-                       ls.slot_role, rw.rds_site_id AS site_id, rw.rds_type, rw.last_filled,
-                       rw.last_locked, rw.last_disabled, rw.last_sync_failed, rw.last_sync_at
-                FROM master.layout_slots ls
-                LEFT JOIN master.slot_group_members sgm ON sgm.layout_slot_id = ls.id
-                LEFT JOIN master.slot_groups sg ON sg.id = sgm.slot_group_id
-                LEFT JOIN integration.layout_slot_rds_mapping map ON map.layout_slot_id = ls.id
-                LEFT JOIN integration.rds_worksites rw ON rw.id = map.rds_worksite_id
-                WHERE (r.destination_slot_id IS NOT NULL AND ls.id = r.destination_slot_id)
-                   OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NOT NULL
-                       AND sgm.slot_group_id = template.destination_slot_group_id AND ls.layout_id = r.layout_id)
-                   OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NULL
-                       AND ls.layout_id = r.layout_id AND ls.is_enabled AND (
-                           (tt.code = 'REMOVE_FULL' AND ls.slot_role = 'DROP')
-                           OR (tt.code = 'REMOVE_EMPTY' AND ls.slot_role = 'EMPTY_STORAGE')
-                       ))
-                ORDER BY CASE WHEN ls.id = r.destination_slot_id THEN 0 ELSE 1 END,
-                         sgm.priority, ls.display_order, ls.id
+                SELECT slot_id, slot_code, slot_group_code, slot_role, site_id, rds_type,
+                       last_filled, last_locked, last_disabled, last_sync_failed, last_sync_at
+                FROM (
+                    SELECT ls.id AS slot_id, ls.code AS slot_code, sg.code AS slot_group_code,
+                           ls.slot_role, rw.rds_site_id AS site_id, rw.rds_type, rw.last_filled,
+                           rw.last_locked, rw.last_disabled, rw.last_sync_failed, rw.last_sync_at,
+                           CASE WHEN ls.id = r.destination_slot_id THEN 0 ELSE 1 END AS preference,
+                           sgm.priority AS member_priority, ls.display_order, ls.id AS sort_id
+                    FROM master.layout_slots ls
+                    LEFT JOIN master.slot_group_members sgm ON sgm.layout_slot_id = ls.id
+                    LEFT JOIN master.slot_groups sg ON sg.id = sgm.slot_group_id
+                    LEFT JOIN integration.rds_worksites rw
+                        ON rw.id = integration.resolve_slot_worksite(ls.id, r.navigation_id)
+                    WHERE r.destination_business_code IS NULL
+                      AND (
+                           (r.destination_slot_id IS NOT NULL AND ls.id = r.destination_slot_id)
+                           OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NOT NULL
+                               AND sgm.slot_group_id = template.destination_slot_group_id AND ls.layout_id = r.layout_id)
+                           OR (r.destination_slot_id IS NULL AND template.destination_slot_group_id IS NULL
+                               AND ls.layout_id = r.layout_id AND ls.is_enabled AND (
+                                   (tt.code = 'REMOVE_FULL' AND ls.slot_role = 'DROP')
+                                   OR (tt.code = 'REMOVE_EMPTY' AND ls.slot_role = 'EMPTY_STORAGE')
+                               ))
+                          )
+                    UNION ALL
+                    SELECT NULL::uuid, b.business_code, NULL::varchar, 'SHARED'::varchar,
+                           rw.rds_site_id, rw.rds_type, rw.last_filled,
+                           rw.last_locked, rw.last_disabled, rw.last_sync_failed, rw.last_sync_at,
+                           0, 0, 0, NULL::uuid
+                    FROM integration.profile_shared_endpoint_bindings b
+                    JOIN integration.rds_worksites rw ON rw.id = b.rds_worksite_id
+                                                     AND rw.navigation_profile_id = r.navigation_id
+                    WHERE r.destination_business_code IS NOT NULL
+                      AND b.navigation_profile_id = r.navigation_id
+                      AND b.business_code = r.destination_business_code
+                      AND (
+                          (tt.code = 'REMOVE_EMPTY' AND b.endpoint_class = 'EMPTY_RETURN')
+                          OR (tt.code = 'REMOVE_FULL' AND b.endpoint_class = 'FINISHED_GOODS' AND r.destination_business_code LIKE 'FG-%')
+                          OR (tt.code = 'REMOVE_FULL' AND b.endpoint_class = 'NON_FINISHED_RETURN' AND r.destination_business_code NOT LIKE 'FG-%')
+                      )
+                ) shared_destination
+                ORDER BY preference, member_priority, display_order, sort_id NULLS LAST
                 LIMIT 1
             ) dst ON true
             WHERE r.id = @request_id
@@ -275,7 +345,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
             throw new RdsExecutionException("RDS_TASK_TEMPLATE_NOT_FOUND", "No active task template matches the request variant, product group and operation.");
         }
 
-        return new RdsDispatchContext(
+        var context = new RdsDispatchContext(
             request,
             reader.GetString(19),
             reader.GetString(20),
@@ -288,6 +358,154 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource) : IRd
             Json(reader.GetString(27)),
             Endpoint(reader, 28),
             Endpoint(reader, 39));
+        await reader.DisposeAsync();
+        async Task<RdsDispatchEndpoint> WithOccupancy(RdsDispatchEndpoint endpoint)
+        {
+            if (endpoint.SlotId is not { } slotId) return endpoint;
+            await using var runtime = new NpgsqlCommand("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot", connection);
+            runtime.Parameters.AddWithValue("slot", slotId);
+            return endpoint with { BusinessOccupancy = await runtime.ExecuteScalarAsync(cancellationToken) as string ?? "UNKNOWN" };
+        }
+        return context with { Source = await WithOccupancy(context.Source), Destination = await WithOccupancy(context.Destination) };
+
+    }
+
+    public async Task<string?> ReadRegistryDispatchBlockAsync(Guid requestId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT n.status,
+                   COALESCE((n.config_json ->> 'geometryVerified')::boolean, false),
+                   n.config_json ->> 'layoutBindingState',
+                   tt.code,
+                   r.destination_business_code,
+                   r.source_slot_id IS NOT NULL,
+                   r.destination_slot_id IS NOT NULL,
+                   EXISTS (
+                       SELECT 1 FROM master.task_templates t
+                       WHERE t.variant_id = r.variant_id
+                         AND t.task_type_id = r.task_type_id
+                         AND t.is_active
+                         AND (t.product_group_id = r.product_group_id OR t.product_group_id IS NULL)),
+                   EXISTS (
+                       SELECT 1
+                       FROM master.product_groups pg
+                       WHERE pg.id = r.product_group_id AND pg.main_part_id = r.part_id)
+            FROM ops.transport_requests r
+            JOIN master.task_types tt ON tt.id = r.task_type_id
+            JOIN master.navigation_profiles n ON n.id = r.navigation_id
+            WHERE r.id = @id
+              AND n.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """,
+            connection);
+        command.Parameters.AddWithValue("id", requestId);
+        string status;
+        bool geometry;
+        string? layout;
+        string operation;
+        string? businessCode;
+        bool hasSourceSlot;
+        bool hasDestinationSlot;
+        bool hasTemplate;
+        bool finishedGoods;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            if (!await reader.ReadAsync(cancellationToken)) return null;
+            status = reader.GetString(0);
+            geometry = reader.GetBoolean(1);
+            layout = reader.IsDBNull(2) ? null : reader.GetString(2);
+            operation = reader.GetString(3);
+            businessCode = reader.IsDBNull(4) ? null : reader.GetString(4);
+            hasSourceSlot = reader.GetBoolean(5);
+            hasDestinationSlot = reader.GetBoolean(6);
+            hasTemplate = reader.GetBoolean(7);
+            finishedGoods = reader.GetBoolean(8);
+        }
+
+        if (layout == "PENDING_SOURCE_LAYOUT") return "PENDING_SOURCE_LAYOUT";
+        if (status != "PUBLISHED") return "NAVIGATION_PROFILE_NOT_PUBLISHED";
+        if (!geometry) return "GEOMETRY_NOT_VERIFIED";
+        if (!hasTemplate) return "TASK_TEMPLATE_MISSING";
+
+        if (operation == "BRING_FULL")
+        {
+            return await ReadWorkSiteHealthAsync(connection, requestId, "PREPARATION", null, "PREPARATION_WORKSITE_MAPPING_MISSING", cancellationToken);
+        }
+
+        if (operation == "BRING_EMPTY" && !hasSourceSlot)
+        {
+            return await ReadWorkSiteHealthAsync(connection, requestId, "EMPTY_SOURCE", null, "EMPTY_SOURCE_MAPPING_MISSING", cancellationToken);
+        }
+
+        if (operation == "REMOVE_EMPTY" && (businessCode is not null || !hasDestinationSlot))
+        {
+            return await ReadWorkSiteHealthAsync(connection, requestId, "EMPTY_RETURN", businessCode, "EMPTY_RETURN_MAPPING_MISSING", cancellationToken);
+        }
+
+        if (operation == "REMOVE_FULL" && (businessCode is not null || !hasDestinationSlot))
+        {
+            if (businessCode is not null && businessCode.StartsWith("FG-", StringComparison.Ordinal))
+            {
+                return await ReadWorkSiteHealthAsync(connection, requestId, "FINISHED_GOODS", businessCode, "FINISHED_GOODS_MAPPING_MISSING", cancellationToken);
+            }
+
+            if (businessCode is not null)
+            {
+                return await ReadWorkSiteHealthAsync(connection, requestId, "NON_FINISHED_RETURN", businessCode, "NON_FINISHED_RETURN_MAPPING_MISSING", cancellationToken);
+            }
+
+            return finishedGoods ? "FINISHED_GOODS_MAPPING_MISSING" : "NON_FINISHED_RETURN_MAPPING_MISSING";
+        }
+
+        return null;
+    }
+
+    private static async Task<string?> ReadWorkSiteHealthAsync(
+        NpgsqlConnection connection,
+        Guid requestId,
+        string endpointClass,
+        string? businessCode,
+        string missingCode,
+        CancellationToken cancellationToken)
+    {
+        var sql = endpointClass == "PREPARATION"
+            ? """
+              SELECT COALESCE(w.last_disabled, 0), COALESCE(w.last_sync_failed, 0)
+              FROM ops.transport_requests r
+              JOIN ops.preparation_pallets pp ON pp.transport_request_id = r.id AND pp.released_at IS NULL AND pp.ready_at IS NOT NULL
+              JOIN integration.preparation_area_rds_mapping pm ON pm.preparation_area_id = pp.preparation_area_id
+              JOIN integration.rds_worksites w ON w.id = pm.rds_worksite_id AND w.navigation_profile_id = r.navigation_id
+              WHERE r.id = @id
+              LIMIT 1
+              """
+            : """
+              SELECT COALESCE(w.last_disabled, 0), COALESCE(w.last_sync_failed, 0)
+              FROM ops.transport_requests r
+              JOIN integration.profile_shared_endpoint_bindings b ON b.navigation_profile_id = r.navigation_id
+              JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id AND w.navigation_profile_id = r.navigation_id
+              WHERE r.id = @id
+                AND b.endpoint_class = @class
+                AND (CAST(@business AS varchar) IS NULL OR b.business_code = CAST(@business AS varchar))
+              ORDER BY b.business_code
+              LIMIT 1
+              """;
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("id", requestId);
+        if (endpointClass != "PREPARATION")
+        {
+            command.Parameters.AddWithValue("class", endpointClass);
+            command.Parameters.Add(new NpgsqlParameter("business", NpgsqlTypes.NpgsqlDbType.Varchar)
+            {
+                Value = (object?)businessCode ?? DBNull.Value
+            });
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return missingCode;
+        if (reader.GetInt32(0) == 1) return "RDS_WORKSITE_DISABLED";
+        if (reader.GetInt32(1) == 1) return "RDS_WORKSITE_SYNC_FAILED";
+        return null;
     }
 
     public async Task<TransportRequestSnapshot?> FindRequestAsync(Guid requestId, CancellationToken cancellationToken = default)

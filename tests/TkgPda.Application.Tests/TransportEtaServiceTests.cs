@@ -69,7 +69,7 @@ public sealed class TransportEtaServiceTests
     }
 
     [Fact]
-    public void Running_request_calculates_remaining_time_from_started_at()
+    public void Running_request_without_telemetry_does_not_guess_from_started_at()
     {
         var now = DateTimeOffset.UtcNow;
         var startedAt = now.AddSeconds(-40); // 40 seconds elapsed
@@ -82,13 +82,12 @@ public sealed class TransportEtaServiceTests
             queuePosition: 1,
             now: now);
 
-        Assert.Equal("AVAILABLE", projection.State);
-        // AverageCycleTimeSeconds (120) - 40 = 80 seconds
-        Assert.Equal(80, projection.Seconds);
+        Assert.Equal("UNAVAILABLE", projection.State);
+        Assert.Null(projection.Seconds);
     }
 
     [Fact]
-    public void Running_request_exceeding_cycle_time_preserves_floor()
+    public void Long_running_request_without_telemetry_has_no_invented_floor()
     {
         var now = DateTimeOffset.UtcNow;
         var startedAt = now.AddSeconds(-200); // 200 seconds elapsed
@@ -101,15 +100,15 @@ public sealed class TransportEtaServiceTests
             queuePosition: 1,
             now: now);
 
-        Assert.Equal("AVAILABLE", projection.State);
-        Assert.Equal(15, projection.Seconds); // Minimum floor is 15s
+        Assert.Equal("UNAVAILABLE", projection.State);
+        Assert.Null(projection.Seconds);
     }
 
     [Theory]
-    [InlineData(1, 120)]
-    [InlineData(2, 240)]
-    [InlineData(3, 360)]
-    public void Queued_requests_project_eta_proportionally_to_position(int queuePosition, int expectedSeconds)
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Queue_position_without_telemetry_is_not_an_eta(int queuePosition)
     {
         var projection = service.Project(
             TransportRequestStatus.Queued,
@@ -118,8 +117,31 @@ public sealed class TransportEtaServiceTests
             startedAt: null,
             queuePosition: queuePosition);
 
-        Assert.Equal("AVAILABLE", projection.State);
-        Assert.Equal(expectedSeconds, projection.Seconds);
+        Assert.Equal("UNAVAILABLE", projection.State);
+        Assert.Null(projection.Seconds);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"remaining_time\": -1}")]
+    [InlineData("{\"remaining_time\": 1e100}")]
+    [InlineData("{\"remainingTime\": 2147483648}")]
+    [InlineData("{\"remaining_time\": \"30\"}")]
+    public void Missing_or_invalid_telemetry_returns_unavailable(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var eta = service.Project(TransportRequestStatus.Running, 1000, "robot", DateTimeOffset.UtcNow, 1, document.RootElement);
+        Assert.Equal("UNAVAILABLE", eta.State);
+        Assert.Null(eta.Seconds);
+    }
+
+    [Theory]
+    [InlineData("{\"remainingTime\": 0}", 0)]
+    [InlineData("{\"remaining_time\": 2147483647}", int.MaxValue)]
+    public void Valid_telemetry_preserves_zero_and_integer_boundary(string json, int seconds)
+    {
+        using var document = JsonDocument.Parse(json);
+        Assert.Equal(seconds, service.Project(TransportRequestStatus.Running, 1000, null, null, null, document.RootElement).Seconds);
     }
 
     [Fact]

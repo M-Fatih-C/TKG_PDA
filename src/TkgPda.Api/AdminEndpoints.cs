@@ -68,21 +68,38 @@ public static class AdminEndpoints
         admin.MapPut("/containers/{containerId:guid}", UpdateContainerAsync);
 
         admin.MapGet("/data-issues", (AdminConfigurationService service, CancellationToken ct) => service.ListDataIssuesAsync(ct));
-        admin.MapGet("/audit-logs", (int? limit, Guid? actorUserId, string? entityType, AdminConfigurationService service, CancellationToken ct) =>
-            service.ListAuditAsync(limit ?? 100, actorUserId, entityType, ct));
+        admin.MapGet("/audit-logs", (
+            int? limit,
+            Guid? actorUserId,
+            string? entityType,
+            DateTimeOffset? from,
+            DateTimeOffset? to,
+            string? action,
+            Guid? correlationId,
+            string? entityId,
+            string? actor,
+            AdminConfigurationService service,
+            CancellationToken ct) =>
+            service.ListAuditAsync(limit ?? 100, actorUserId, entityType, ct, from, to, action, correlationId, entityId, actor));
+        admin.MapOperationalReports();
 
         admin.MapGet("/rds/status", RdsStatusAsync);
         admin.MapGet("/rds/robots", ListRdsRobotsAsync);
         admin.MapGet("/rds/alarms", ListRdsRobotAlarmsAsync);
+        admin.MapGet("/rds/alarm-history", ListRobotAlarmHistoryAsync);
         admin.MapGet("/rds/navigation-profiles", (RdsIntegrationService service, CancellationToken ct) => service.ListNavigationProfilesAsync(ct));
         admin.MapPost("/rds/worksites/sync", SyncRdsWorkSitesAsync);
         admin.MapGet("/rds/worksites", ListRdsWorkSitesAsync);
+        admin.MapGet("/rds/physical-evidence", (Guid navigationProfileId, IRdsIntegrationStore store, CancellationToken ct) =>
+            store.ListPhysicalDiagnosticsAsync(navigationProfileId, ct));
         admin.MapGet("/rds/slot-mappings", (Guid? layoutId, RdsIntegrationService service, CancellationToken ct) => service.ListSlotMappingsAsync(layoutId, ct));
         admin.MapPut("/layout-slots/{slotId:guid}/rds-mapping", SetRdsMappingAsync);
         admin.MapDelete("/layout-slots/{slotId:guid}/rds-mapping", RemoveRdsMappingAsync);
         admin.MapGet("/rds/task-templates", (IRdsExecutionStore store, CancellationToken ct) => store.ListTaskTemplatesAsync(ct));
         admin.MapPost("/rds/task-templates/validate", ValidateRdsTaskTemplateAsync);
         admin.MapPost("/rds/commissioning/capture", CaptureRdsCommissioningDiscoveryAsync);
+        admin.MapCommissioningActivation();
+        admin.MapOperationalEvidence();
 
         return endpoints;
     }
@@ -115,6 +132,12 @@ public static class AdminEndpoints
 
     private static Task<IReadOnlyList<RdsRobotAlarmAdminRecord>> ListRdsRobotAlarmsAsync(HttpContext context, RdsIntegrationService service, CancellationToken ct) =>
         service.ListRobotAlarmsForAdminAsync(CorrelationId(context), ct);
+
+    private static Task<IReadOnlyList<RobotAlarmObservationRecord>> ListRobotAlarmHistoryAsync(
+        int? limit,
+        IRdsIntegrationStore store,
+        CancellationToken ct) =>
+        store.ListAlarmHistoryAsync(limit ?? 100, ct);
 
     private static async Task<RdsCommissioningCaptureResult> CaptureRdsCommissioningDiscoveryAsync(
         RdsCommissioningCaptureApiRequest request,
@@ -314,13 +337,13 @@ public static class AdminEndpoints
 
     private static async Task<IResult> CreateDeviceAsync(CreateAdminDeviceRequest request, HttpContext context, AdminConfigurationService service, CancellationToken ct)
     {
-        var created = await service.CreateDeviceAsync(new CreateDeviceCommand(request.Code, request.Name, request.Type, request.IsActive, request.Metadata), MutationContext(context), ct);
+        var created = await service.CreateDeviceAsync(new CreateDeviceCommand(request.Code, request.Name, request.Type, request.IsActive, request.Metadata, request.MachineId), MutationContext(context), ct);
         return Created(context, $"/api/v1/admin/devices/{created.Id}", created, created.ConcurrencyToken);
     }
 
     private static async Task<IResult> UpdateDeviceAsync(Guid deviceId, UpdateAdminDeviceRequest request, HttpContext context, AdminConfigurationService service, CancellationToken ct)
     {
-        var updated = await service.UpdateDeviceAsync(deviceId, new UpdateDeviceCommand(request.Name, request.Type, request.IsActive, request.Metadata, Version(context)), MutationContext(context), ct);
+        var updated = await service.UpdateDeviceAsync(deviceId, new UpdateDeviceCommand(request.Name, request.Type, request.IsActive, request.Metadata, Version(context), request.MachineId), MutationContext(context), ct);
         return Versioned(context, updated, updated.ConcurrencyToken);
     }
 

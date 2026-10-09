@@ -14,6 +14,15 @@ public static class ApiEndpoints
             .AllowAnonymous()
             .RequireRateLimiting("login");
 
+        endpoints.MapPost("/api/v1/auth/session/heartbeat", HeartbeatAsync)
+            .RequireAuthorization();
+
+        endpoints.MapPost("/api/v1/auth/logout", LogoutAsync)
+            .RequireAuthorization();
+
+        endpoints.MapPut("/api/v1/auth/device-notifications/register", RegisterDeviceNotificationAsync)
+            .RequireAuthorization();
+
         endpoints.MapGet("/api/v1/auth/me", CurrentUserAsync)
             .RequireAuthorization();
 
@@ -41,6 +50,12 @@ public static class ApiEndpoints
         endpoints.MapGet("/api/v1/machines/{machineId:guid}/container-positions", ContainerPositionsAsync)
             .RequireAuthorization(PolicyNames.Operator);
 
+        endpoints.MapPost("/api/v1/machines/{machineId:guid}/part-demands", CreatePartDemandAsync)
+            .RequireAuthorization(PolicyNames.Operator);
+
+        endpoints.MapPost("/api/v1/machines/{machineId:guid}/part-demands/batch", CreatePartDemandBatchAsync)
+            .RequireAuthorization(PolicyNames.Operator);
+
         endpoints.MapPost("/api/v1/machines/{machineId:guid}/container-actions", CreateContainerActionAsync)
             .RequireAuthorization(PolicyNames.Operator);
 
@@ -56,14 +71,14 @@ public static class ApiEndpoints
         endpoints.MapGet("/api/v1/transport-requests/{requestId:guid}", GetTransportAsync)
             .RequireAuthorization();
 
-        endpoints.MapPost("/api/v1/transport-requests/{requestId:guid}/cancel", CancelTransportAsync)
-            .RequireAuthorization(PolicyNames.Operator);
+        endpoints.MapPost("/api/v1/machines/{machineId:guid}/transport-requests/{requestId:guid}/cancel", CancelTransportAsync)
+            .RequireAuthorization(PolicyNames.ProductionOperator);
 
         endpoints.MapPost("/api/v1/transport-requests/{requestId:guid}/ready", MarkTransportReadyAsync)
-            .RequireAuthorization(PolicyNames.WarehousePreparation);
+            .RequireAuthorization(PolicyNames.SemiFinishedWarehouse);
 
         endpoints.MapGet("/api/v1/warehouse/preparation-requests", ListWarehousePreparationRequestsAsync)
-            .RequireAuthorization(PolicyNames.WarehousePreparation);
+            .RequireAuthorization(PolicyNames.SemiFinishedWarehouse);
 
         endpoints.MapPut("/api/v1/machines/{machineId:guid}/slots/{slotId:guid}/load-state", UpdateLoadStateAsync)
             .RequireAuthorization(PolicyNames.Operator);
@@ -118,10 +133,14 @@ public static class ApiEndpoints
         CancellationToken cancellationToken) =>
         service.GetRobotAlarmSummaryForOperatorAsync(CorrelationId(context), cancellationToken);
 
-    private static async Task<IResult> LoginAsync(
+    internal static async Task<IResult> LoginAsync(
         LoginRequest request,
         HttpContext context,
         IApiDataStore dataStore,
+        IFieldSessionStore sessionStore,
+        FieldSessionOptions sessionOptions,
+        TimeProvider timeProvider,
+        JwtOptions jwtOptions,
         Pbkdf2PasswordHasher passwordHasher,
         JwtTokenService tokenService,
         CancellationToken cancellationToken)
@@ -205,33 +224,213 @@ public static class ApiEndpoints
             throw new ApiException(StatusCodes.Status401Unauthorized, "INVALID_CREDENTIALS", "The username or password is invalid.");
         }
 
-        await dataStore.MarkLoginSucceededAsync(user.Id, cancellationToken);
-        var token = tokenService.Issue(user, device);
-        await WriteAuditAsync(
-            dataStore,
-            context,
+        var now = timeProvider.GetUtcNow();
+        var tokenExpiresAt = now.AddMinutes(jwtOptions.ExpiryMinutes);
+        var sessionResult = await sessionStore.AcquireLoginSessionAsync(
             user.Id,
             device.Id,
-            "AUTH_LOGIN_SUCCEEDED",
-            "AUTH_USER",
-            user.Id.ToString(),
-            new { roles = user.Roles, device = device.Code },
+            now,
+            TimeSpan.FromSeconds(sessionOptions.LeaseSeconds),
+            tokenExpiresAt,
             cancellationToken);
-        context.Response.Headers.CacheControl = "no-store";
 
-        return Results.Ok(new LoginResponse(
-            token.Token,
-            "Bearer",
-            token.ExpiresAt,
-            new AuthenticatedUserResponse(user.Id, user.Username, user.FullName, user.EmployeeNo, user.Roles),
-            new DeviceResponse(device.Id, device.Code, device.Name, device.Type)));
+        if (sessionResult.Status == AcquireSessionStatus.ActiveSessionExists)
+        {
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                user.Id,
+                device.Id,
+                "AUTH_LOGIN_BLOCKED_ACTIVE_SESSION",
+                "AUTH_SESSION",
+                sessionResult.ExistingSessionId?.ToString(),
+                new
+                {
+                    employeeNo = user.EmployeeNo,
+                    deviceId = device.Id,
+                    deviceCode = device.Code,
+                    deviceName = device.Name,
+                    existingSessionId = sessionResult.ExistingSessionId,
+                    existingDeviceId = sessionResult.ExistingDeviceId,
+                    existingDeviceCode = sessionResult.ExistingDeviceCode,
+                    attemptedDevice = device.Code
+                },
+                cancellationToken);
+
+            throw new ApiException(
+                StatusCodes.Status409Conflict,
+                "ACTIVE_SESSION_EXISTS",
+                "Bu sicil başka bir cihazda aktif olarak kullanılıyor. Mevcut oturum kapandıktan sonra tekrar deneyin.");
+        }
+
+        var session = sessionResult.Session!;
+        try
+        {
+            string? machineCode = null;
+            if (device.MachineId is Guid machineId)
+            {
+                machineCode = (await dataStore.FindMachineSummaryAsync(machineId, cancellationToken))?.Code;
+            }
+
+            var loginSnapshot = new
+            {
+                employeeNo = user.EmployeeNo,
+                deviceId = device.Id,
+                deviceCode = device.Code,
+                deviceName = device.Name,
+                machineId = device.MachineId,
+                machineCode,
+                sessionId = session.Id,
+                roles = user.Roles
+            };
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                user.Id,
+                device.Id,
+                "AUTH_SESSION_CREATED",
+                "AUTH_SESSION",
+                session.Id.ToString(),
+                loginSnapshot,
+                cancellationToken);
+
+            await dataStore.MarkLoginSucceededAsync(user.Id, cancellationToken);
+            var token = tokenService.Issue(user, device, session.Id);
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                user.Id,
+                device.Id,
+                "AUTH_LOGIN_SUCCEEDED",
+                "AUTH_USER",
+                user.Id.ToString(),
+                loginSnapshot,
+                cancellationToken);
+            context.Response.Headers.CacheControl = "no-store";
+
+            return Results.Ok(new LoginResponse(
+                token.Token,
+                "Bearer",
+                token.ExpiresAt,
+                new AuthenticatedUserResponse(user.Id, user.Username, user.FullName, user.EmployeeNo, user.Roles),
+                new DeviceResponse(device.Id, device.Code, device.Name, device.Type, device.MachineId)));
+        }
+        catch
+        {
+            try
+            {
+                await sessionStore.RevokeSessionAsync(session.Id, user.Id, "LOGIN_FINALIZATION_FAILED", timeProvider.GetUtcNow(), CancellationToken.None);
+            }
+            catch
+            {
+                // Do not mask original exception
+            }
+
+            throw;
+        }
+    }
+
+    private static async Task<IResult> HeartbeatAsync(
+        HttpContext context,
+        IFieldSessionStore sessionStore,
+        FieldSessionOptions sessionOptions,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var session = context.Items.TryGetValue(ApiContextKeys.Session, out var sVal) && sVal is UserSessionRecord s
+            ? s
+            : null;
+        var sessionId = session?.Id
+            ?? (Guid.TryParse(context.User.FindFirstValue(ApiClaimNames.SessionId), out var sid) ? sid : Guid.Empty);
+
+        if (sessionId == Guid.Empty)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_NOT_ACTIVE", "The access token has no valid session identifier.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        var updated = await sessionStore.HeartbeatAsync(
+            sessionId,
+            now,
+            TimeSpan.FromSeconds(sessionOptions.LeaseSeconds),
+            cancellationToken);
+
+        if (updated is null)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_NOT_ACTIVE", "Oturum aktif değil veya yenilenemedi.");
+        }
+
+        return Results.Ok(new HeartbeatResponse(updated.Id, updated.LeaseExpiresAt, updated.TokenExpiresAt));
+    }
+
+    private static async Task<IResult> RegisterDeviceNotificationAsync(
+        HttpContext context,
+        IDeviceNotificationStore notifications,
+        CancellationToken cancellationToken)
+    {
+        if (!context.User.IsInRole(RoleCodes.Admin)
+            && !context.User.IsInRole(RoleCodes.Supervisor)
+            && !context.User.IsInRole(RoleCodes.WarehouseOperator)
+            && !context.User.IsInRole(RoleCodes.FinishedGoodsWarehouseOperator))
+        {
+            throw new ApiException(
+                StatusCodes.Status403Forbidden,
+                "NOTIFICATION_ROLE_NOT_AUTHORIZED",
+                "This session cannot register for finished-goods notifications.");
+        }
+
+        if (context.Items.TryGetValue(ApiContextKeys.Device, out var value) && value is DeviceRecord device)
+        {
+            var registration = await notifications.RegisterAsync(context.User.UserId(), device.Id, cancellationToken);
+            return Results.Ok(new DeviceNotificationRegistrationResponse(registration.RegistrationId, registration.Credential, 5));
+        }
+
+        throw new ApiException(StatusCodes.Status401Unauthorized, "DEVICE_CONTEXT_REQUIRED", "An authenticated request must include its token-bound device code.");
+    }
+
+    private static async Task<IResult> LogoutAsync(
+        HttpContext context,
+        IFieldSessionStore sessionStore,
+        IApiDataStore dataStore,
+        IDeviceNotificationStore notifications,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var principal = context.User;
+        if (principal.IsDeviceBound())
+        {
+            var sessionIdStr = principal.FindFirstValue(ApiClaimNames.SessionId);
+            if (Guid.TryParse(sessionIdStr, out var sessionId))
+            {
+                var userId = principal.UserId();
+                var device = context.Items.TryGetValue(ApiContextKeys.Device, out var devVal) && devVal is DeviceRecord d ? d : null;
+                var now = timeProvider.GetUtcNow();
+                var revoked = await sessionStore.RevokeSessionAsync(sessionId, userId, "USER_LOGOUT", now, cancellationToken);
+                if (revoked && device is not null)
+                {
+                    await notifications.DeactivateAsync(userId, device.Id, cancellationToken);
+                    await WriteAuditAsync(
+                        dataStore,
+                        context,
+                        userId,
+                        device.Id,
+                        "AUTH_SESSION_LOGOUT",
+                        "AUTH_SESSION",
+                        sessionId.ToString(),
+                        new { reason = "USER_LOGOUT" },
+                        cancellationToken);
+                }
+            }
+        }
+
+        return Results.Ok(new { message = "Logged out successfully" });
     }
 
     private static IResult CurrentUserAsync(HttpContext context)
     {
         var principal = context.User;
         var device = context.Items.TryGetValue(ApiContextKeys.Device, out var value) && value is DeviceRecord record
-            ? new DeviceResponse(record.Id, record.Code, record.Name, record.Type)
+            ? new DeviceResponse(record.Id, record.Code, record.Name, record.Type, record.MachineId)
             : null;
         return Results.Ok(new
         {
@@ -249,9 +448,81 @@ public static class ApiEndpoints
         IApiDataStore dataStore,
         CancellationToken cancellationToken)
     {
+        var device = context.Items.TryGetValue(ApiContextKeys.Device, out var value) && value is DeviceRecord record ? record : null;
+        var isAdmin = context.User.IsAdministrator();
+        var isSupervisor = context.User.IsInRole(RoleCodes.Supervisor);
+        var isLineOperator = context.User.IsInRole(RoleCodes.LineOperator);
+
+        // Warehouse-only users do not have machine access
+        if (!isAdmin && !isSupervisor && !isLineOperator)
+        {
+            return Results.Ok(Array.Empty<MachineSummaryRecord>());
+        }
+
+        // LINE_OPERATOR:
+        // Must have a device bound to a machine.
+        // If unbound, return empty list (fail-closed, no user_machine_permissions fallback).
+        if (isLineOperator && !isAdmin && !isSupervisor)
+        {
+            if (device?.MachineId is null)
+            {
+                return Results.Ok(Array.Empty<MachineSummaryRecord>());
+            }
+
+            var boundMachine = await dataStore.FindMachineSummaryAsync(device.MachineId.Value, cancellationToken);
+            if (boundMachine is null)
+            {
+                return Results.Ok(Array.Empty<MachineSummaryRecord>());
+            }
+
+            var legacyPerm = await dataStore.FindMachinePermissionAsync(context.User.UserId(), boundMachine.Id, cancellationToken);
+            if (legacyPerm is not null && !legacyPerm.CanView)
+            {
+                return Results.Ok(Array.Empty<MachineSummaryRecord>());
+            }
+
+            return Results.Ok(new[]
+            {
+                boundMachine with
+                {
+                    Permissions = legacyPerm ?? new MachinePermissionRecord(
+                        boundMachine.Id,
+                        CanView: true,
+                        CanOperate: true,
+                        CanChangeVariant: false,
+                        CanManageSlots: false)
+                }
+            });
+        }
+
+        // Admin or Supervisor on a bound terminal:
+        if (device?.MachineId is not null)
+        {
+            var boundMachine = await dataStore.FindMachineSummaryAsync(device.MachineId.Value, cancellationToken);
+            if (boundMachine is null)
+            {
+                return Results.Ok(Array.Empty<MachineSummaryRecord>());
+            }
+
+            var permissions = isAdmin
+                ? new MachinePermissionRecord(boundMachine.Id, true, true, true, true)
+                : await dataStore.FindMachinePermissionAsync(context.User.UserId(), boundMachine.Id, cancellationToken);
+
+            if (permissions is null || !permissions.CanView)
+            {
+                return Results.Ok(Array.Empty<MachineSummaryRecord>());
+            }
+
+            return Results.Ok(new[]
+            {
+                boundMachine with { Permissions = permissions }
+            });
+        }
+
+        // Admin Web or unbound Admin/Supervisor:
         var machines = await dataStore.ListVisibleMachinesAsync(
             context.User.UserId(),
-            context.User.IsAdministrator(),
+            isAdmin,
             cancellationToken);
         return Results.Ok(machines);
     }
@@ -263,7 +534,7 @@ public static class ApiEndpoints
         PdaOperationalContextService operationalContext,
         CancellationToken cancellationToken)
     {
-        _ = await access.EnsureAsync(context.User, machineId, MachineAccessKind.View, cancellationToken);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.View, cancellationToken);
         var roles = context.User.FindAll(ClaimTypes.Role)
             .Select(static claim => claim.Value)
             .ToHashSet(StringComparer.Ordinal);
@@ -286,7 +557,7 @@ public static class ApiEndpoints
         IApiDataStore dataStore,
         CancellationToken cancellationToken)
     {
-        _ = await access.EnsureAsync(context.User, machineId, MachineAccessKind.View, cancellationToken);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.View, cancellationToken);
         if (!mainPartId.HasValue || mainPartId.Value == Guid.Empty)
         {
             throw new ApiException(
@@ -306,7 +577,7 @@ public static class ApiEndpoints
         IApiDataStore dataStore,
         CancellationToken cancellationToken)
     {
-        _ = await access.EnsureAsync(context.User, machineId, MachineAccessKind.View, cancellationToken);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.View, cancellationToken);
         var options = await dataStore.ListMachinePartOptionsAsync(machineId, cancellationToken);
         return Results.Ok(options);
     }
@@ -320,7 +591,7 @@ public static class ApiEndpoints
         CancellationToken cancellationToken)
     {
         _ = Device(context);
-        _ = await access.EnsureAsync(context.User, request.MachineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, request.MachineId, MachineAccessKind.Operate, cancellationToken);
         var idempotencyKey = context.Request.Headers[ApiHeaders.IdempotencyKey].ToString().Trim();
         if (string.IsNullOrWhiteSpace(idempotencyKey))
         {
@@ -346,7 +617,7 @@ public static class ApiEndpoints
             null,
             request.Priority,
             request.RequiresPreparation);
-        var result = await workflow.CreateAsync(command, cancellationToken);
+        var result = await workflow.CreateAsync(command, OperationalContext(context), cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         context.Response.Headers.Location = $"/api/v1/transport-requests/{result.Request.Id}";
         await WriteAuditAsync(
@@ -377,7 +648,7 @@ public static class ApiEndpoints
         CancellationToken cancellationToken)
     {
         _ = Device(context);
-        var permission = await access.EnsureAsync(context.User, machineId, MachineAccessKind.View, cancellationToken);
+        var permission = await access.EnsureAsync(context, machineId, MachineAccessKind.View, cancellationToken);
         var actor = new PdaActorContext(
             context.User.UserId(),
             context.User.FindAll(ClaimTypes.Role).Select(static claim => claim.Value).ToHashSet(StringComparer.Ordinal),
@@ -390,6 +661,101 @@ public static class ApiEndpoints
         return Results.Ok(positions);
     }
 
+    private static async Task<IResult> CreatePartDemandAsync(
+        Guid machineId,
+        PartDemandHttpRequest request,
+        HttpContext context,
+        MachineAccessService access,
+        PartDemandService service,
+        IApiDataStore dataStore,
+        CancellationToken cancellationToken)
+    {
+        EnsurePartDemandAllowed(context.User);
+        _ = Device(context);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
+        var result = await service.CreateAsync(
+            new PartDemandCommand(
+                RequiredIdempotencyKey(context),
+                context.User.UserId(),
+                machineId,
+                request.PartId,
+                OperationalContext(context)),
+            cancellationToken);
+        context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
+        await WriteAuditAsync(
+            dataStore,
+            context,
+            context.User.UserId(),
+            Device(context).Id,
+            result.WasIdempotentReplay ? "PART_DEMAND_REPLAYED" : "PART_DEMAND_CREATED",
+            "TRANSPORT_REQUEST",
+            result.Request.Id.ToString(),
+            new { result.Request.RequestNo, partId = request.PartId, predecessor = result.Predecessor?.RequestNo },
+            cancellationToken);
+        return Results.Json(ToPartDemandResponse(result), statusCode: result.WasIdempotentReplay ? StatusCodes.Status200OK : StatusCodes.Status201Created);
+    }
+
+    private static async Task<IResult> CreatePartDemandBatchAsync(
+        Guid machineId,
+        PartDemandBatchHttpRequest request,
+        HttpContext context,
+        MachineAccessService access,
+        PartDemandService service,
+        IApiDataStore dataStore,
+        CancellationToken cancellationToken)
+    {
+        EnsurePartDemandAllowed(context.User);
+        _ = Device(context);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
+        var results = await service.CreateBatchAsync(
+            new PartDemandBatchCommand(
+                RequiredIdempotencyKey(context),
+                context.User.UserId(),
+                machineId,
+                request.PartIds ?? [],
+                OperationalContext(context)),
+            cancellationToken);
+        var replay = results.Count > 0 && results.All(item => item.WasIdempotentReplay);
+        context.Response.Headers[ApiHeaders.IdempotencyReplayed] = replay ? "true" : "false";
+        await WriteAuditAsync(
+            dataStore,
+            context,
+            context.User.UserId(),
+            Device(context).Id,
+            replay ? "PART_DEMAND_BATCH_REPLAYED" : "PART_DEMAND_BATCH_CREATED",
+            "TRANSPORT_BATCH",
+            machineId.ToString(),
+            new { itemCount = results.Count },
+            cancellationToken);
+        return Results.Json(
+            new PartDemandBatchHttpResponse(replay, results.Select(ToPartDemandResponse).ToArray()),
+            statusCode: replay ? StatusCodes.Status200OK : StatusCodes.Status201Created);
+    }
+
+    private static void EnsurePartDemandAllowed(ClaimsPrincipal principal)
+    {
+        if (principal.IsInRole(RoleCodes.Admin)
+            || principal.IsInRole(RoleCodes.Supervisor)
+            || principal.IsInRole(RoleCodes.LineOperator))
+        {
+            return;
+        }
+
+        throw new ApiException(
+            StatusCodes.Status403Forbidden,
+            "OPERATION_NOT_ALLOWED_FOR_ROLE",
+            "Alt parça talebi yalnızca hat operatörü tarafından oluşturulabilir.");
+    }
+
+    private static PartDemandHttpResponse ToPartDemandResponse(PartDemandResult result) => new(
+        result.Request.RequestNo,
+        result.Request.TaskType.ToDatabase(),
+        result.Request.Status.ToDatabase(),
+        result.Request.ReadinessState.ToDatabase(),
+        result.Predecessor?.RequestNo,
+        result.Predecessor?.TaskType.ToDatabase(),
+        result.WasIdempotentReplay);
+
     private static async Task<IResult> CreateContainerActionAsync(
         Guid machineId,
         CreateContainerActionHttpRequest request,
@@ -400,7 +766,7 @@ public static class ApiEndpoints
         CancellationToken cancellationToken)
     {
         _ = Device(context);
-        _ = await access.EnsureAsync(context.User, machineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
         var action = OperatorContainerActionCode.Parse(request.Action);
         EnsureContainerActionAllowed(context.User, action);
         var idempotencyKey = RequiredIdempotencyKey(context);
@@ -417,7 +783,8 @@ public static class ApiEndpoints
                 request.PositionNumber,
                 action,
                 request.Priority,
-                request.ProductionSessionId),
+                request.ProductionSessionId,
+                EventContext: OperationalContext(context)),
             cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         await WriteAuditAsync(
@@ -450,7 +817,7 @@ public static class ApiEndpoints
         CancellationToken cancellationToken)
     {
         _ = Device(context);
-        _ = await access.EnsureAsync(context.User, machineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
         if (!context.User.IsInRole(RoleCodes.Admin)
             && !context.User.IsInRole(RoleCodes.Supervisor)
             && !context.User.IsInRole(RoleCodes.LineOperator))
@@ -467,7 +834,8 @@ public static class ApiEndpoints
                 request.LayoutId,
                 request.NavigationProfileId,
                 request.Priority,
-                request.ProductionSessionId),
+                request.ProductionSessionId,
+                EventContext: OperationalContext(context)),
             cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.Batch.WasIdempotentReplay ? "true" : "false";
         await WriteAuditAsync(
@@ -501,7 +869,7 @@ public static class ApiEndpoints
         CancellationToken cancellationToken)
     {
         _ = Device(context);
-        _ = await access.EnsureAsync(context.User, machineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
         if (request.Items is null || request.Items.Count == 0)
         {
             throw new ApiException(StatusCodes.Status400BadRequest, "BATCH_ITEMS_REQUIRED", "Grup en az bir kasa işlemi içermelidir.");
@@ -523,7 +891,8 @@ public static class ApiEndpoints
                 request.NavigationProfileId,
                 items,
                 request.Priority,
-                request.ProductionSessionId),
+                request.ProductionSessionId,
+                EventContext: OperationalContext(context)),
             cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         await WriteAuditAsync(
@@ -559,7 +928,7 @@ public static class ApiEndpoints
         CancellationToken cancellationToken)
     {
         _ = Device(context);
-        _ = await access.EnsureAsync(context.User, request.MachineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, request.MachineId, MachineAccessKind.Operate, cancellationToken);
 
         if (request.Items is null || request.Items.Count == 0)
         {
@@ -596,7 +965,7 @@ public static class ApiEndpoints
             context.User.UserId(),
             request.MachineId,
             items);
-        var result = await workflow.CreateBatchAsync(batchCommand, cancellationToken);
+        var result = await workflow.CreateBatchAsync(batchCommand, OperationalContext(context), cancellationToken);
 
         await WriteAuditAsync(
             dataStore,
@@ -623,11 +992,12 @@ public static class ApiEndpoints
     {
         var request = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
-        _ = await access.EnsureAsync(context.User, request.MachineId, MachineAccessKind.View, cancellationToken);
+        _ = await access.EnsureAsync(context, request.MachineId, MachineAccessKind.View, cancellationToken);
         return Results.Ok(ToResponse(request, false));
     }
 
     private static async Task<IResult> CancelTransportAsync(
+        Guid machineId,
         Guid requestId,
         HttpContext context,
         IApiDataStore dataStore,
@@ -637,12 +1007,21 @@ public static class ApiEndpoints
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
-        _ = await access.EnsureAsync(context.User, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
-        EnsureCancellationAllowed(context.User, existing);
+
+        if (existing.MachineId != machineId)
+        {
+            throw new ApiException(
+                StatusCodes.Status403Forbidden,
+                "REQUEST_MACHINE_MISMATCH",
+                "The transport request does not belong to the specified machine.");
+        }
+
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
         var result = await rdsExecution.CancelAsync(
             requestId,
             context.User.UserId(),
             CorrelationId(context),
+            OperationalContext(context),
             cancellationToken);
         await WriteAuditAsync(
             dataStore,
@@ -661,14 +1040,23 @@ public static class ApiEndpoints
         Guid requestId,
         HttpContext context,
         IApiDataStore dataStore,
-        MachineAccessService access,
         TransportWorkflowService workflow,
         CancellationToken cancellationToken)
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
-        _ = await access.EnsureAsync(context.User, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
-        var updated = await workflow.MarkReadyAsync(requestId, context.User.UserId(), cancellationToken);
+        if (!context.User.IsAdministrator())
+        {
+            var permission = await dataStore.FindMachinePermissionAsync(context.User.UserId(), existing.MachineId, cancellationToken);
+            if (permission is null || !permission.CanOperate)
+            {
+                throw new ApiException(
+                    StatusCodes.Status403Forbidden,
+                    "MACHINE_ACCESS_DENIED",
+                    "The user does not have permission for this machine.");
+            }
+        }
+        var updated = await workflow.MarkReadyAsync(requestId, context.User.UserId(), OperationalContext(context), cancellationToken);
         await WriteAuditAsync(
             dataStore,
             context,
@@ -712,7 +1100,7 @@ public static class ApiEndpoints
         {
             throw new ApiException(StatusCodes.Status403Forbidden, "OPERATION_NOT_ALLOWED_FOR_ROLE", "The authenticated role cannot report production load state.");
         }
-        _ = await access.EnsureAsync(context.User, machineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
         var target = request.LoadState?.Trim().ToUpperInvariant() switch
         {
             "EMPTY" => LoadState.Empty,
@@ -769,7 +1157,7 @@ public static class ApiEndpoints
         IApiDataStore dataStore,
         CancellationToken cancellationToken)
     {
-        _ = await access.EnsureAsync(context.User, machineId, MachineAccessKind.ChangeVariant, cancellationToken);
+        _ = await access.EnsureAsync(context, machineId, MachineAccessKind.ChangeVariant, cancellationToken);
         await workflow.SwitchVariantAsync(
             new VariantSelection(machineId, request.VariantId, request.LayoutId, request.NavigationProfileId, context.User.UserId()),
             cancellationToken);
@@ -859,20 +1247,6 @@ public static class ApiEndpoints
             : key;
     }
 
-    private static void EnsureCancellationAllowed(ClaimsPrincipal principal, TransportRequestSnapshot request)
-    {
-        var warehouseOnly = principal.IsInRole(RoleCodes.WarehouseOperator)
-            && !principal.IsInRole(RoleCodes.Admin)
-            && !principal.IsInRole(RoleCodes.Supervisor)
-            && !principal.IsInRole(RoleCodes.LineOperator);
-        if (warehouseOnly && (!TransportRules.DeliversToMachine(request.TaskType) || request.RequestedBy != principal.UserId()))
-        {
-            throw new ApiException(
-                StatusCodes.Status403Forbidden,
-                "CANCELLATION_NOT_ALLOWED_FOR_ROLE",
-                "WAREHOUSE_OPERATOR may cancel only delivery requests created by the same user.");
-        }
-    }
 
     private static TransportHttpResponse ToResponse(TransportRequestSnapshot request, bool replay, bool cancellationPending = false) => new(
         request.Id,
@@ -1087,7 +1461,7 @@ public static class ApiEndpoints
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
-        _ = await access.EnsureAsync(context.User, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
 
         var result = await rdsExecution.SetRequestPriorityAsync(requestId, request.Priority, CorrelationId(context), cancellationToken);
         await WriteAuditAsync(
@@ -1113,7 +1487,7 @@ public static class ApiEndpoints
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
-        _ = await access.EnsureAsync(context.User, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
 
         var result = await rdsExecution.ManualFinishAsync(requestId, CorrelationId(context), cancellationToken);
         await WriteAuditAsync(
@@ -1139,7 +1513,7 @@ public static class ApiEndpoints
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
-        _ = await access.EnsureAsync(context.User, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
+        _ = await access.EnsureAsync(context, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
 
         var result = await rdsExecution.RedoFailedAsync(requestId, CorrelationId(context), cancellationToken);
         await WriteAuditAsync(
@@ -1157,6 +1531,9 @@ public static class ApiEndpoints
 
     private static Guid CorrelationId(HttpContext context) =>
         context.Items.TryGetValue(ApiContextKeys.CorrelationId, out var value) && value is Guid id ? id : Guid.NewGuid();
+
+    private static OperationalEventContext OperationalContext(HttpContext context) =>
+        OperationalEventContext.ForUser(context.User.UserId(), Device(context).Id, CorrelationId(context));
 
     private static async Task WriteAuditAsync(
         IApiDataStore dataStore,

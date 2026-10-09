@@ -48,8 +48,28 @@ public sealed record CreateTransportRequest(
     Guid? SourceSlotId,
     Guid? DestinationSlotId,
     int Priority = 100,
-    bool RequiresPreparation = false)
+    bool RequiresPreparation = false,
+    bool RequiresFinishedGoodsDestination = false,
+    string? DestinationBusinessCode = null)
 {
+    /// <summary>
+    /// WP-08: a REMOVE_FULL created by the machine-side container flow (Kasa
+    /// Doldu / remove-all) is only valid when its server-resolved destination
+    /// is linked to an enabled finished-goods store location. The store never
+    /// learns about a delivery the transport cannot attribute, so the request
+    /// is refused before anything is reserved, persisted or dispatched.
+    /// Ignored for every other operation.
+    /// </summary>
+    public bool EnforcesFinishedGoodsDestination =>
+        RequiresFinishedGoodsDestination && TaskType == TransportTaskType.RemoveFull;
+
+    /// <summary>
+    /// A repeated alt-part demand creates BRING_FULL while the machine area
+    /// is still occupied by the pallet the predecessor will remove. The
+    /// successor is not execution-eligible until that predecessor completes.
+    /// </summary>
+    public bool AllowsDependentMachineOccupancy { get; init; }
+
     /// <summary>
     /// WP-05A: the BUSINESS readiness a new request starts at.
     /// RequiresPreparation=false (the default) preserves every existing
@@ -121,7 +141,8 @@ public sealed record TransportRequestSnapshot(
     Guid? DestinationSlotId,
     int Priority,
     TransportReadinessState ReadinessState,
-    DateTimeOffset? ReadyAt);
+    DateTimeOffset? ReadyAt,
+    string? DestinationBusinessCode = null);
 
 /// <summary>
 /// WP-05A: readiness transition rules. Separate from

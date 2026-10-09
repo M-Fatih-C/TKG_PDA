@@ -18,7 +18,22 @@ public sealed record AuthenticatedUserResponse(
     string? EmployeeNo,
     IReadOnlyList<string> Roles);
 
-public sealed record DeviceResponse(Guid Id, string Code, string Name, string Type);
+public sealed record DeviceResponse(Guid Id, string Code, string Name, string Type, Guid? MachineId = null);
+
+public sealed record HeartbeatResponse(Guid SessionId, DateTimeOffset LeaseExpiresAt, DateTimeOffset TokenExpiresAt);
+
+public sealed record DeviceNotificationRegistrationResponse(
+    Guid RegistrationId,
+    string Credential,
+    int PollIntervalSeconds);
+
+public sealed record DeviceNotificationResponse(
+    Guid Id,
+    string EventKey,
+    string NotificationType,
+    string Title,
+    string Body,
+    IReadOnlyDictionary<string, string> Data);
 
 public sealed record CreateTransportHttpRequest(
     Guid MachineId,
@@ -101,6 +116,23 @@ public sealed record CreateContainerActionBatchHttpRequest(
     IReadOnlyList<CreateContainerActionBatchItemHttpRequest> Items,
     int Priority = 100,
     Guid? ProductionSessionId = null);
+
+public sealed record PartDemandHttpRequest(Guid PartId);
+
+public sealed record PartDemandBatchHttpRequest(IReadOnlyList<Guid> PartIds);
+
+public sealed record PartDemandHttpResponse(
+    long RequestNo,
+    string TaskType,
+    string Status,
+    string Readiness,
+    long? PredecessorRequestNo,
+    string? PredecessorTaskType,
+    bool IdempotentReplay);
+
+public sealed record PartDemandBatchHttpResponse(
+    bool IdempotentReplay,
+    IReadOnlyList<PartDemandHttpResponse> Items);
 
 public sealed record ContainerActionHttpResponse(
     int PositionNumber,

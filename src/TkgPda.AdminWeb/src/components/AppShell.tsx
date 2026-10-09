@@ -1,14 +1,14 @@
 import {
-  Boxes,
   ClipboardList,
+  FileText,
   DatabaseZap,
   LayoutDashboard,
   LogOut,
-  Map,
   Menu,
-  PackageOpen,
-  ShieldCheck,
   RadioTower,
+  ListChecks,
+  ListOrdered,
+  ShieldCheck,
   Smartphone,
   Users,
   X,
@@ -16,18 +16,18 @@ import {
 import { useState, type PropsWithChildren } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { NotificationCenter } from './NotificationCenter'
 
 const links = [
   { to: '/', label: 'Genel Bakış', icon: LayoutDashboard, end: true },
   { to: '/users', label: 'Kullanıcılar & Yetkiler', icon: Users },
   { to: '/devices', label: 'Cihazlar', icon: Smartphone },
   { to: '/machines', label: 'Makine & Varyantlar', icon: DatabaseZap },
-  { to: '/layouts', label: 'Fiziksel Layoutlar', icon: Map },
-  { to: '/catalog', label: 'Parça & Gruplar', icon: Boxes },
-  { to: '/containers', label: 'Kasalar', icon: PackageOpen },
-  { to: '/data-quality', label: 'Veri Kalitesi', icon: ShieldCheck },
+  { to: '/reports', label: 'Operasyon Kayıtları & Raporlar', icon: FileText },
   { to: '/audit', label: 'Audit Geçmişi', icon: ClipboardList },
+  { to: '/production-end-priorities', label: 'Üretim Bitiş Önceliği', icon: ListOrdered },
   { to: '/rds', label: 'RDS Entegrasyonu', icon: RadioTower },
+  { to: '/commissioning', label: 'Devreye Alma Hazırlığı', icon: ListChecks },
 ]
 
 export function AppShell({ children }: PropsWithChildren) {
@@ -53,7 +53,23 @@ export function AppShell({ children }: PropsWithChildren) {
       </aside>
       {open && <button className="sidebar-scrim" aria-label="Menüyü kapat" onClick={() => setOpen(false)} />}
       <div className="workspace">
-        <header className="topbar"><button className="menu-button" onClick={() => setOpen(true)} aria-label="Menüyü aç"><Menu /></button><div><small>TKG PDA / Admin Web</small><strong>{current?.label ?? 'Yönetim'}</strong></div><span className="topbar__scope"><ShieldCheck size={16} /> ADMIN_WEB</span></header>
+        <header className="topbar">
+          <div className="topbar__left">
+            <button className="menu-button" onClick={() => setOpen(true)} aria-label="Menüyü aç">
+              <Menu />
+            </button>
+            <div>
+              <small>TKG PDA / Admin Web</small>
+              <strong>{current?.label ?? 'Yönetim'}</strong>
+            </div>
+          </div>
+          <div className="topbar__right">
+            <NotificationCenter />
+            <span className="topbar__scope">
+              <ShieldCheck size={16} /> ADMIN_WEB
+            </span>
+          </div>
+        </header>
         <main>{children}</main>
       </div>
     </div>

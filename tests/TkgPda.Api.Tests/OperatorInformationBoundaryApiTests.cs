@@ -243,16 +243,22 @@ public sealed class OperatorInformationBoundaryApiTests(ApiTestFixture fixture) 
             """,
             ("id", created.Id));
 
-        foreach (var role in new[] { RoleCodes.LineOperator, RoleCodes.WarehouseOperator, RoleCodes.Supervisor })
+        foreach (var role in new[] { RoleCodes.LineOperator, RoleCodes.WarehouseOperator, RoleCodes.SemiFinishedWarehouseOperator, RoleCodes.FinishedGoodsWarehouseOperator, RoleCodes.Supervisor, RoleCodes.Admin })
         {
             var reader = await fixture.SeedIdentityAsync(role: role);
             using var client = await fixture.LoginClientAsync(reader);
             var response = await client.GetAsync($"/api/v1/machines/{context.MachineId}/operational-context");
-            response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync();
 
             using var document = JsonDocument.Parse(json);
             AssertNoForbiddenFields(document.RootElement, ForbiddenContextFields);
+            if (role is RoleCodes.WarehouseOperator or RoleCodes.SemiFinishedWarehouseOperator or RoleCodes.FinishedGoodsWarehouseOperator)
+            {
+                Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+                Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(response));
+                continue;
+            }
+            response.EnsureSuccessStatusCode();
 
             foreach (var leaked in new[]
                      {
@@ -289,20 +295,27 @@ public sealed class OperatorInformationBoundaryApiTests(ApiTestFixture fixture) 
             """,
             ("variant_id", context.VariantId));
 
-        foreach (var role in new[] { RoleCodes.LineOperator, RoleCodes.WarehouseOperator, RoleCodes.Supervisor })
+        foreach (var role in new[] { RoleCodes.LineOperator, RoleCodes.WarehouseOperator, RoleCodes.SemiFinishedWarehouseOperator, RoleCodes.FinishedGoodsWarehouseOperator, RoleCodes.Supervisor, RoleCodes.Admin })
         {
             var identity = await fixture.SeedIdentityAsync(role: role);
             using var client = await fixture.LoginClientAsync(identity);
             var response = await client.GetAsync($"/api/v1/machines/{context.MachineId}/operational-context");
-            response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync();
+            if (role is RoleCodes.WarehouseOperator or RoleCodes.SemiFinishedWarehouseOperator or RoleCodes.FinishedGoodsWarehouseOperator)
+            {
+                Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+                Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(response));
+            }
+            else response.EnsureSuccessStatusCode();
 
             Assert.False(
                 json.Contains("SECRET-RDS-TASK-LABEL", StringComparison.OrdinalIgnoreCase),
                 $"{role} operational-context leaked the RDS task label.");
             Assert.DoesNotContain("\"rdsTaskLabel\"", json, StringComparison.OrdinalIgnoreCase);
             // The business readiness signal derived from it still arrives.
-            Assert.Contains("rdsTaskLabelConfigured", json, StringComparison.OrdinalIgnoreCase);
+            if (response.IsSuccessStatusCode)
+                Assert.Contains("rdsTaskLabelConfigured", json, StringComparison.OrdinalIgnoreCase);
+            else Assert.DoesNotContain("rdsTaskLabelConfigured", json, StringComparison.OrdinalIgnoreCase);
         }
     }
 

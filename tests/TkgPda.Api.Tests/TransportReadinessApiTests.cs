@@ -185,7 +185,7 @@ public sealed class TransportReadinessApiTests(ApiTestFixture fixture) : IClassF
         using var client = await fixture.LoginClientAsync(identity);
         var createdResponse = await fixture.SendTransportAsync(client, Bring(context, await fixture.PartForSlotAsync(slot, "P05-TRANSP9"), requiresPreparation: true), "terminal-ready-http");
         var created = await createdResponse.Content.ReadFromJsonAsync<TransportHttpResponse>();
-        var cancelled = await client.PostAsync($"/api/v1/transport-requests/{created!.Id}/cancel", null);
+        var cancelled = await client.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{created!.Id}/cancel", null);
         Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
         var warehouseOperator = await fixture.SeedIdentityAsync(role: RoleCodes.WarehouseOperator);
         using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);

@@ -11,6 +11,14 @@ import 'package:tkg_pda/data/models/pda_models.dart';
 
 import '../support/fakes.dart';
 
+final _testSupervisor = AuthenticatedUser(
+  id: testUser.id,
+  username: 'supervisor',
+  fullName: 'Test Vardiya Amiri',
+  employeeNo: '1099',
+  roles: const ['SUPERVISOR'],
+);
+
 void main() {
   testWidgets('first run opens Device Setup', (tester) async {
     final harness = await _harness(tester, deviceCode: null);
@@ -38,7 +46,8 @@ void main() {
   });
 
   testWidgets('valid login opens machine list', (tester) async {
-    final harness = await _harness(tester);
+    final repo = FakePdaRepository()..loginUser = _testSupervisor;
+    final harness = await _harness(tester, repository: repo);
 
     await _loginFromUi(tester);
 
@@ -127,7 +136,7 @@ void main() {
   testWidgets('machine list renders customer values without permission chips', (
     tester,
   ) async {
-    final repository = FakePdaRepository();
+    final repository = FakePdaRepository()..loginUser = _testSupervisor;
     final harness = await _loggedInHarness(tester, repository: repository);
 
     expect(find.byKey(Key('machine-${testMachine.id}')), findsOneWidget);
@@ -141,7 +150,9 @@ void main() {
   testWidgets('an operator with no assigned machines sees an empty state', (
     tester,
   ) async {
-    final repository = FakePdaRepository()..machineValues = [];
+    final repository = FakePdaRepository()
+      ..loginUser = _testSupervisor
+      ..machineValues = [];
     final harness = await _loggedInHarness(tester, repository: repository);
 
     expect(find.byKey(const Key('machine-list-empty')), findsOneWidget);
@@ -167,7 +178,9 @@ void main() {
         canManageSlots: false,
       ),
     );
-    final repository = FakePdaRepository()..machineValues = [viewOnly];
+    final repository = FakePdaRepository()
+      ..loginUser = _testSupervisor
+      ..machineValues = [viewOnly];
     final harness = await _loggedInHarness(tester, repository: repository);
 
     expect(
@@ -179,7 +192,8 @@ void main() {
   });
 
   testWidgets('machine selection loads operational context', (tester) async {
-    final harness = await _loggedInHarness(tester);
+    final repo = FakePdaRepository()..loginUser = _testSupervisor;
+    final harness = await _loggedInHarness(tester, repository: repo);
 
     await tester.tap(find.byKey(Key('machine-${testMachine.id}')));
     await tester.pumpAndSettle();
@@ -250,21 +264,18 @@ void main() {
       expect(repository.lastCommand!.productGroupId, testProductGroupId);
       expect(repository.lastCommand!.partId, testMainPartId);
       expect(repository.lastCommand!.operation, 'BRING_EMPTY');
+      await tester.pump();
       expect(find.text('1. Kasa talebi oluşturuldu.'), findsOneWidget);
       expect(find.text('Fiziksel Yerleşim'), findsNothing);
-      await _scrollTo(
-        tester,
+      expect(
+        find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+        findsOneWidget,
+      );
+      final emptyBtn = tester.widget<ElevatedButton>(
         find.byKey(const Key('direct-action-BRING_EMPTY-1')),
       );
-      expect(
-        tester
-            .widget<ElevatedButton>(
-              find.byKey(const Key('direct-action-BRING_EMPTY-1')),
-            )
-            .onPressed,
-        isNull,
-      );
-      expect(find.text('Aktif taşıma: 1'), findsOneWidget);
+      expect(emptyBtn.enabled, isFalse);
+      expect(find.textContaining('Aktif Taşımalar (1)'), findsOneWidget);
       harness.dispose();
     });
 
@@ -344,7 +355,10 @@ void main() {
       ..createCompleter = Completer<TransportResult>();
     final harness = await _operationHarness(tester, repository: repository);
 
-    await _scrollTo(tester, find.byKey(const Key('direct-action-BRING_EMPTY-1')));
+    await _scrollTo(
+      tester,
+      find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+    );
     await tester.tap(find.byKey(const Key('direct-action-BRING_EMPTY-1')));
     // A single frame — the pending completer never resolves, and the busy
     // indicator is an indeterminate animation, so pumpAndSettle would hang.
@@ -421,7 +435,10 @@ void main() {
   ) async {
     final repository = FakePdaRepository();
     final harness = await _operationHarness(tester, repository: repository);
-    await _scrollTo(tester, find.byKey(const Key('direct-action-BRING_EMPTY-1')));
+    await _scrollTo(
+      tester,
+      find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+    );
     repository.contextError = const ConnectivityException();
 
     await harness.controller.refreshContext(showBusy: true);
@@ -444,7 +461,7 @@ void main() {
     await _scrollTo(tester, find.byKey(const Key('active-transport-section')));
     expect(find.text('Robot bekleniyor'), findsOneWidget);
     expect(find.text('#42 · Boş Kasa Getir'), findsOneWidget);
-    expect(find.text('Aktif taşıma: 1'), findsOneWidget);
+    expect(find.textContaining('Aktif Taşımalar (1)'), findsOneWidget);
     expect(find.textContaining('AGV'), findsNothing);
     harness.dispose();
   });
@@ -639,7 +656,10 @@ void main() {
         find.byKey(const Key('direct-action-REMOVE_FULL-1')),
         findsOneWidget,
       );
-      expect(find.byKey(const Key('direct-action-REMOVE_EMPTY-1')), findsNothing);
+      expect(
+        find.byKey(const Key('direct-action-REMOVE_EMPTY-1')),
+        findsNothing,
+      );
       expect(find.text('İşleme Devam Et'), findsNothing);
       expect(find.text('Fiziksel Yerleşim'), findsNothing);
       expect(tester.takeException(), isNull);

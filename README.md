@@ -60,13 +60,11 @@ Müşterinin ham Excel, CAD, STEP ve görsel dosyaları yerel kaynak paketinde t
 
 ## Veritabanını kurma
 
-PostgreSQL 18.x üzerinde uygulama sırası:
+Desteklenen yerel kurulum `tools/dev/start_local_stack.ps1` dosyasıdır. Betik `db/migrations` altındaki migration dosyalarını dosya sırasıyla uygular, ardından `db/seeds/generated/002a_customer_textual_master_data.sql`, `002b_customer_physical_layouts.sql` ve `002c_customer_layout_slot_part_assignments.sql` tohumlarını yükler.
 
-```powershell
-psql -v ON_ERROR_STOP=1 -f db/migrations/001_initial_schema.sql
-psql -v ON_ERROR_STOP=1 -f db/seeds/generated/002a_customer_textual_master_data.sql
-psql -v ON_ERROR_STOP=1 -f db/seeds/generated/002b_customer_physical_layouts.sql
-```
+Yalnızca `001_initial_schema.sql` uygulamak güncel API şemasını üretmez. Yeni bir veritabanı migration 001 ile başlar ve dizindeki son migration ile biter.
+
+Geliştirme hesaplarının parolası betiğe yazılmaz. `-Password` veya `-SecurePassword` verin ya da genel geliştirme hesapları yoksa betiğin sorduğu parolayı girin.
 
 Seed dosyaları idempotent tasarlanmıştır. İkinci uygulama mantıksal DB durumunu değiştirmemelidir.
 

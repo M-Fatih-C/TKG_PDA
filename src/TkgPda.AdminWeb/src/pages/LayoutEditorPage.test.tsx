@@ -84,7 +84,7 @@ describe('Normalized layout editor', () => {
       if (url.endsWith('/machines')) return Promise.resolve(jsonResponse(machines))
       if (url.endsWith('/containers')) return Promise.resolve(jsonResponse(containers))
       if (url.endsWith('/layout-slots/s-1/parts')) {
-        return Promise.resolve(jsonResponse([{ id: 'p-1', partCode: '71550BN000-10', description: 'Ana Parça' }]))
+        return Promise.resolve(jsonResponse([{ partId: 'p-1', partCode: '71550BN000-10', description: 'Ana Parça' }]))
       }
       return Promise.resolve(jsonResponse([]))
     })
@@ -106,7 +106,7 @@ describe('Normalized layout editor', () => {
       if (url.endsWith('/machines')) return Promise.resolve(jsonResponse(machines))
       if (url.endsWith('/containers')) return Promise.resolve(jsonResponse(containers))
       if (url.endsWith('/layout-slots/s-1/parts')) {
-        return Promise.resolve(jsonResponse([{ id: 'p-1', partCode: '71550BN000-10', description: 'Ana Parça' }]))
+        return Promise.resolve(jsonResponse([{ partId: 'p-1', partCode: '71550BN000-10', description: 'Ana Parça' }]))
       }
       // No RDS mappings
       if (url.includes('/rds/slot-mappings')) return Promise.resolve(jsonResponse([]))
@@ -117,6 +117,43 @@ describe('Normalized layout editor', () => {
 
     await userEvent.click(await screen.findByTestId('slot-SLOT-01'))
     expect(await screen.findByText(/Eksik Devreye Alma Uyarısı/)).toBeVisible()
+  })
+
+  it('correctly uses partId when removing an assigned slot-part mapping', async () => {
+    let deletedUrl = ''
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'DELETE' && url.includes('/parts/')) {
+        deletedUrl = url
+        return Promise.resolve(jsonResponse(undefined, { status: 204 }))
+      }
+      if (url.endsWith('/layouts')) return Promise.resolve(jsonResponse(layouts))
+      if (url.endsWith('/layouts/l-1/slots')) return Promise.resolve(jsonResponse(slots))
+      if (url.endsWith('/machines')) return Promise.resolve(jsonResponse(machines))
+      if (url.endsWith('/containers')) return Promise.resolve(jsonResponse(containers))
+      if (url.endsWith('/layout-slots/s-1/parts')) {
+        return Promise.resolve(jsonResponse([{ partId: 'p-1', partCode: '71550BN000-10', description: 'Ana Parça' }]))
+      }
+      if (url.endsWith('/admin/parts') || (url.endsWith('/parts') && !url.includes('layout-slots'))) {
+        return Promise.resolve(
+          jsonResponse([
+            { id: 'p-1', code: '71550BN000-10', description: 'Ana Parça', isActive: true, concurrencyToken: 1 },
+            { id: 'p-2', code: '71550BN000-20', description: 'İkinci Parça', isActive: true, concurrencyToken: 2 },
+          ]),
+        )
+      }
+      return Promise.resolve(jsonResponse([]))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderAuthenticated(<Routes><Route path="/layouts/:layoutId/editor" element={<LayoutEditorPage />} /></Routes>, '/layouts/l-1/editor')
+
+    await userEvent.click(await screen.findByTestId('slot-SLOT-01'))
+    expect(await screen.findByText('71550BN000-10')).toBeVisible()
+
+    const removeBtn = screen.getByRole('button', { name: /71550BN000-10 eşlemesini kaldır/ })
+    await userEvent.click(removeBtn)
+
+    expect(deletedUrl).toBe('/api/v1/admin/layout-slots/s-1/parts/p-1')
   })
 
   it('freezes save button on 409 concurrency conflict and prevents second-click overwrite', async () => {

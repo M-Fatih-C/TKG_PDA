@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace TkgPda.Application;
 
@@ -338,15 +340,183 @@ public sealed record OperatorRobotSummaryRecord(
     double? BatteryLevel,
     bool HasActiveAlarm);
 
+public sealed record RdsProfileSlotMappingRecord(
+    Guid SlotId,
+    Guid NavigationProfileId,
+    Guid RdsWorkSiteId,
+    string RdsSiteId);
+
+public sealed record VariantCommissioningReport(
+    string MachineCode,
+    string VariantCode,
+    string? AreaName,
+    string? MapName,
+    string NavigationCode,
+    Guid NavigationProfileId,
+    string ProfileStatus,
+    string CommissioningState,
+    bool GeometryVerified,
+    string? LayoutBindingState,
+    int PlannedWorkSites,
+    int MappedWorkSites,
+    int VerifiedBindings,
+    int MissingBindings,
+    bool IsDefault,
+    bool Ready,
+    int ActiveTaskTemplates,
+    int CrossMachineMappings,
+    int CrossProfileMappings,
+    string? ActiveNavigationCode,
+    string? ProductionSessionStatus,
+    string OverallState,
+    IReadOnlyList<OperationCapability> Operations);
+
+public sealed record OperationCapability(
+    string Operation,
+    string State,
+    IReadOnlyList<string> Blockers);
+
+public sealed record EndpointFamilyCoverage(
+    string Family,
+    int Planned,
+    int Discovered,
+    int ExactMatched,
+    int Mapped,
+    int Verified,
+    int Missing,
+    int Unexpected);
+
+public sealed record SharedEndpointBindingDecision(
+    bool Applied,
+    string MachineCode,
+    string VariantCode,
+    string NavigationCode,
+    string EndpointClass,
+    string BusinessCode,
+    string PlannedWorkSiteName,
+    string? ResolvedSiteId,
+    IReadOnlyList<string> Blockers);
+
+public sealed record WorkSiteNameDiff(
+    string MachineCode,
+    string VariantCode,
+    string NavigationCode,
+    int PlannedCount,
+    int ActualCount,
+    int ExactMatchCount,
+    int MappedStateCount,
+    IReadOnlyList<string> MissingNames,
+    IReadOnlyList<string> UnexpectedNames);
+
+public sealed record CommissioningDecision(
+    bool Applied,
+    string MachineCode,
+    string VariantCode,
+    string NavigationCode,
+    string ProfileStatus,
+    string CommissioningState,
+    bool GeometryVerified,
+    bool IsDefault,
+    IReadOnlyList<string> Blockers);
+
+public sealed record GeometryConfirmationDecision(
+    bool Applied,
+    string MachineCode,
+    string VariantCode,
+    string NavigationCode,
+    int RequiredPlanCount,
+    int ConfirmedCount,
+    int RemainingCount,
+    IReadOnlyList<string> Blockers);
+
+public sealed record RdsPhysicalDiagnosticRecord(Guid NavigationProfileId, string BusinessCode, string EndpointClass,
+    Guid? SlotId, string? BusinessOccupancy, bool Reserved, Guid MirroredWorkSiteId, string SiteId,
+    string? ExternalId, string? SiteName, RdsPhysicalEvidence Evidence, string PhysicalState, string ConsistencyResult);
+
 public interface IRdsIntegrationStore
 {
+    Task<IReadOnlyList<RdsPhysicalDiagnosticRecord>> ListPhysicalDiagnosticsAsync(Guid navigationProfileId, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
     Task<IReadOnlyList<RdsNavigationProfileRecord>> ListNavigationProfilesAsync(CancellationToken cancellationToken = default);
     Task<(int Created, int Updated)> SyncWorkSitesAsync(Guid navigationProfileId, IReadOnlyList<RdsWorkSiteSnapshot> workSites, DateTimeOffset syncedAt, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RdsMirroredWorkSiteRecord>> ListWorkSitesAsync(RdsWorkSiteFilter filter, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RdsSlotMappingRecord>> ListSlotMappingsAsync(Guid? layoutId, CancellationToken cancellationToken = default);
     Task<RdsSlotMappingRecord> SetSlotMappingAsync(Guid slotId, Guid rdsWorkSiteId, AdminMutationContext context, CancellationToken cancellationToken = default);
     Task RemoveSlotMappingAsync(Guid slotId, AdminMutationContext context, CancellationToken cancellationToken = default);
+
+    Task<RdsProfileSlotMappingRecord> SetProfileSlotMappingAsync(
+        Guid slotId,
+        Guid navigationProfileId,
+        Guid rdsWorkSiteId,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<IReadOnlyList<VariantCommissioningReport>> ListVariantCommissioningAsync(CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<WorkSiteNameDiff> ReadWorkSiteNameDiffAsync(string machineCode, string variantCode, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<CommissioningDecision> VerifyVariantCommissioningAsync(
+        string machineCode,
+        string variantCode,
+        bool apply,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<CommissioningDecision> PromoteVariantCommissioningAsync(
+        string machineCode,
+        string variantCode,
+        bool apply,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<GeometryConfirmationDecision> ConfirmVariantGeometryAsync(
+        string machineCode,
+        string variantCode,
+        bool apply,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<SharedEndpointBindingDecision> BindSharedEndpointAsync(
+        string machineCode,
+        string variantCode,
+        string endpointClass,
+        string businessCode,
+        string plannedWorkSiteName,
+        bool apply,
+        AdminMutationContext context,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    Task<IReadOnlyList<EndpointFamilyCoverage>> ReadEndpointFamiliesAsync(
+        string machineCode,
+        string variantCode,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<EndpointFamilyCoverage>>([]);
     Task<IReadOnlyList<RdsActiveLockFingerprint>> GetActiveTkgLockFingerprintsAsync(CancellationToken cancellationToken = default);
+
+    Task ObserveAlarmSnapshotAsync(
+        IReadOnlyList<RdsRobotAlarmSnapshot> alarms,
+        Guid correlationId,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    Task ObserveAlarmReadFailureAsync(
+        Guid correlationId,
+        DateTimeOffset observedAt,
+        string errorCode,
+        string message,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    Task<IReadOnlyList<RobotAlarmObservationRecord>> ListAlarmHistoryAsync(
+        int limit,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<RobotAlarmObservationRecord>>([]);
 }
 
 
@@ -358,9 +528,14 @@ public interface IRdsWorkSiteReconciler
         CancellationToken cancellationToken = default);
 }
 
-public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegrationStore store, TimeProvider timeProvider) : IRdsWorkSiteReconciler
+public sealed class RdsIntegrationService(
+    IRdsReadClient client,
+    IRdsIntegrationStore store,
+    TimeProvider timeProvider,
+    ILogger<RdsIntegrationService>? logger = null) : IRdsWorkSiteReconciler
 {
     private readonly SemaphoreSlim syncGate = new(1, 1);
+    private readonly ILogger<RdsIntegrationService> alarmLogger = logger ?? NullLogger<RdsIntegrationService>.Instance;
 
     public async Task<RdsConnectionStatusRecord> GetStatusAsync(Guid correlationId, CancellationToken cancellationToken = default)
     {
@@ -455,7 +630,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+        var result = await ObserveCurrentAlarmsAsync(correlationId, cancellationToken);
         var robotsById = result.Data.Robots.ToDictionary(robot => robot.RobotId, StringComparer.Ordinal);
         return result.Data.Alarms
             .Select(alarm =>
@@ -479,7 +654,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+        var result = await ObserveCurrentAlarmsAsync(correlationId, cancellationToken);
         var alarmsByRobot = result.Data.Alarms
             .GroupBy(a => a.RobotId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, CountBySeverity, StringComparer.Ordinal);
@@ -513,7 +688,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+        var result = await ObserveCurrentAlarmsAsync(correlationId, cancellationToken);
         var alarmsByRobot = result.Data.Alarms
             .GroupBy(a => a.RobotId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, CountBySeverity, StringComparer.Ordinal);
@@ -533,6 +708,57 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
                     alarms.Critical > 0);
             })
             .ToList();
+    }
+
+    /// <summary>
+    /// The only alarm observation path. Admin, operator, and the background
+    /// worker all read GET /api/agv-report/core through this method. A successful
+    /// complete snapshot is stored. A failed read is recorded and rethrown, and
+    /// it does not clear open observations.
+    /// </summary>
+    public async Task<RdsReadResult<RdsRobotAlarmReport>> ObserveCurrentAlarmsAsync(
+        Guid correlationId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+            try
+            {
+                await store.ObserveAlarmSnapshotAsync(result.Data.Alarms, correlationId, result.ReadAt, cancellationToken);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                // The live snapshot stays usable. History is not cleared or invented.
+                alarmLogger.LogWarning(
+                    "Robot alarm snapshot was read successfully but history persistence failed for correlation {CorrelationId} with {ExceptionType}.",
+                    correlationId,
+                    error.GetType().Name);
+            }
+
+            return result;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            try
+            {
+                await store.ObserveAlarmReadFailureAsync(
+                    correlationId,
+                    timeProvider.GetUtcNow(),
+                    error is RdsReadException read ? read.Code : error.GetType().Name,
+                    error.Message,
+                    cancellationToken);
+            }
+            catch (Exception persistError) when (persistError is not OperationCanceledException)
+            {
+                alarmLogger.LogWarning(
+                    "Robot alarm read failure could not be recorded for correlation {CorrelationId} with {ExceptionType}.",
+                    correlationId,
+                    persistError.GetType().Name);
+            }
+
+            throw;
+        }
     }
 
     /// <summary>Velocity below this magnitude is treated as stationary.</summary>
@@ -688,7 +914,7 @@ public sealed class RdsIntegrationService(IRdsReadClient client, IRdsIntegration
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
-        var result = await client.GetRobotAlarmsAsync(correlationId, cancellationToken);
+        var result = await ObserveCurrentAlarmsAsync(correlationId, cancellationToken);
         var alarms = result.Data.Alarms;
         var highestSeverity = alarms.Count == 0
             ? null

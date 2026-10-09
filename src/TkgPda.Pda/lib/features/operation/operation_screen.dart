@@ -5,6 +5,7 @@ import '../../app/design_tokens.dart';
 import '../../shared/widgets/feedback_banners.dart';
 import 'container_position_panel.dart';
 import 'part_first_screen.dart';
+import 'transport_action_panel.dart';
 
 /// Machine-scoped Operator workspace. Part/variant resolution and transport
 /// actions share one page; there is no second physical-layout screen.
@@ -16,94 +17,92 @@ class OperationScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: controller,
-    builder: (context, _) => Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          key: const Key('leave-machine'),
-          tooltip: 'Makine listesi',
-          onPressed: controller.busy ? null : controller.leaveMachine,
-          icon: const Icon(Icons.arrow_back),
-        ),
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              controller.selectedMachine == null
-                  ? 'Parça ve İşlem'
-                  : controller.batchMode
-                  ? '${controller.selectedMachine!.code} · '
-                        '${controller.batchCart.length} Parça Seçili'
-                  : '${controller.selectedMachine!.code} · Parça ve İşlem',
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (controller.user case final user?)
-              Text(
-                '${user.fullName.trim().isNotEmpty ? user.fullName : user.username} (Sicil: ${user.employeeNo?.trim().isNotEmpty == true ? user.employeeNo! : "—"})',
-                key: const Key('operator-user-banner'),
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.normal,
+    builder: (context, _) => TransientNoticeHost(
+      controller: controller,
+      child: Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: !controller.isBoundLineTerminalOperator,
+          leading: controller.isBoundLineTerminalOperator
+              ? null
+              : IconButton(
+                  key: const Key('leave-machine'),
+                  tooltip: 'Makine listesi',
+                  onPressed: controller.busy ? null : controller.leaveMachine,
+                  icon: const Icon(Icons.arrow_back),
                 ),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                controller.selectedMachine == null
+                    ? 'Parça ve İşlem'
+                    : controller.production.active != null
+                    ? controller.selectedMachine!.code
+                    : '${controller.selectedMachine!.code} · Parça ve İşlem',
                 overflow: TextOverflow.ellipsis,
               ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            key: const Key('enter-batch-selection'),
-            visualDensity: VisualDensity.compact,
-            tooltip: controller.batchMode
-                ? 'Toplu Seçim Modunu Kapat'
-                : 'Birden Fazla Parça / Toplu Mod',
-            onPressed: controller.busy || !controller.productionTransportReady
-                ? null
-                : controller.toggleBatchMode,
-            icon: Badge(
-              isLabelVisible: controller.batchCart.isNotEmpty,
-              label: Text('${controller.batchCart.length}'),
-              child: Icon(
-                controller.batchMode
-                    ? Icons.playlist_add_check
-                    : Icons.playlist_add,
-                color: controller.batchMode ? Colors.amberAccent : null,
+              if (controller.user case final user?)
+                Text(
+                  '${user.fullName.trim().isNotEmpty ? user.fullName : user.username} (Sicil: ${user.employeeNo?.trim().isNotEmpty == true ? user.employeeNo! : "—"})',
+                  key: const Key('operator-user-banner'),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.normal,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+            ],
+          ),
+          actions: [
+            KeyedSubtree(
+              key: const Key('open-operator-queue'),
+              child: IconButton(
+                key: const Key('open-operator-queue-from-machine'),
+                tooltip: 'Görevler',
+                onPressed: controller.busy ? null : controller.enterTasks,
+                icon: const Icon(Icons.format_list_numbered),
               ),
             ),
-          ),
-          IconButton(
-            key: const Key('open-operator-queue-from-machine'),
-            visualDensity: VisualDensity.compact,
-            tooltip: 'Görevler',
-            onPressed: controller.busy ? null : controller.enterTasks,
-            icon: const Icon(Icons.format_list_numbered),
-          ),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            tooltip: 'Güncelle',
-            onPressed: controller.busy
-                ? null
-                : () => controller.refreshContext(showBusy: true),
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            key: const Key('logout-button'),
-            visualDensity: VisualDensity.compact,
-            tooltip: 'Çıkış',
-            onPressed: controller.isMutationInFlight ? null : controller.logout,
-            icon: const Icon(Icons.logout),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            _StatusRegion(controller: controller),
-            Expanded(child: _PartFirstWithBatchSkip(controller: controller)),
-            if (controller.batchMode || controller.batchCart.isNotEmpty)
-              BatchCartTray(controller: controller),
-            if (controller.busy) const LinearProgressIndicator(minHeight: 5),
+            PopupMenuButton<String>(
+              tooltip: 'Diğer',
+              onSelected: (value) {
+                if (value == 'refresh') {
+                  controller.refreshContext(showBusy: true);
+                }
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(value: 'refresh', child: Text('Yenile')),
+              ],
+            ),
+            Tooltip(
+              message: 'Oturumu kapat',
+              child: TextButton(
+                key: const Key('logout-button'),
+                onPressed: controller.isMutationInFlight
+                    ? null
+                    : controller.logout,
+                child: const Text(
+                  'Çıkış',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
           ],
         ),
+        body: SafeArea(
+          child: Column(
+            children: [
+              _StatusRegion(controller: controller),
+              Expanded(child: _PartFirstWithBatchSkip(controller: controller)),
+              if (controller.busy) const LinearProgressIndicator(minHeight: 5),
+            ],
+          ),
+        ),
+        bottomNavigationBar:
+            controller.batchMode || controller.batchCart.isNotEmpty
+            ? BatchCartTray(controller: controller)
+            : null,
       ),
     ),
   );
@@ -142,17 +141,13 @@ class _StatusRegion extends StatelessWidget {
               if (controller.offline) const OfflineBanner(),
               if (controller.problem case final problem?)
                 ProblemBanner(problem: problem),
-              if (controller.notice case final notice?)
-                NoticeBanner(message: notice),
+              if (controller.uiNotice case final notice?)
+                if (notice.persistent) NoticeBanner(notice: notice),
               RobotAlarmBanner(
                 summary: controller.robotAlarmSummary,
                 error: controller.robotAlarmError,
                 onRetry: controller.retryRobotAlarmSummary,
               ),
-              if ((controller.context?.activeTransportRequests.length ?? 0) > 0)
-                _ActiveTransportIndicator(
-                  count: controller.context!.activeTransportRequests.length,
-                ),
             ],
           ),
         ),
@@ -164,30 +159,6 @@ class _StatusRegion extends StatelessWidget {
       if (controller.isConfiguringBatchItem)
         _BatchConfiguringBanner(controller: controller),
     ],
-  );
-}
-
-class _ActiveTransportIndicator extends StatelessWidget {
-  const _ActiveTransportIndicator({required this.count});
-
-  final int count;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    key: const Key('active-transport-indicator'),
-    width: double.infinity,
-    color: const Color(0xFFEFF6FF),
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-    child: Row(
-      children: [
-        const Icon(Icons.local_shipping_outlined, size: 20),
-        const SizedBox(width: 8),
-        Text(
-          'Aktif taşıma: $count',
-          style: const TextStyle(fontWeight: FontWeight.w800),
-        ),
-      ],
-    ),
   );
 }
 
@@ -216,47 +187,75 @@ class _PartFirstWithBatchSkip extends StatelessWidget {
             )
           : null;
 
-      // On a line terminal the selection and the container actions fit side by
-      // side, so neither has to be scrolled to reach the other: part choice
-      // happens a few times a shift, container actions happen constantly, and
-      // stacking them meant the constant one lived in a strip at the bottom.
-      if (PdaScale.isWide(context) && controller.transportActionsReady) {
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: Column(
-                children: [
-                  Expanded(child: selector),
-                  ?skip,
-                ],
+      // Wide and 1024×600 terminals: alt parts on the left, Mamul Kasa then
+      // active transports in the same right column. Phones stay one stack.
+      // There is one transport section; it is not repeated under the page.
+      final showMamul = controller.mamulActionsReady;
+      final requests = controller.context?.activeTransportRequests ?? const [];
+      final showTransports =
+          requests.isNotEmpty || controller.production.active != null;
+      final transports = OperatorActiveTransportList(
+        requests: requests,
+        controller: controller,
+      );
+      if (PdaScale.usesSideColumn(context)) {
+        final gutter = PdaScale.gutter(context);
+        // Near-equal columns. Flex keeps the split as the screen grows;
+        // a fixed right-column ceiling made the left side dominate.
+        return Padding(
+          padding: EdgeInsets.fromLTRB(
+            gutter,
+            gutter * 0.4,
+            gutter,
+            gutter * 0.4,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                key: const Key('production-left-column'),
+                flex: 52,
+                child: Column(
+                  children: [
+                    Expanded(child: selector),
+                    ?skip,
+                  ],
+                ),
               ),
-            ),
-            SizedBox(width: PdaScale.gutter(context)),
-            SizedBox(
-              width: (constraints.maxWidth * 0.46).clamp(560.0, 940.0),
-              child: ContainerPositionPanel(
-                controller: controller,
-                expand: true,
-              ),
-            ),
-          ],
+              if (showMamul || showTransports) ...[
+                SizedBox(width: gutter),
+                Expanded(
+                  key: const Key('production-right-column'),
+                  flex: 48,
+                  child: Column(
+                    children: [
+                      if (showMamul)
+                        ContainerPositionPanel(controller: controller),
+                      if (showMamul && showTransports)
+                        SizedBox(height: gutter * 0.4),
+                      if (showTransports) Expanded(child: transports),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
         );
       }
-
+      final transportHeight = requests.isEmpty
+          ? 88.0
+          : (constraints.maxHeight * 0.34).clamp(168.0, 240.0);
       return Column(
         children: [
           Expanded(child: selector),
-          if (controller.transportActionsReady)
+          if (showMamul)
             ContainerPositionPanel(
               controller: controller,
-              // The docked panel is a non-flex child, so the Column offers it
-              // unbounded height and it would keep its preferred size no matter
-              // how many status banners are stacked above. Cap it against what
-              // this workspace actually has, and let the selection keep the rest.
-              maxHeight: constraints.maxHeight * 0.58,
+              maxHeight: constraints.maxHeight * 0.38,
             ),
           ?skip,
+          if (showTransports)
+            SizedBox(height: transportHeight, child: transports),
         ],
       );
     },
@@ -437,7 +436,6 @@ class _BatchCartTrayState extends State<BatchCartTray> {
     final theme = Theme.of(context);
 
     return Material(
-      key: const Key('batch-cart-tray'),
       elevation: 8,
       color: theme.colorScheme.surfaceContainerHighest,
       child: SafeArea(
@@ -456,6 +454,7 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: InkWell(
+                      key: const Key('batch-cart-tray'),
                       onTap: cart.isEmpty
                           ? null
                           : () => setState(() => _expanded = !_expanded),
@@ -464,9 +463,13 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                         children: [
                           Row(
                             children: [
-                              const Text(
-                                'Toplu Taşıma Sepeti',
-                                style: TextStyle(fontWeight: FontWeight.w800),
+                              Text(
+                                controller.production.active != null
+                                    ? 'Toplu Alt Parça'
+                                    : 'Toplu Taşıma Sepeti',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
                               ),
                               const SizedBox(width: 6),
                               Container(
@@ -480,7 +483,8 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                                 child: Text(
-                                  '${cart.length}',
+                                  '${controller.production.active != null ? controller.selectedAltParts.length : cart.length}',
+                                  key: const Key('selected-alt-count'),
                                   style: TextStyle(
                                     color: theme.colorScheme.onPrimary,
                                     fontSize: 12,
@@ -491,11 +495,15 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                             ],
                           ),
                           Text(
-                            cart.isEmpty
-                                ? 'Parça ve kasa butonuna basarak ekleyin'
-                                : '${cart.length} kasa hazır · Detaylar için dokunun',
+                            controller.production.active != null
+                                ? (controller.selectedAltParts.isEmpty
+                                      ? 'Alt parçaları işaretleyin'
+                                      : '${controller.selectedAltParts.length} Alt Parça Seçildi')
+                                : cart.isEmpty
+                                ? 'Parça seçip sepete ekleyin'
+                                : '${cart.length} kayıt hazır',
                             style: TextStyle(
-                              fontSize: 11,
+                              fontSize: PdaScale.caption(context),
                               color: theme.hintColor,
                             ),
                           ),
@@ -503,28 +511,47 @@ class _BatchCartTrayState extends State<BatchCartTray> {
                       ),
                     ),
                   ),
-                  if (cart.isNotEmpty) ...[
+                  if (cart.isNotEmpty ||
+                      (controller.production.active != null &&
+                          controller.selectedAltParts.isNotEmpty)) ...[
                     TextButton(
                       key: const Key('batch-clear-cart'),
                       onPressed: controller.busy
                           ? null
                           : controller.exitBatchSelection,
-                      child: const Text('Temizle'),
+                      child: Text(
+                        controller.production.active != null
+                            ? 'Vazgeç'
+                            : 'Temizle',
+                      ),
                     ),
                     const SizedBox(width: 4),
                     FilledButton.icon(
                       key: const Key('batch-submit'),
-                      onPressed: controller.canReviewBatch && !controller.busy
+                      onPressed: controller.production.active != null
+                          ? (controller.selectedAltParts.isNotEmpty &&
+                                    !controller.busy &&
+                                    controller.production.active?.isEnding !=
+                                        true
+                                ? controller.submitSelectedAltParts
+                                : null)
+                          : controller.canReviewBatch && !controller.busy
                           ? controller.submitBatch
                           : null,
                       icon: const Icon(Icons.send, size: 16),
-                      label: const Text('Tümünü Gönder'),
+                      label: Text(
+                        controller.production.active != null
+                            ? '${controller.selectedAltParts.length} Alt Parçayı Gönder'
+                            : 'Tümünü Gönder',
+                      ),
                     ),
                   ],
                 ],
               ),
             ),
-            if (_expanded && cart.isNotEmpty)
+            if (_expanded &&
+                cart.isNotEmpty &&
+                controller.production.active == null)
               Container(
                 constraints: const BoxConstraints(maxHeight: 180),
                 child: ListView.separated(

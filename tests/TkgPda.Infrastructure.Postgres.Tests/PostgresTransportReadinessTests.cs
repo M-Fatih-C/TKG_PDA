@@ -149,7 +149,7 @@ public sealed class PostgresTransportReadinessTests
         Assert.Equal(
             1,
             await ScalarAsync<long>(
-                "SELECT count(*) FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'READINESS_MARKED_READY'",
+                "SELECT count(*) FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'WAREHOUSE_PREPARATION_READY'",
                 ("id", created.Request.Id)));
     }
 

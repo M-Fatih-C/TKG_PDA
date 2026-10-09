@@ -315,7 +315,7 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
     }
 
     [Fact]
-    public async Task Warehouse_operator_is_limited_to_own_bring_empty_requests()
+    public async Task Warehouse_operator_cannot_create_or_cancel_machine_requests()
     {
         await fixture.ResetAsync();
         var identity = await fixture.SeedIdentityAsync(RoleCodes.WarehouseOperator);
@@ -330,16 +330,27 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
                 await fixture.PartForSlotAsync(slot, "P05-ADMREMOVE"), null, "REMOVE_FULL"),
             "p05-warehouse-remove");
         Assert.Equal(HttpStatusCode.Forbidden, remove.StatusCode);
-        Assert.Equal("OPERATION_NOT_ALLOWED_FOR_ROLE", await ApiTestFixture.ErrorCodeAsync(remove));
+        Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(remove));
 
         var bring = await fixture.SendTransportAsync(
             client,
             new CreateTransportHttpRequest(context.MachineId, context.VariantId, context.LayoutId, null, null,
                 await fixture.PartForSlotAsync(slot, "P05-ADMBRING"), null, "BRING_EMPTY"),
             "p05-warehouse-bring");
-        Assert.Equal(HttpStatusCode.Created, bring.StatusCode);
-        var created = await bring.Content.ReadFromJsonAsync<TransportHttpResponse>();
-        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/v1/transport-requests/{created!.Id}/cancel", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, bring.StatusCode);
+        Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(bring));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        var supervisor = await fixture.SeedIdentityAsync(RoleCodes.Supervisor);
+        using var supervisorClient = await fixture.LoginClientAsync(supervisor);
+        var allowed = await fixture.SendTransportAsync(supervisorClient,
+            new CreateTransportHttpRequest(context.MachineId, context.VariantId, context.LayoutId, null, null,
+                await fixture.PartForSlotAsync(slot, "P05-ADMBRING"), null, "BRING_EMPTY"), "p05-supervisor-bring");
+        Assert.Equal(HttpStatusCode.Created, allowed.StatusCode);
+        var created = await allowed.Content.ReadFromJsonAsync<TransportHttpResponse>();
+        var warehouseCancel = await client.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{created!.Id}/cancel", null);
+        Assert.Equal(HttpStatusCode.Forbidden, warehouseCancel.StatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await supervisorClient.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{created.Id}/cancel", null)).StatusCode);
     }
 
     [Fact]

@@ -38,26 +38,22 @@ class MachineListScreen extends StatelessWidget {
             onPressed: controller.busy ? null : controller.enterTasks,
             icon: const Icon(Icons.format_list_numbered),
           ),
-          if (controller.canAccessWarehousePreparation) ...[
+          if (controller.canAccessAnyWarehouse) ...[
             IconButton(
               key: const Key('open-warehouse-home'),
               tooltip: 'Depo',
               onPressed: controller.busy ? null : controller.enterWarehouseHome,
               icon: const Icon(Icons.warehouse_outlined),
             ),
-            IconButton(
-              key: const Key('open-warehouse-preparation'),
-              tooltip: 'Depo Hazırlık',
-              onPressed: controller.busy
-                  ? null
-                  : controller.enterWarehousePreparation,
-              icon: const Icon(Icons.inventory_2_outlined),
-            ),
           ],
-          IconButton(
-            tooltip: 'Yenile',
-            onPressed: controller.busy ? null : controller.reloadMachines,
-            icon: const Icon(Icons.refresh),
+          PopupMenuButton<String>(
+            tooltip: 'Diğer',
+            onSelected: (value) {
+              if (value == 'refresh') controller.reloadMachines();
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'refresh', child: Text('Yenile')),
+            ],
           ),
           TextButton.icon(
             key: const Key('logout-button'),
@@ -73,8 +69,8 @@ class MachineListScreen extends StatelessWidget {
             if (controller.offline) const OfflineBanner(),
             if (controller.problem case final problem?)
               ProblemBanner(problem: problem),
-            if (controller.notice case final notice?)
-              NoticeBanner(message: notice),
+            if (controller.uiNotice case final notice?)
+              if (notice.persistent) NoticeBanner(notice: notice),
             Expanded(
               child: controller.busy && controller.machines.isEmpty
                   ? const Center(child: CircularProgressIndicator())
@@ -110,15 +106,24 @@ class MachineListScreen extends StatelessWidget {
                     )
                   : RefreshIndicator(
                       onRefresh: controller.reloadMachines,
-                      child: ListView.separated(
-                        key: const Key('machine-list'),
-                        padding: const EdgeInsets.all(16),
-                        itemCount: controller.machines.length,
-                        separatorBuilder: (_, _) => const SizedBox(height: 12),
-                        itemBuilder: (context, index) => _MachineCard(
-                          machine: controller.machines[index],
-                          enabled: !controller.busy,
-                          onTap: controller.selectMachine,
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 1080),
+                          child: ListView.separated(
+                            key: const Key('machine-list'),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 20,
+                            ),
+                            itemCount: controller.machines.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 14),
+                            itemBuilder: (context, index) => _MachineCard(
+                              machine: controller.machines[index],
+                              enabled: !controller.busy,
+                              onTap: controller.selectMachine,
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -142,56 +147,169 @@ class _MachineCard extends StatelessWidget {
   final ValueChanged<MachineSummary> onTap;
 
   @override
-  Widget build(BuildContext context) => Card(
-    key: Key('machine-${machine.id}'),
-    child: InkWell(
-      onTap: enabled ? () => onTap(machine) : null,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 30,
-              backgroundColor: machine.permissions.canOperate
-                  ? Theme.of(context).colorScheme.primaryContainer
-                  : Colors.grey.shade300,
-              child: const Icon(Icons.precision_manufacturing, size: 32),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    machine.code,
-                    style: const TextStyle(
-                      fontSize: 21,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  Text(
-                    machine.displayName,
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                  if (!machine.permissions.canOperate) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      'Bu makinede taşıma işlemi yapamazsınız.',
-                      key: Key('machine-unavailable-reason-${machine.id}'),
-                      style: const TextStyle(
-                        color: Color(0xFF9A3412),
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right, size: 36),
-          ],
+  Widget build(BuildContext context) {
+    final canOperate = machine.permissions.canOperate;
+    return Card(
+      key: Key('machine-${machine.id}'),
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: canOperate ? const Color(0xFFCBD5E1) : const Color(0xFFE2E8F0),
+          width: canOperate ? 1.5 : 1,
         ),
       ),
-    ),
-  );
+      child: InkWell(
+        onTap: enabled ? () => onTap(machine) : null,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: canOperate
+                      ? const Color(0xFF0B4F6C)
+                      : const Color(0xFFE2E8F0),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: canOperate
+                      ? [
+                          BoxShadow(
+                            color: const Color(
+                              0xFF0B4F6C,
+                            ).withValues(alpha: 0.25),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ]
+                      : null,
+                ),
+                child: Icon(
+                  Icons.precision_manufacturing_rounded,
+                  size: 34,
+                  color: canOperate ? Colors.white : const Color(0xFF94A3B8),
+                ),
+              ),
+              const SizedBox(width: 20),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        Text(
+                          machine.code,
+                          style: TextStyle(
+                            fontSize: 21,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -0.5,
+                            color: canOperate
+                                ? const Color(0xFF0F172A)
+                                : const Color(0xFF64748B),
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: canOperate
+                                ? const Color(
+                                    0xFF16835D,
+                                  ).withValues(alpha: 0.12)
+                                : const Color(
+                                    0xFFC26D16,
+                                  ).withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: canOperate
+                                  ? const Color(
+                                      0xFF16835D,
+                                    ).withValues(alpha: 0.3)
+                                  : const Color(
+                                      0xFFC26D16,
+                                    ).withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Text(
+                            canOperate ? 'Üretime Hazır' : 'Yetki Gerekli',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: canOperate
+                                  ? const Color(0xFF16835D)
+                                  : const Color(0xFFC26D16),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      machine.displayName,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: Color(0xFF475569),
+                      ),
+                    ),
+                    if (!canOperate) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.info_outline,
+                            size: 16,
+                            color: Color(0xFF9A3412),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Bu makinede taşıma işlemi yapamazsınız.',
+                              key: Key(
+                                'machine-unavailable-reason-${machine.id}',
+                              ),
+                              style: const TextStyle(
+                                color: Color(0xFF9A3412),
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: canOperate
+                      ? const Color(0xFFF1F5F9)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  size: 18,
+                  color: canOperate
+                      ? const Color(0xFF0B4F6C)
+                      : const Color(0xFFCBD5E1),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

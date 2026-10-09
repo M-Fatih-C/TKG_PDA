@@ -16,7 +16,8 @@ public sealed record RdsOptions(
     string? FullContentValue = null,
     bool AllowInsecureRemoteHttp = false,
     int WorkerIntervalSeconds = 3,
-    int WorkSiteFreshnessSeconds = 300)
+    int WorkSiteFreshnessSeconds = RdsPhysicalAvailabilityPolicy.DefaultFreshnessSeconds,
+    int AlarmObservationIntervalSeconds = 10)
 {
     public static RdsOptions FromConfiguration(IConfiguration configuration)
     {
@@ -32,7 +33,8 @@ public sealed record RdsOptions(
             configuration["Rds:FullContentValue"],
             configuration.GetValue("Rds:AllowInsecureRemoteHttp", false),
             configuration.GetValue("Rds:WorkerIntervalSeconds", 3),
-            configuration.GetValue("Rds:WorkSiteFreshnessSeconds", 300));
+            configuration.GetValue("Rds:WorkSiteFreshnessSeconds", RdsPhysicalAvailabilityPolicy.DefaultFreshnessSeconds),
+            configuration.GetValue("Rds:AlarmObservationIntervalSeconds", 10));
         options.Validate();
         return options;
     }
@@ -52,6 +54,11 @@ public sealed record RdsOptions(
         if (WorkerIntervalSeconds is < 1 or > 300 || WorkSiteFreshnessSeconds is < 10 or > 86400)
         {
             throw new InvalidOperationException("RDS worker interval/freshness settings are outside the supported bounds.");
+        }
+
+        if (AlarmObservationIntervalSeconds is < 5 or > 300)
+        {
+            throw new InvalidOperationException("Rds:AlarmObservationIntervalSeconds must be between 5 and 300.");
         }
 
         if (!Enabled)

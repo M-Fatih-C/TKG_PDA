@@ -90,18 +90,11 @@ employee_no:
 - globally nullable
 - normalized unique when present
 
-# Current roadmap
-Completed:
-- Phase 10A
-- WP-01A backend employee identity
+# Current repository state
+Implemented on the current line: employee identity, part-first operation, alt-part demand, warehouse preparation, finished-container flow, temporary finished-goods areas, self-hosted delivery notifications, transport evidence, and production-end priority configuration.
 
-Next:
-- WP-01B Flutter sicil login
-- Part-first flow
-- Compatible variant resolver
-- TransportBatch
-- Warehouse readiness
-- Scheduler
-- Empty container buffer
-- Robot alarms
-- Production commissioning
+Still unresolved outside this repository:
+- production-end priority numbers and the exact end-production task policy
+- real names for the temporary finished-goods areas
+- barcode hardware and format
+- M4 API documentation

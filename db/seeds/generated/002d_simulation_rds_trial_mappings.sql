@@ -97,11 +97,9 @@ BEGIN
         ('c1000000-0000-0000-0000-000000000008', v_nav_a_id, 'PP80', 'PARK', 'PARK', 1, 0, 0, 0, null, null, 0, now(), '{}'),
         ('c1000000-0000-0000-0000-000000000009', v_nav_a_id, 'AP84', 'LINE', 'FEED', 1, 0, 0, 0, null, null, 0, now(), '{}'),
         ('c1000000-0000-0000-0000-00000000000a', v_nav_a_id, 'AP85', 'LINE', 'FEED', 1, 0, 0, 0, null, null, 0, now(), '{}')
-    ON CONFLICT (id) DO UPDATE SET 
-        rds_site_id = EXCLUDED.rds_site_id,
-        area = EXCLUDED.area,
-        group_name = EXCLUDED.group_name,
-        last_sync_at = now();
+    -- Static seeds must not refresh or overwrite already observed WorkSite evidence.
+    -- In particular, restarting the stack is not a successful live synchronization.
+    ON CONFLICT (id) DO NOTHING;
 
     -- 4. Ensure BUFFER-001 (EMPTY_STORAGE) and DROP-001 (DROP) slots exist on Variant 1 and Variant 2 layouts
     INSERT INTO master.layout_slots (
@@ -117,27 +115,22 @@ BEGIN
         display_name = EXCLUDED.display_name,
         slot_role = EXCLUDED.slot_role;
 
-    -- 5. Runtime state for buffer and drop slots
+    -- 5. Runtime state for buffer and drop slots (self-heal / insert-only)
     INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state, row_version, updated_at)
     VALUES
         ('c2000000-0000-0000-0000-000000000001', 'OCCUPIED', 'EMPTY', 0, now()),
         ('c2000000-0000-0000-0000-000000000002', 'VACANT', 'UNKNOWN', 0, now()),
         ('c2000000-0000-0000-0000-000000000003', 'OCCUPIED', 'EMPTY', 0, now()),
         ('c2000000-0000-0000-0000-000000000004', 'VACANT', 'UNKNOWN', 0, now())
-    ON CONFLICT (layout_slot_id) DO UPDATE SET
-        occupancy_state = EXCLUDED.occupancy_state,
-        load_state = EXCLUDED.load_state;
+    ON CONFLICT (layout_slot_id) DO NOTHING;
 
-    -- Insert/Reset all layout slots for machine SH-01-A to VACANT / UNKNOWN
+    -- Ensure all layout slots for machine SH-01-A have runtime state row if missing (self-heal / insert-only)
     INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state, row_version, updated_at)
     SELECT id, 'VACANT', 'UNKNOWN', 0, now()
     FROM master.layout_slots
     WHERE layout_id IN (v_layout_1_id, v_layout_2_id)
       AND slot_role NOT IN ('EMPTY_STORAGE', 'DROP')
-    ON CONFLICT (layout_slot_id) DO UPDATE SET
-        occupancy_state = 'VACANT',
-        load_state = 'UNKNOWN',
-        updated_at = now();
+    ON CONFLICT (layout_slot_id) DO NOTHING;
 
     -- 6. Map Layout Slots to RDS WorkSites
     INSERT INTO integration.layout_slot_rds_mapping (layout_slot_id, rds_worksite_id)
@@ -167,13 +160,13 @@ BEGIN
     INSERT INTO master.task_templates (id, variant_id, task_type_id, rds_task_label, priority, config_json, is_active)
     VALUES
         -- Variant 1 templates
-        ('c3000000-0000-0000-0000-000000000001', v_variant_1_id, v_task_bring_empty, 'TKG_BRING_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
-        ('c3000000-0000-0000-0000-000000000002', v_variant_1_id, v_task_remove_full, 'TKG_REMOVE_FULL', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
-        ('c3000000-0000-0000-0000-000000000003', v_variant_1_id, v_task_remove_empty, 'TKG_REMOVE_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000001', v_variant_1_id, v_task_bring_empty, 'TKG_BRING_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000002', v_variant_1_id, v_task_remove_full, 'TKG_REMOVE_FULL', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000003', v_variant_1_id, v_task_remove_empty, 'TKG_REMOVE_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
         -- Variant 2 templates
-        ('c3000000-0000-0000-0000-000000000004', v_variant_2_id, v_task_bring_empty, 'TKG_BRING_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
-        ('c3000000-0000-0000-0000-000000000005', v_variant_2_id, v_task_remove_full, 'TKG_REMOVE_FULL', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true),
-        ('c3000000-0000-0000-0000-000000000006', v_variant_2_id, v_task_remove_empty, 'TKG_REMOVE_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER"}'::jsonb, true)
+        ('c3000000-0000-0000-0000-000000000004', v_variant_2_id, v_task_bring_empty, 'TKG_BRING_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000005', v_variant_2_id, v_task_remove_full, 'TKG_REMOVE_FULL', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true),
+        ('c3000000-0000-0000-0000-000000000006', v_variant_2_id, v_task_remove_empty, 'TKG_REMOVE_EMPTY', 1, '{"executionMode":"RDSCORE_NATIVE_ORDER","templateRegistry":"tkg_variant_task_templates_v1"}'::jsonb, true)
     ON CONFLICT (id) DO UPDATE SET
         rds_task_label = EXCLUDED.rds_task_label,
         config_json = EXCLUDED.config_json,
@@ -190,6 +183,8 @@ BEGIN
         active_variant_id = EXCLUDED.active_variant_id,
         active_layout_id = EXCLUDED.active_layout_id,
         active_navigation_id = EXCLUDED.active_navigation_id,
-        updated_at = now();
+        updated_at = now()
+    WHERE ops.machine_runtime_state.active_variant_id IS NULL
+       OR ops.machine_runtime_state.active_layout_id IS NULL;
 
 END $$;

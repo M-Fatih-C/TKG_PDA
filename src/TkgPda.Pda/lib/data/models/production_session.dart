@@ -7,12 +7,15 @@ class ProductionSession {
     required this.mainPartId,
     required this.startedAt,
     this.endedAt,
+    this.status = 'ACTIVE',
   });
 
   final String id, machineId, variantId, productGroupId, mainPartId;
   final DateTime startedAt;
   final DateTime? endedAt;
+  final String status;
   bool get isActive => endedAt == null;
+  bool get isEnding => status == 'ENDING';
 
   factory ProductionSession.fromJson(Map<String, dynamic> json) {
     String id(String field) {
@@ -27,9 +30,14 @@ class ProductionSession {
     final end = json['endedAt'] == null
         ? null
         : DateTime.tryParse(json['endedAt'].toString());
+    final status = json['status'] as String?;
+    final open = end == null;
+    final acceptable = status == 'ENDING'
+        ? open
+        : status == (open ? 'ACTIVE' : 'ENDED');
     if (start == null ||
         (json['endedAt'] != null && end == null) ||
-        (json['status'] != (end == null ? 'ACTIVE' : 'ENDED')) ||
+        !acceptable ||
         (end != null && end.isBefore(start))) {
       throw const FormatException('Invalid production state or timestamp');
     }
@@ -41,6 +49,7 @@ class ProductionSession {
       mainPartId: id('mainPartId'),
       startedAt: start,
       endedAt: end,
+      status: status!,
     );
   }
 }

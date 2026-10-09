@@ -16,11 +16,20 @@ final testUser = AuthenticatedUser(
   roles: const ['LINE_OPERATOR'],
 );
 
+final testSupervisor = AuthenticatedUser(
+  id: '10000000-0000-0000-0000-000000000002',
+  username: 'supervisor-user',
+  fullName: 'Supervisor User',
+  employeeNo: null,
+  roles: const ['SUPERVISOR'],
+);
+
 final testDevice = PdaDevice(
   id: '20000000-0000-0000-0000-000000000001',
   code: testDeviceCode,
   name: 'Test PDA',
   type: 'PDA',
+  machineId: '30000000-0000-0000-0000-000000000001',
 );
 
 final testMachine = MachineSummary(
@@ -48,6 +57,7 @@ const testAmbiguousMainPartId = '70000000-0000-0000-0000-000000000005';
 OperationalContext testContext({
   List<ActiveTransportRequest> activeRequests = const [],
   String activeVariantId = testVariantV1Id,
+  List<Map<String, Object?>> additionalParts = const [],
 }) {
   final isV2 = activeVariantId == testVariantV2Id;
   return OperationalContext.fromJson({
@@ -93,8 +103,8 @@ OperationalContext testContext({
             'id': '80000000-0000-0000-0000-000000000001',
             'partId': testAltPartId,
             'partCode': '715A2BN400-50',
-            'containerTypeId': null,
-            'containerCode': null,
+            'containerTypeId': '70000000-0000-0000-0000-000000000001',
+            'containerCode': 'KASA',
             'relationType': 'ALT_PART',
             'lotQuantity': null,
             'displayOrder': 1,
@@ -109,6 +119,7 @@ OperationalContext testContext({
             'lotQuantity': null,
             'displayOrder': 2,
           },
+          ...additionalParts,
         ],
       },
     ],
@@ -129,6 +140,13 @@ OperationalContext testContext({
             'containerTypeId': request.containerTypeId,
             'priority': request.priority,
             'createdAt': request.createdAt.toIso8601String(),
+            'partCode': request.partCode,
+            'partDescription': request.partDescription,
+            'relationType': request.relationType,
+            'readinessState': request.readinessState,
+            'queuePosition': request.queuePosition,
+            'ageSeconds': request.ageSeconds,
+            'executionElapsedSeconds': request.executionElapsedSeconds,
             'canCancel': request.canCancel,
             'cancelDisabledCode': request.cancelDisabledCode,
             'cancelDisabledMessage': request.cancelDisabledMessage,
@@ -326,6 +344,8 @@ class FakePdaRepository implements PdaDataSource {
   Completer<ProductionSession>? productionStartCompleter;
   Completer<ProductionSession>? productionEndCompleter;
   final List<String> productionEndIds = [];
+  final List<String> productionEndKeys = [];
+  ProductionSession? productionEndSession;
   Completer<ProductionSession?>? productionReadCompleter;
   int productionStartCount = 0, productionEndCount = 0;
   final List<String> productionStartKeys = [];
@@ -362,12 +382,18 @@ class FakePdaRepository implements PdaDataSource {
   Future<ProductionSession> endProduction(
     String machineId,
     String sessionId,
+    String idempotencyKey,
   ) async {
     productionEndCount++;
     productionEndIds.add(sessionId);
+    productionEndKeys.add(idempotencyKey);
     if (productionEndError case final error?) throw error;
     if (productionEndCompleter case final completer?) return completer.future;
     final current = productionValue!;
+    if (productionEndSession case final ending?) {
+      productionValue = ending;
+      return ending;
+    }
     productionValue = null;
     return ProductionSession(
       id: sessionId,
@@ -377,10 +403,12 @@ class FakePdaRepository implements PdaDataSource {
       mainPartId: current.mainPartId,
       startedAt: current.startedAt,
       endedAt: current.startedAt.add(const Duration(hours: 1)),
+      status: 'ENDED',
     );
   }
 
   AuthenticatedUser loginUser = testUser;
+  PdaDevice loginDevice = testDevice;
   List<MachineSummary> machineValues = [testMachine];
   OperationalContext contextValue = testContext();
   ApiProblem? loginProblem;
@@ -396,6 +424,8 @@ class FakePdaRepository implements PdaDataSource {
   Object? batchCreateError;
   Completer<TransportBatchResult>? batchCreateCompleter;
   int cancelCount = 0;
+  String? lastCancelMachineId;
+  String? lastCancelRequestId;
   List<WarehousePreparationRequest> warehouseRequestsValue = const [];
   Object? warehouseRequestsError;
   int warehouseRequestsCount = 0;
@@ -451,6 +481,7 @@ class FakePdaRepository implements PdaDataSource {
   ];
   int containerActionCount = 0;
   int containerActionBatchCount = 0;
+  ActiveTransportRequest? containerActionActiveRequest;
   int removeAllCount = 0;
   Object? removeAllError;
   Completer<RemoveAllResult>? removeAllCompleter;
@@ -474,8 +505,41 @@ class FakePdaRepository implements PdaDataSource {
       accessToken: 'runtime-only-test-token',
       expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 10)),
       user: loginUser,
-      device: testDevice,
+      device: loginDevice,
     );
+  }
+
+  int heartbeatCount = 0;
+  int logoutCount = 0;
+  Object? heartbeatError;
+  Object? logoutError;
+
+  @override
+  Future<void> heartbeatSession() async {
+    heartbeatCount++;
+    if (heartbeatError case final error?) throw error;
+  }
+
+  @override
+  Future<void> logout() async {
+    logoutCount++;
+    if (logoutError case final error?) throw error;
+  }
+
+  int notificationRegistrationCount = 0;
+  Object? notificationRegistrationError;
+  DeviceNotificationRegistration notificationRegistration =
+      const DeviceNotificationRegistration(
+        registrationId: 'reg-1',
+        credential: 'test-credential',
+        pollIntervalSeconds: 5,
+      );
+
+  @override
+  Future<DeviceNotificationRegistration> registerDeviceNotification() async {
+    notificationRegistrationCount++;
+    if (notificationRegistrationError case final error?) throw error;
+    return notificationRegistration;
   }
 
   @override
@@ -485,8 +549,13 @@ class FakePdaRepository implements PdaDataSource {
     return testUser;
   }
 
+  Object? machinesError;
+
   @override
-  Future<List<MachineSummary>> machines() async => machineValues;
+  Future<List<MachineSummary>> machines() async {
+    if (machinesError case final error?) throw error;
+    return machineValues;
+  }
 
   @override
   Future<OperationalContext> operationalContext(String machineId) async {
@@ -586,7 +655,61 @@ class FakePdaRepository implements PdaDataSource {
     required String layoutId,
     required String productGroupId,
     required String partId,
-  }) async => containerPositionsValue;
+  }) async {
+    lastContainerPositionPartId = partId;
+    return containerPositionsValue;
+  }
+
+  String? lastContainerPositionPartId;
+
+  int partDemandCount = 0;
+  int partDemandBatchCount = 0;
+  List<String> lastPartDemandIds = const [];
+  String? lastPartDemandKey;
+  Object? partDemandError;
+
+  @override
+  Future<PartDemandResult> createPartDemand({
+    required String machineId,
+    required String partId,
+    required String idempotencyKey,
+  }) async {
+    partDemandCount++;
+    lastPartDemandIds = [partId];
+    lastPartDemandKey = idempotencyKey;
+    if (partDemandError case final error?) throw error;
+    return const PartDemandResult(
+      requestNo: 1,
+      taskType: 'BRING_FULL',
+      status: 'QUEUED',
+      readiness: 'WAITING_PREPARATION',
+      idempotentReplay: false,
+    );
+  }
+
+  @override
+  Future<PartDemandBatchResult> createPartDemandBatch({
+    required String machineId,
+    required List<String> partIds,
+    required String idempotencyKey,
+  }) async {
+    partDemandBatchCount++;
+    lastPartDemandIds = partIds;
+    lastPartDemandKey = idempotencyKey;
+    return PartDemandBatchResult(
+      idempotentReplay: false,
+      items: [
+        for (var index = 0; index < partIds.length; index++)
+          PartDemandResult(
+            requestNo: index + 1,
+            taskType: 'BRING_FULL',
+            status: 'QUEUED',
+            readiness: 'WAITING_PREPARATION',
+            idempotentReplay: false,
+          ),
+      ],
+    );
+  }
 
   @override
   Future<ContainerActionResult> createContainerAction({
@@ -646,7 +769,9 @@ class FakePdaRepository implements PdaDataSource {
         etaState: 'UNAVAILABLE',
       ),
     ];
-    contextValue = testContext(activeRequests: [testActiveRequest]);
+    contextValue = testContext(
+      activeRequests: [containerActionActiveRequest ?? testActiveRequest],
+    );
     return ContainerActionResult(
       positionNumber: positionNumber,
       action: action,
@@ -753,8 +878,13 @@ class FakePdaRepository implements PdaDataSource {
       );
 
   @override
-  Future<TransportResult> cancel(String requestId) async {
+  Future<TransportResult> cancel({
+    required String machineId,
+    required String requestId,
+  }) async {
     cancelCount++;
+    lastCancelMachineId = machineId;
+    lastCancelRequestId = requestId;
     contextValue = testContext();
     return const TransportResult(
       id: '90000000-0000-0000-0000-000000000001',
@@ -891,6 +1021,12 @@ class FakePdaRepository implements PdaDataSource {
     if (removeStoreUnitError case final error?) throw error;
     return fakeStoreLocation(code: 'STORE-1');
   }
+
+  @override
+  Future<StoreLocation> recordEmptyContainer({
+    required String locationId,
+    required String idempotencyKey,
+  }) async => fakeStoreLocation(code: 'STORE-1');
 
   @override
   Future<StoreLocation> clearStoreLocation(String locationId) async {
@@ -1246,6 +1382,7 @@ StoreUnit fakeStoreUnit({
   int? requestNo = 42,
   DateTime? deliveredAt,
   int rowVersion = 0,
+  String loadState = 'FULL',
 }) => StoreUnit(
   id: id,
   transportRequestId: 'request-1',
@@ -1258,6 +1395,7 @@ StoreUnit fakeStoreUnit({
   machineCode: machineCode,
   deliveredAt: deliveredAt,
   rowVersion: rowVersion,
+  loadState: loadState,
 );
 
 StoreLocation fakeStoreLocation({

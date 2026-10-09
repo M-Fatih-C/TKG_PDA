@@ -77,6 +77,20 @@ public sealed class TransportWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Event_context_is_forwarded_to_the_store_unchanged()
+    {
+        var store = new FakeStore();
+        var service = new TransportWorkflowService(store);
+        var eventContext = OperationalEventContext.ForUser(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+
+        await service.CreateAsync(Command(TransportTaskType.BringEmpty), eventContext);
+        await service.CancelAsync(Guid.NewGuid(), null, eventContext);
+
+        Assert.Same(eventContext, store.CreateContext);
+        Assert.Same(eventContext, store.CancelContext);
+    }
+
+    [Fact]
     public async Task Empty_cancellation_id_is_rejected()
     {
         var service = new TransportWorkflowService(new FakeStore());
@@ -137,16 +151,20 @@ public sealed class TransportWorkflowServiceTests
                 Guid.NewGuid(), 100, TransportReadinessState.NotRequired, null),
             false);
 
-        public Task<CreateTransportResult> CreateAndQueueAsync(CreateTransportRequest request, CancellationToken cancellationToken = default)
+        public OperationalEventContext? CreateContext { get; private set; }
+        public OperationalEventContext? CancelContext { get; private set; }
+
+        public Task<CreateTransportResult> CreateAndQueueAsync(CreateTransportRequest request, OperationalEventContext? eventContext, CancellationToken cancellationToken = default)
         {
             CreatedCommand = request;
+            CreateContext = eventContext;
             return Task.FromResult(CreateResult);
         }
 
-        public Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, CancellationToken cancellationToken = default) =>
+        public Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
             Task.FromResult(CreateResult.Request with { Id = requestId, ReadinessState = TransportReadinessState.Ready, ReadyAt = DateTimeOffset.UtcNow });
 
-        public Task<TransportBatchResult> CreateBatchAndQueueAsync(CreateTransportBatchRequest request, CancellationToken cancellationToken = default) =>
+        public Task<TransportBatchResult> CreateBatchAndQueueAsync(CreateTransportBatchRequest request, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
             Task.FromResult(new TransportBatchResult(
                 Guid.NewGuid(),
                 request.IdempotencyKey,
@@ -154,16 +172,17 @@ public sealed class TransportWorkflowServiceTests
                 request.Items.Select(_ => CreateResult.Request).ToArray(),
                 false));
 
-        public Task<CancelTransportResult> CancelAsync(Guid requestId, Guid? actorUserId, CancellationToken cancellationToken = default)
+        public Task<CancelTransportResult> CancelAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default)
         {
             CancelledRequestId = requestId;
+            CancelContext = eventContext;
             return Task.FromResult(new CancelTransportResult(CreateResult.Request with { Id = requestId, Status = TransportRequestStatus.Cancelled }, false));
         }
 
-        public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(Guid requestId, TransportRequestStatus nextStatus, CancellationToken cancellationToken = default) =>
+        public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(Guid requestId, TransportRequestStatus nextStatus, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
             Task.FromResult(CreateResult.Request with { Id = requestId, Status = nextStatus });
 
-        public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(Guid requestId, ExecutionOutcome outcome, CancellationToken cancellationToken = default) =>
+        public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(Guid requestId, ExecutionOutcome outcome, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
             Task.FromResult(CreateResult.Request with { Id = requestId, Status = outcome.Status });
 
         public Task<LoadStateUpdateResult> UpdateLoadStateAsync(LoadStateUpdateRequest request, CancellationToken cancellationToken = default) =>

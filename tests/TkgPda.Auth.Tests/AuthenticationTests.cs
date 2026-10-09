@@ -62,18 +62,32 @@ public sealed class JwtTokenTests
     {
         var user = User();
         var device = Device();
-        var token = new JwtTokenService(Options, new FixedTimeProvider(Now)).Issue(user, device);
+        var sessionId = Guid.NewGuid();
+        var token = new JwtTokenService(Options, new FixedTimeProvider(Now)).Issue(user, device, sessionId);
         var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token.Token);
 
         Assert.Equal(user.Id.ToString(), jwt.Subject);
         Assert.Equal(device.Id.ToString(), jwt.Claims.Single(claim => claim.Type == ApiClaimNames.DeviceId).Value);
         Assert.Equal(device.Code, jwt.Claims.Single(claim => claim.Type == ApiClaimNames.DeviceCode).Value);
+        Assert.Equal(sessionId.ToString(), jwt.Claims.Single(claim => claim.Type == ApiClaimNames.SessionId).Value);
         Assert.Equal(ClientTypes.DeviceBound, jwt.Claims.Single(claim => claim.Type == ApiClaimNames.ClientType).Value);
         Assert.Equal(user.Roles.Order(), jwt.Claims.Where(claim => claim.Type == ClaimTypes.Role).Select(claim => claim.Value).Order());
     }
 
     [Fact]
-    public void Admin_web_token_has_explicit_client_type_without_device_claims()
+    public void Token_contains_session_id_when_supplied()
+    {
+        var user = User();
+        var device = Device();
+        var sessionId = Guid.NewGuid();
+        var token = new JwtTokenService(Options, new FixedTimeProvider(Now)).Issue(user, device, sessionId);
+        var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token.Token);
+
+        Assert.Equal(sessionId.ToString(), jwt.Claims.Single(claim => claim.Type == ApiClaimNames.SessionId).Value);
+    }
+
+    [Fact]
+    public void Admin_web_token_has_explicit_client_type_without_device_or_session_claims()
     {
         var token = new JwtTokenService(Options, new FixedTimeProvider(Now)).IssueAdmin(AdminUser());
         var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token.Token);
@@ -81,6 +95,7 @@ public sealed class JwtTokenTests
         Assert.Equal(ClientTypes.AdminWeb, jwt.Claims.Single(claim => claim.Type == ApiClaimNames.ClientType).Value);
         Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ApiClaimNames.DeviceId);
         Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ApiClaimNames.DeviceCode);
+        Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ApiClaimNames.SessionId);
         Assert.Contains(jwt.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == RoleCodes.Admin);
     }
 
@@ -107,14 +122,15 @@ public sealed class JwtTokenTests
     [Fact]
     public void Token_expiry_is_exactly_configured_lifetime()
     {
-        var token = new JwtTokenService(Options, new FixedTimeProvider(Now)).Issue(User(), Device());
+        var token = new JwtTokenService(Options, new FixedTimeProvider(Now)).Issue(User(), Device(), Guid.NewGuid());
         Assert.Equal(Now.AddMinutes(15), token.ExpiresAt);
     }
 
     [Fact]
     public void Token_validates_with_expected_issuer_audience_and_key()
     {
-        var token = new JwtTokenService(Options, TimeProvider.System).Issue(User(), Device());
+        var sessionId = Guid.NewGuid();
+        var token = new JwtTokenService(Options, TimeProvider.System).Issue(User(), Device(), sessionId);
         var handler = new JwtSecurityTokenHandler { MapInboundClaims = false };
         var principal = handler.ValidateToken(
             token.Token,
@@ -122,13 +138,14 @@ public sealed class JwtTokenTests
             out _);
 
         Assert.Equal("operator", principal.Identity?.Name);
+        Assert.Equal(sessionId.ToString(), principal.FindFirstValue(ApiClaimNames.SessionId));
         Assert.True(principal.IsInRole(RoleCodes.LineOperator));
     }
 
     [Fact]
     public void Wrong_audience_is_rejected()
     {
-        var token = new JwtTokenService(Options, TimeProvider.System).Issue(User(), Device());
+        var token = new JwtTokenService(Options, TimeProvider.System).Issue(User(), Device(), Guid.NewGuid());
         var wrongOptions = Options with { Audience = "wrong-audience" };
 
         Assert.Throws<SecurityTokenInvalidAudienceException>(() =>

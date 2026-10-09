@@ -53,7 +53,8 @@ public sealed record WarehouseDemandRecord(
     string RequestedLoad,
     DateTimeOffset RequestedAt,
     Guid? ClaimedByAreaId,
-    int? ClaimedByAreaNumber);
+    int? ClaimedByAreaNumber,
+    string? PartDescription = null);
 
 /// <summary>
 /// TransportRequestId is null only for empty stock staged ahead of demand.
@@ -67,7 +68,8 @@ public sealed record PlacePalletCommand(
     Guid? TransportRequestId,
     Guid ActorUserId,
     Guid DeviceId,
-    string IdempotencyKey);
+    string IdempotencyKey,
+    Guid? CorrelationId = null);
 
 /// <summary>
 /// ExpectedRowVersion is the version the tablet was showing. A screen left open
@@ -78,7 +80,8 @@ public sealed record MarkPalletReadyCommand(
     Guid PalletId,
     long ExpectedRowVersion,
     Guid ActorUserId,
-    Guid DeviceId);
+    Guid DeviceId,
+    Guid? CorrelationId = null);
 
 /// <summary>
 /// Reason is COLLECTED when the operator confirms the robot physically took the

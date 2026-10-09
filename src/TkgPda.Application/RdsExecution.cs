@@ -43,7 +43,8 @@ public sealed record RdsDispatchEndpoint(
     int? Disabled,
     int? SyncFailed,
     DateTimeOffset? LastSyncAt,
-    bool IsMapped);
+    bool IsMapped,
+    string? BusinessOccupancy = null);
 
 public sealed record RdsDispatchContext(
     TransportRequestSnapshot Request,
@@ -108,6 +109,7 @@ public interface IRdsExecutionLease : IAsyncDisposable;
 
 public interface IRdsExecutionStore
 {
+    Task<string?> ReadPhysicalDispatchBlockAsync(Guid requestId, CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
     Task<IReadOnlyList<Guid>> ListQueuedRequestIdsAsync(int limit, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RdsTaskProjection>> ListActiveTasksAsync(int limit, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<Guid>> ListPendingWorkSiteRefreshRequestIdsAsync(int limit, CancellationToken cancellationToken = default);
@@ -143,6 +145,13 @@ public interface IRdsExecutionStore
     Task<RdsNavigationProfileSummary?> GetNavigationProfileSummaryAsync(Guid? profileId, Guid variantId, Guid machineId, CancellationToken cancellationToken = default);
     Task<bool> HasUnreleasedMapSwitchLockAsync(Guid requestId, string vehicle, CancellationToken cancellationToken = default);
     Task<RdsMapSwitchLockSnapshot?> GetUnreleasedMapSwitchLockAsync(Guid requestId, string vehicle, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Extra fail-closed gate for a customer commissioning profile.
+    /// Null means this request is outside that registry, or its chain is complete.
+    /// </summary>
+    Task<string?> ReadRegistryDispatchBlockAsync(Guid requestId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<string?>(null);
 }
 
 public sealed record RdsValidateTransportRequest(
@@ -436,6 +445,13 @@ public sealed class RdsExecutionCoordinator(
             return new(requestId, requestId.ToString(), false, false, "READINESS_WAITING_PREPARATION", "The request is waiting for warehouse preparation.");
         }
 
+        var registryBlock = await store.ReadRegistryDispatchBlockAsync(requestId, cancellationToken);
+        if (!string.IsNullOrEmpty(registryBlock))
+        {
+            await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_BLOCKED", registryBlock, "The customer commissioning chain for this operation is incomplete.", correlationId, cancellationToken);
+            return new(requestId, requestId.ToString(), false, false, registryBlock, "The customer commissioning chain for this operation is incomplete.");
+        }
+
         // BRING_FULL takes material from a shared warehouse preparation area,
         // which no layout owns, so its source is never a layout slot. It is
         // resolved from the pallet standing in an area for this request, and
@@ -457,6 +473,37 @@ public sealed class RdsExecutionCoordinator(
         {
             await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_BLOCKED", "EXECUTION_MODE_UNRESOLVED", "The task template configuration does not define an explicit executionMode.", correlationId, cancellationToken);
             return new(requestId, requestId.ToString(), false, false, "EXECUTION_MODE_UNRESOLVED", "The task template configuration does not define an explicit executionMode.");
+        }
+
+        if (await store.ReadPhysicalDispatchBlockAsync(requestId, cancellationToken) is { } physicalBlock)
+        {
+            await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_BLOCKED", physicalBlock,
+                "Reserved destination no longer has consistent physical availability.", correlationId, cancellationToken);
+            return new(requestId, requestId.ToString(), false, false, physicalBlock, "Fiziksel hedef alanını ve RDS senkronunu doğrulayın.");
+        }
+        var physicalPolicy = new RdsPhysicalAvailabilityPolicy(settings.WorkSiteFreshness, timeProvider);
+        foreach (var endpoint in new[] { context.Source, context.Destination })
+        {
+            if (endpoint.BusinessOccupancy is null) continue;
+            ValidateEndpoint(endpoint, "mapped slot");
+            var evidence = new RdsPhysicalEvidence(endpoint.Type, endpoint.Filled, endpoint.Locked,
+                endpoint.Disabled, endpoint.SyncFailed, endpoint.LastSyncAt);
+            if (RdsPhysicalAvailabilityPolicy.ErrorCode(physicalPolicy.State(evidence)) is { } stateCode)
+                throw new RdsExecutionException(stateCode, "Mapped WorkSite health must be known before dispatch.");
+            var consistency = physicalPolicy.Consistency(endpoint.BusinessOccupancy, evidence);
+            if (consistency != "CONSISTENT") throw new RdsExecutionException(
+                consistency == "PHYSICAL_STATE_MISMATCH" ? "RDS_WORKSITE_OCCUPANCY_CONFLICT" : "RDS_WORKSITE_STATE_UNKNOWN",
+                "TKG slot occupancy and physical WorkSite evidence must agree before dispatch.");
+        }
+        if (context.Request.DestinationBusinessCode is not null)
+        {
+            ValidateEndpoint(context.Destination, "shared destination");
+            var destination = context.Destination;
+            var state = physicalPolicy.State(new(destination.Type, destination.Filled, destination.Locked,
+                destination.Disabled, destination.SyncFailed, destination.LastSyncAt));
+            if (state != "AVAILABLE") throw new RdsExecutionException(
+                RdsPhysicalAvailabilityPolicy.ErrorCode(state) ?? "RDS_WORKSITE_OCCUPANCY_CONFLICT",
+                "The reserved shared destination is no longer physically available.");
         }
 
         var isNative = string.Equals(executionModeStr, "RDSCORE_NATIVE_ORDER", StringComparison.OrdinalIgnoreCase);
@@ -517,7 +564,7 @@ public sealed class RdsExecutionCoordinator(
         }
 
         await store.RecordTaskStatusAsync(requestId, exact[0], query.ReadAt, cancellationToken);
-        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, cancellationToken);
+        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, OperationalEventContext.System(correlationId), cancellationToken);
         await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_CONFIRMED", "RDS_TASK_OBSERVED", "RDS task existence was proven by taskRecordId.", correlationId, cancellationToken);
         return new(requestId, taskRecordId, true, createResult?.IdempotentReplay ?? true, "RDS_TASK_OBSERVED", "RDS task existence was proven by taskRecordId.");
     }
@@ -550,7 +597,7 @@ public sealed class RdsExecutionCoordinator(
                         projection.TaskRecordId,
                         details.Raw,
                         details.State.Raw);
-                    await ApplyTaskStatusAsync(projection, task, timeProvider.GetUtcNow(), "NATIVE_RECONCILIATION", cancellationToken);
+                    await ApplyTaskStatusAsync(projection, task, timeProvider.GetUtcNow(), "NATIVE_RECONCILIATION", cancellationToken, correlationId);
                     if (IsTerminalRdsStatus(status))
                     {
                         await RefreshRelevantWorkSitesAsync(projection.TransportRequestId, correlationId, cancellationToken);
@@ -562,7 +609,7 @@ public sealed class RdsExecutionCoordinator(
                     var exact = query.Data.Tasks.Where(task => string.Equals(task.TaskRecordId, projection.TaskRecordId, StringComparison.Ordinal)).ToArray();
                     if (exact.Length == 1)
                     {
-                        await ApplyTaskStatusAsync(projection, exact[0], query.ReadAt, "RECONCILIATION", cancellationToken);
+                        await ApplyTaskStatusAsync(projection, exact[0], query.ReadAt, "RECONCILIATION", cancellationToken, correlationId);
                         if (IsTerminalRdsStatus(exact[0].Status))
                         {
                             await RefreshRelevantWorkSitesAsync(projection.TransportRequestId, correlationId, cancellationToken);
@@ -1188,13 +1235,21 @@ public sealed class RdsExecutionCoordinator(
     private const int MinRdsPriority = 0;
     private const int MaxRdsPriority = 1000;
 
-    public async Task<RdsCancellationResult> CancelAsync(Guid requestId, Guid? actorUserId, Guid correlationId, CancellationToken cancellationToken = default)
+    public Task<RdsCancellationResult> CancelAsync(Guid requestId, Guid? actorUserId, Guid correlationId, CancellationToken cancellationToken = default) =>
+        CancelAsync(requestId, actorUserId, correlationId, null, cancellationToken);
+
+    public async Task<RdsCancellationResult> CancelAsync(
+        Guid requestId,
+        Guid? actorUserId,
+        Guid correlationId,
+        OperationalEventContext? eventContext,
+        CancellationToken cancellationToken = default)
     {
         var request = await store.FindRequestAsync(requestId, cancellationToken)
             ?? throw new WorkflowRuleException("REQUEST_NOT_FOUND", "The transport request does not exist.");
         if (TransportStateMachine.CanCancelBeforeExecution(request.Status) || request.Status == TransportRequestStatus.Cancelled)
         {
-            var local = await workflow.CancelAsync(requestId, actorUserId, cancellationToken);
+            var local = await workflow.CancelAsync(requestId, actorUserId, eventContext, cancellationToken);
             return new(local.Request, false, local.WasAlreadyCancelled);
         }
 
@@ -1246,6 +1301,7 @@ public sealed class RdsExecutionCoordinator(
                 var cancelled = await workflow.RecordExecutionOutcomeAsync(
                     requestId,
                     new(TransportRequestStatus.Cancelled, EvidenceType: "RDSCORE_TERMINATE"),
+                    eventContext ?? OperationalEventContext.System(correlationId),
                     cancellationToken);
                 return new(cancelled, false, false);
             }
@@ -1277,6 +1333,7 @@ public sealed class RdsExecutionCoordinator(
             var cancelled = await workflow.RecordExecutionOutcomeAsync(
                 requestId,
                 new(TransportRequestStatus.Cancelled, EvidenceType: "RDS_QUERY_AFTER_STOP"),
+                eventContext ?? OperationalEventContext.System(correlationId),
                 cancellationToken);
             return new(cancelled, false, false);
         }
@@ -1787,10 +1844,10 @@ public sealed class RdsExecutionCoordinator(
             details.State.Raw);
 
         await store.RecordTaskStatusAsync(requestId, taskSnapshot, timeProvider.GetUtcNow(), cancellationToken);
-        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, cancellationToken);
+        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, OperationalEventContext.System(correlationId), cancellationToken);
         if (details.State.Known == RdsCoreKnownOrderState.Running)
         {
-            await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running, cancellationToken);
+            await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running, OperationalEventContext.System(correlationId), cancellationToken);
         }
         await store.WriteExecutionAuditAsync(requestId, "RDS_DISPATCH_CONFIRMED", "RDS_NATIVE_ORDER_OBSERVED", "RDS native order existence was proven by taskRecordId.", correlationId, cancellationToken);
         return new(requestId, taskRecordId, true, setResult?.DuplicateOrderId ?? true, "RDS_TASK_OBSERVED", "RDS native order existence was proven by taskRecordId.");
@@ -1874,13 +1931,14 @@ public sealed class RdsExecutionCoordinator(
             FindText(callback.RawPayload, "outOrderNo"),
             callback.RawPayload.Clone(),
             FindText(callback.RawPayload, "endedReason"));
-        await ApplyTaskStatusAsync(projection, task, timeProvider.GetUtcNow(), $"CALLBACK_{eventType}", cancellationToken);
+        var callbackCorrelationId = Guid.NewGuid();
+        await ApplyTaskStatusAsync(projection, task, timeProvider.GetUtcNow(), $"CALLBACK_{eventType}", cancellationToken, callbackCorrelationId);
         await store.WriteExecutionAuditAsync(
             projection.TransportRequestId,
             "RDS_CALLBACK_APPLIED",
             eventType,
             "Authenticated RDS callback evidence was applied idempotently.",
-            Guid.NewGuid(),
+            callbackCorrelationId,
             cancellationToken);
         return new(true, true, "RDS_EVENT_APPLIED", "The callback was applied idempotently.", taskRecordId);
     }
@@ -1918,15 +1976,17 @@ public sealed class RdsExecutionCoordinator(
         RdsWindTaskSnapshot task,
         DateTimeOffset syncedAt,
         string evidence,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? correlationId = null)
     {
+        var eventContext = OperationalEventContext.System(correlationId ?? Guid.NewGuid());
         await store.RecordTaskStatusAsync(projection.TransportRequestId, task, syncedAt, cancellationToken);
         switch (task.Status)
         {
             case 1000:
                 if (projection.RequestStatus == TransportRequestStatus.SentToRds)
                 {
-                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Running, cancellationToken);
+                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Running, eventContext, cancellationToken);
                 }
                 break;
             case 1002:
@@ -1934,11 +1994,11 @@ public sealed class RdsExecutionCoordinator(
             case 1003:
                 if (projection.RequestStatus == TransportRequestStatus.SentToRds)
                 {
-                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Running, cancellationToken);
+                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Running, eventContext, cancellationToken);
                 }
                 if (projection.RequestStatus is TransportRequestStatus.SentToRds or TransportRequestStatus.Running)
                 {
-                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Completed, cancellationToken);
+                    await workflow.RecordExecutionTransitionAsync(projection.TransportRequestId, TransportRequestStatus.Completed, eventContext, cancellationToken);
                 }
                 break;
             case 1001:
@@ -1947,6 +2007,7 @@ public sealed class RdsExecutionCoordinator(
                     projection.CancellationRequested
                         ? new(TransportRequestStatus.Cancelled, EvidenceType: evidence)
                         : new(TransportRequestStatus.Failed, "RDS_TASK_TERMINATED", task.EndedReason, evidence),
+                    eventContext,
                     cancellationToken);
                 break;
             case 1004:
@@ -1955,6 +2016,7 @@ public sealed class RdsExecutionCoordinator(
                 await workflow.RecordExecutionOutcomeAsync(
                     projection.TransportRequestId,
                     new(TransportRequestStatus.Failed, $"RDS_TASK_STATUS_{task.Status}", task.EndedReason, evidence),
+                    eventContext,
                     cancellationToken);
                 break;
         }

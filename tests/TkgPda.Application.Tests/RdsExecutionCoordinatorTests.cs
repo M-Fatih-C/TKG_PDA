@@ -7,6 +7,22 @@ namespace TkgPda.Application.Tests;
 
 public sealed class RdsExecutionCoordinatorTests
 {
+    [Theory]
+    [InlineData("WIND_TASK",0,"OCCUPIED","RDS_WORKSITE_OCCUPANCY_CONFLICT")]
+    [InlineData("RDSCORE_NATIVE_ORDER",0,"OCCUPIED","RDS_WORKSITE_OCCUPANCY_CONFLICT")]
+    [InlineData("WIND_TASK",1,"VACANT","RDS_WORKSITE_OCCUPANCY_CONFLICT")]
+    [InlineData("WIND_TASK",null,"OCCUPIED","RDS_WORKSITE_STATE_UNKNOWN")]
+    public async Task Contradictory_or_unknown_mapped_slot_blocks_motion_before_any_task_identity(string mode,int? filled,string occupancy,string expected)
+    {
+        var context=Context() with { TemplateConfig=Json($$"""{"executionMode":"{{mode}}"}"""),
+            Source=Endpoint("ISOLATED") with { Filled=filled,BusinessOccupancy=occupancy } };
+        var fixture=Fixture(context:context);
+        var error=await Assert.ThrowsAsync<RdsExecutionException>(()=>fixture.Coordinator.DispatchOneAsync(RequestId,Guid.NewGuid()));
+        Assert.Equal(expected,error.Code);
+        Assert.Equal(0,fixture.Client.CreateCount);
+        Assert.Equal(0,fixture.Store.EnsureCount);
+    }
+
     [Fact]
     public void Binder_resolves_whitelisted_sources_deterministically()
     {
@@ -70,6 +86,23 @@ public sealed class RdsExecutionCoordinatorTests
         var result = await fixture.Coordinator.DispatchOneAsync(RequestId, Guid.NewGuid());
         Assert.False(result!.Dispatched);
         Assert.DoesNotContain(TransportRequestStatus.SentToRds, fixture.WorkflowStore.Transitions);
+        // WP-06: no execution transition means no ROBOT_TASK_DISPATCHED event context was ever recorded.
+        Assert.Empty(fixture.WorkflowStore.TransitionContexts);
+    }
+
+    [Fact]
+    public async Task Confirmed_dispatch_carries_rds_correlation_without_inventing_actor_or_device()
+    {
+        var fixture = Fixture();
+        var correlationId = Guid.NewGuid();
+        var result = await fixture.Coordinator.DispatchOneAsync(RequestId, correlationId);
+
+        Assert.True(result!.Dispatched);
+        var context = Assert.Single(fixture.WorkflowStore.TransitionContexts);
+        Assert.NotNull(context);
+        Assert.Null(context!.ActorUserId);
+        Assert.Null(context.DeviceId);
+        Assert.Equal(correlationId, context.CorrelationId);
     }
 
     [Theory]
@@ -111,7 +144,7 @@ public sealed class RdsExecutionCoordinatorTests
     [Fact]
     public async Task An_auto_allocated_empty_container_buffer_slot_that_is_unmapped_cannot_be_dispatched()
     {
-        // Customer Workflow — Empty Container Buffer dispatch safety:
+        // Customer Workflow â€” Empty Container Buffer dispatch safety:
         // BRING_EMPTY's source IS the buffer slot that PostgresTransportWorkflowStore.
         // AllocateBufferSlotAsync auto-allocates when the caller omits one.
         // When no integration.layout_slot_rds_mapping row exists for it,
@@ -217,6 +250,124 @@ public sealed class RdsExecutionCoordinatorTests
         Assert.False(result.PendingRdsConfirmation);
         Assert.Equal(TransportRequestStatus.Cancelled, result.Request.Status);
         Assert.Equal(RequestId.ToString(), fixture.Client.LastStoppedTaskRecordId);
+    }
+
+    [Fact]
+    public async Task Stop_requested_without_rds_proof_is_not_a_cancellation()
+    {
+        // WP-06: "stop requested" != "request cancelled". No outcome (and so no REQUEST_CANCELLED)
+        // may be recorded until RDS proves the task terminated.
+        var fixture = Fixture(tasks: [WindTask(1000)], requestStatus: TransportRequestStatus.Running);
+        fixture.Store.TaskProjection = Projection(TransportRequestStatus.Running);
+        var operatorContext = OperationalEventContext.ForUser(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+
+        var result = await fixture.Coordinator.CancelAsync(RequestId, operatorContext.ActorUserId, Guid.NewGuid(), operatorContext);
+
+        Assert.True(result.PendingRdsConfirmation);
+        Assert.Equal(RequestId.ToString(), fixture.Client.LastStoppedTaskRecordId);
+        Assert.Empty(fixture.WorkflowStore.Outcomes);
+        Assert.Empty(fixture.WorkflowStore.OutcomeContexts);
+        Assert.Empty(fixture.WorkflowStore.CancelContexts);
+    }
+
+    [Fact]
+    public async Task Confirmed_stop_records_one_cancelled_outcome_with_the_operator_context()
+    {
+        var fixture = Fixture(tasks: [WindTask(1001)], requestStatus: TransportRequestStatus.Running);
+        fixture.Store.TaskProjection = Projection(TransportRequestStatus.Running) with { CancellationRequested = true };
+        var operatorContext = OperationalEventContext.ForUser(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+
+        var result = await fixture.Coordinator.CancelAsync(RequestId, operatorContext.ActorUserId, Guid.NewGuid(), operatorContext);
+
+        Assert.False(result.PendingRdsConfirmation);
+        var outcome = Assert.Single(fixture.WorkflowStore.Outcomes);
+        Assert.Equal(TransportRequestStatus.Cancelled, outcome.Status);
+        Assert.Equal("RDS_QUERY_AFTER_STOP", outcome.EvidenceType);
+        Assert.Same(operatorContext, Assert.Single(fixture.WorkflowStore.OutcomeContexts));
+    }
+
+    [Fact]
+    public async Task Confirmed_stop_without_http_context_uses_system_context_and_invents_no_actor_or_device()
+    {
+        var fixture = Fixture(tasks: [WindTask(1001)], requestStatus: TransportRequestStatus.Running);
+        fixture.Store.TaskProjection = Projection(TransportRequestStatus.Running) with { CancellationRequested = true };
+        var correlationId = Guid.NewGuid();
+
+        await fixture.Coordinator.CancelAsync(RequestId, null, correlationId);
+
+        var context = Assert.Single(fixture.WorkflowStore.OutcomeContexts);
+        Assert.Null(context!.ActorUserId);
+        Assert.Null(context.DeviceId);
+        Assert.Equal(correlationId, context.CorrelationId);
+    }
+
+    [Fact]
+    public async Task Pre_execution_cancel_forwards_the_operator_context_and_records_no_rds_outcome()
+    {
+        var fixture = Fixture(requestStatus: TransportRequestStatus.Queued);
+        var operatorContext = OperationalEventContext.ForUser(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+
+        var result = await fixture.Coordinator.CancelAsync(RequestId, operatorContext.ActorUserId, Guid.NewGuid(), operatorContext);
+
+        Assert.False(result.PendingRdsConfirmation);
+        Assert.Same(operatorContext, Assert.Single(fixture.WorkflowStore.CancelContexts));
+        Assert.Empty(fixture.WorkflowStore.Outcomes);
+        Assert.Null(fixture.Client.LastStoppedTaskRecordId);
+    }
+
+    [Fact]
+    public async Task Repeated_running_reconciliation_issues_no_second_started_transition()
+    {
+        // First cycle (SENT_TO_RDS -> RUNNING) transitions once; later cycles see RUNNING and do nothing.
+        var first = Fixture(tasks: [WindTask(1000)], requestStatus: TransportRequestStatus.SentToRds);
+        first.Store.Active = [Projection(TransportRequestStatus.SentToRds)];
+        await first.Coordinator.ReconcileAsync(10);
+        Assert.Equal(new[] { TransportRequestStatus.Running }, first.WorkflowStore.Transitions);
+
+        var repeat = Fixture(tasks: [WindTask(1000)], requestStatus: TransportRequestStatus.Running);
+        repeat.Store.Active = [Projection(TransportRequestStatus.Running)];
+        await repeat.Coordinator.ReconcileAsync(10);
+        Assert.Empty(repeat.WorkflowStore.Transitions);
+    }
+
+    [Fact]
+    public async Task Completion_reconciliation_uses_one_system_context_and_terminal_repeats_do_nothing()
+    {
+        var fixture = Fixture(tasks: [WindTask(1003)], requestStatus: TransportRequestStatus.SentToRds);
+        fixture.Store.Active = [Projection(TransportRequestStatus.SentToRds)];
+        await fixture.Coordinator.ReconcileAsync(10);
+
+        Assert.Equal(new[] { TransportRequestStatus.Running, TransportRequestStatus.Completed }, fixture.WorkflowStore.Transitions);
+        Assert.All(fixture.WorkflowStore.TransitionContexts, context =>
+        {
+            Assert.Null(context!.ActorUserId);
+            Assert.Null(context.DeviceId);
+            Assert.NotNull(context.CorrelationId);
+        });
+        Assert.Single(fixture.WorkflowStore.TransitionContexts.Select(context => context!.CorrelationId).Distinct());
+
+        var terminal = Fixture(tasks: [WindTask(1003)], requestStatus: TransportRequestStatus.Completed);
+        terminal.Store.Active = [Projection(TransportRequestStatus.Completed)];
+        await terminal.Coordinator.ReconcileAsync(10);
+        Assert.Empty(terminal.WorkflowStore.Transitions);
+    }
+
+    [Fact]
+    public async Task Failed_reconciliation_records_one_failure_outcome_with_evidence_and_system_context()
+    {
+        var fixture = Fixture(tasks: [WindTask(1004)], requestStatus: TransportRequestStatus.Running);
+        fixture.Store.Active = [Projection(TransportRequestStatus.Running)];
+
+        await fixture.Coordinator.ReconcileAsync(10);
+
+        var outcome = Assert.Single(fixture.WorkflowStore.Outcomes);
+        Assert.Equal(TransportRequestStatus.Failed, outcome.Status);
+        Assert.Equal("RDS_TASK_STATUS_1004", outcome.FailureCode);
+        Assert.Equal("RECONCILIATION", outcome.EvidenceType);
+        var context = Assert.Single(fixture.WorkflowStore.OutcomeContexts);
+        Assert.Null(context!.ActorUserId);
+        Assert.Null(context.DeviceId);
+        Assert.NotNull(context.CorrelationId);
     }
 
     [Fact]
@@ -378,12 +529,15 @@ public sealed class RdsExecutionCoordinatorTests
     {
         public List<TransportRequestStatus> Transitions { get; } = [];
         public List<ExecutionOutcome> Outcomes { get; } = [];
-        public Task<CreateTransportResult> CreateAndQueueAsync(CreateTransportRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<TransportBatchResult> CreateBatchAndQueueAsync(CreateTransportBatchRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<CancelTransportResult> CancelAsync(Guid requestId, Guid? actorUserId, CancellationToken cancellationToken = default) => Task.FromResult(new CancelTransportResult(initial with { Status = TransportRequestStatus.Cancelled }, false));
-        public Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(Guid requestId, TransportRequestStatus nextStatus, CancellationToken cancellationToken = default) { Transitions.Add(nextStatus); return Task.FromResult(initial with { Status = nextStatus }); }
-        public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(Guid requestId, ExecutionOutcome outcome, CancellationToken cancellationToken = default) { Outcomes.Add(outcome); return Task.FromResult(initial with { Status = outcome.Status }); }
+        public List<OperationalEventContext?> TransitionContexts { get; } = [];
+        public List<OperationalEventContext?> OutcomeContexts { get; } = [];
+        public List<OperationalEventContext?> CancelContexts { get; } = [];
+        public Task<CreateTransportResult> CreateAndQueueAsync(CreateTransportRequest request, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<TransportBatchResult> CreateBatchAndQueueAsync(CreateTransportBatchRequest request, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<CancelTransportResult> CancelAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) { CancelContexts.Add(eventContext); return Task.FromResult(new CancelTransportResult(initial with { Status = TransportRequestStatus.Cancelled }, false)); }
+        public Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(Guid requestId, TransportRequestStatus nextStatus, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) { Transitions.Add(nextStatus); TransitionContexts.Add(eventContext); return Task.FromResult(initial with { Status = nextStatus }); }
+        public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(Guid requestId, ExecutionOutcome outcome, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) { Outcomes.Add(outcome); OutcomeContexts.Add(eventContext); return Task.FromResult(initial with { Status = outcome.Status }); }
         public Task<LoadStateUpdateResult> UpdateLoadStateAsync(LoadStateUpdateRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task SwitchVariantAsync(VariantSelection selection, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }

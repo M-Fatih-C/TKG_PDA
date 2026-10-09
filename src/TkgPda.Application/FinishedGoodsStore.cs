@@ -17,7 +17,8 @@ public sealed record StoreUnitRecord(
     Guid? MachineId,
     string? MachineCode,
     DateTimeOffset DeliveredAt,
-    long RowVersion);
+    long RowVersion,
+    string LoadState = "FULL");
 
 /// <summary>
 /// A shared finished-goods position and what currently stands in it.
@@ -67,6 +68,12 @@ public sealed record ClearStoreLocationCommand(
     Guid ActorUserId,
     Guid DeviceId);
 
+public sealed record RecordEmptyContainerCommand(
+    Guid LocationId,
+    Guid ActorUserId,
+    Guid DeviceId,
+    string IdempotencyKey);
+
 /// <summary>
 /// Implementations run each call in one transaction and write the movement
 /// history alongside the state change. Nothing here dispatches, completes or
@@ -84,6 +91,8 @@ public interface IFinishedGoodsStore
     Task<StoreLocationRecord> RemoveUnitAsync(RemoveStoreUnitCommand command, CancellationToken cancellationToken = default);
 
     Task<StoreLocationRecord> ClearLocationAsync(ClearStoreLocationCommand command, CancellationToken cancellationToken = default);
+
+    Task<StoreLocationRecord> RecordEmptyContainerAsync(RecordEmptyContainerCommand command, CancellationToken cancellationToken = default);
 }
 
 public sealed class FinishedGoodsStoreService(IFinishedGoodsStore store)
@@ -106,6 +115,19 @@ public sealed class FinishedGoodsStoreService(IFinishedGoodsStore store)
         ArgumentNullException.ThrowIfNull(command);
         RequireIds(command.LocationId, command.ActorUserId, command.DeviceId);
         return store.ClearLocationAsync(command, cancellationToken);
+    }
+
+    public Task<StoreLocationRecord> RecordEmptyContainerAsync(
+        RecordEmptyContainerCommand command, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        RequireIds(command.LocationId, command.ActorUserId, command.DeviceId);
+        if (string.IsNullOrWhiteSpace(command.IdempotencyKey) || command.IdempotencyKey.Trim().Length > 200)
+        {
+            throw new WorkflowRuleException("IDEMPOTENCY_KEY_REQUIRED", "Boş kasa kaydı için bir idempotency anahtarı gerekir.");
+        }
+
+        return store.RecordEmptyContainerAsync(command, cancellationToken);
     }
 
     private static void RequireIds(params Guid[] ids)

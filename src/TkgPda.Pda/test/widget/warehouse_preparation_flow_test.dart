@@ -6,6 +6,7 @@ import 'package:tkg_pda/core/auth/session_memory.dart';
 import 'package:tkg_pda/core/errors/api_problem.dart';
 import 'package:tkg_pda/core/storage/device_code_store.dart';
 import 'package:tkg_pda/data/models/pda_models.dart';
+import 'package:tkg_pda/features/warehouse/warehouse_preparation_screen.dart';
 
 import '../support/fakes.dart';
 
@@ -36,8 +37,7 @@ void main() {
         ..loginUser = _warehouseUser
         ..warehouseRequestsValue = [request];
       final harness = await _harness(tester, repository: repository);
-      await harness.controller.enterWarehousePreparation();
-      await tester.pumpAndSettle();
+      await _openLegacyConsole(tester, harness);
 
       expect(find.textContaining(testMachine.code), findsOneWidget);
       expect(find.text('MAIN-PART'), findsOneWidget);
@@ -77,8 +77,7 @@ void main() {
         ..loginUser = _warehouseUser
         ..warehouseRequestsValue = [request];
       final harness = await _harness(tester, repository: repository);
-      await harness.controller.enterWarehousePreparation();
-      await tester.pumpAndSettle();
+      await _openLegacyConsole(tester, harness);
       expect(find.text('Talep zamanı alınamadı'), findsOneWidget);
       expect(find.text('Bilinmiyor'), findsOneWidget);
       expect(find.text('Az önce'), findsNothing);
@@ -103,8 +102,7 @@ void main() {
       ..loginUser = _warehouseUser
       ..warehouseRequestsValue = [request];
     final harness = await _harness(tester, repository: repository);
-    await harness.controller.enterWarehousePreparation();
-    await tester.pumpAndSettle();
+    await _openLegacyConsole(tester, harness);
     expect(find.text('Talep türü doğrulanamadı'), findsOneWidget);
     expect(find.text('FUTURE_OPERATION'), findsNothing);
     expect(find.text('Boş taşıma kabı hazırlanacak'), findsNothing);
@@ -128,23 +126,13 @@ void main() {
         ..warehouseRequestsValue = [testWarehousePreparationRequest];
       final harness = await _harness(tester, repository: repository);
 
-      expect(
-        find.byKey(const Key('open-warehouse-preparation')),
-        findsOneWidget,
-      );
-      await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
+      expect(find.byKey(const Key('open-warehouse-preparation')), findsNothing);
+      expect(find.byKey(const Key('open-preparation-areas')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('open-preparation-areas')));
       await tester.pumpAndSettle();
 
-      expect(
-        find.byKey(const Key('warehouse-preparation-list')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(
-          Key('warehouse-item-${testWarehousePreparationRequest.requestId}'),
-        ),
-        findsOneWidget,
-      );
+      expect(find.byKey(const Key('leave-preparation-areas')), findsOneWidget);
+      expect(find.byKey(const Key('warehouse-preparation-list')), findsNothing);
       expect(find.textContaining('SLOT-V'), findsNothing);
       harness.dispose();
     },
@@ -166,7 +154,11 @@ void main() {
       ..warehouseRequestsValue = [testWarehousePreparationRequest];
     final harness = await _harness(tester, repository: repository);
 
-    expect(find.byKey(const Key('open-warehouse-preparation')), findsOneWidget);
+    expect(find.byKey(const Key('open-warehouse-preparation')), findsNothing);
+    expect(find.byKey(const Key('open-warehouse-home')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('open-warehouse-home')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('open-preparation-areas')), findsOneWidget);
     harness.dispose();
   });
 
@@ -175,13 +167,10 @@ void main() {
   ) async {
     final repository = FakePdaRepository()..loginUser = _warehouseUser;
     final harness = await _harness(tester, repository: repository);
-    await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
+    await tester.tap(find.byKey(const Key('open-preparation-areas')));
     await tester.pumpAndSettle();
 
-    expect(
-      find.byKey(const Key('warehouse-preparation-empty')),
-      findsOneWidget,
-    );
+    expect(find.byKey(const Key('preparation-areas-empty')), findsOneWidget);
     harness.dispose();
   });
 
@@ -195,8 +184,7 @@ void main() {
         correlationId: null,
       );
     final harness = await _harness(tester, repository: repository);
-    await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
-    await tester.pumpAndSettle();
+    await _openLegacyConsole(tester, harness);
 
     expect(
       find.byKey(const Key('warehouse-preparation-error')),
@@ -224,8 +212,7 @@ void main() {
       ..loginUser = _warehouseUser
       ..warehouseRequestsValue = [testWarehousePreparationRequest];
     final harness = await _harness(tester, repository: repository);
-    await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
-    await tester.pumpAndSettle();
+    await _openLegacyConsole(tester, harness);
 
     await tester.tap(
       find.byKey(
@@ -261,8 +248,7 @@ void main() {
         ..loginUser = _warehouseUser
         ..warehouseRequestsValue = [testWarehousePreparationRequest];
       final harness = await _harness(tester, repository: repository);
-      await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
-      await tester.pumpAndSettle();
+      await _openLegacyConsole(tester, harness);
 
       await tester.tap(
         find.byKey(
@@ -303,8 +289,7 @@ void main() {
         correlationId: 'corr-ready',
       );
     final harness = await _harness(tester, repository: repository);
-    await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
-    await tester.pumpAndSettle();
+    await _openLegacyConsole(tester, harness);
 
     await tester.tap(
       find.byKey(
@@ -342,6 +327,16 @@ final _supervisorUser = AuthenticatedUser(
   employeeNo: null,
   roles: const ['SUPERVISOR'],
 );
+
+Future<void> _openLegacyConsole(WidgetTester tester, _Harness harness) async {
+  await harness.controller.loadWarehousePreparationRequests();
+  await tester.pumpWidget(
+    MaterialApp(
+      home: WarehousePreparationScreen(controller: harness.controller),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
 
 Future<_Harness> _harness(
   WidgetTester tester, {

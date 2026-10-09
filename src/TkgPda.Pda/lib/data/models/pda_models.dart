@@ -33,18 +33,21 @@ class PdaDevice {
     required this.code,
     required this.name,
     required this.type,
+    this.machineId,
   });
 
   final String id;
   final String code;
   final String name;
   final String type;
+  final String? machineId;
 
   factory PdaDevice.fromJson(JsonMap json) => PdaDevice(
     id: json['id'] as String,
     code: json['code'] as String? ?? '',
     name: json['name'] as String? ?? '',
     type: json['type'] as String? ?? '',
+    machineId: json['machineId'] as String?,
   );
 }
 
@@ -152,18 +155,24 @@ class MachineRelatedPart {
     required this.partCode,
     required this.description,
     required this.relationType,
+    this.requestable = true,
+    this.blockers = const [],
   });
 
   final String partId;
   final String partCode;
   final String? description;
   final String relationType;
+  final bool requestable;
+  final List<String> blockers;
 
   factory MachineRelatedPart.fromJson(JsonMap json) => MachineRelatedPart(
     partId: json['partId'] as String,
     partCode: json['partCode'] as String? ?? '',
     description: json['description'] as String?,
     relationType: json['relationType'] as String? ?? '',
+    requestable: json['requestable'] as bool? ?? true,
+    blockers: (json['blockers'] as List?)?.map((item) => item.toString()).toList(growable: false) ?? const [],
   );
 }
 
@@ -359,7 +368,6 @@ class OperatorQueueItem {
     required this.etaSeconds,
     required this.etaState,
     this.requestId,
-    this.canCancel = false,
   });
 
   final int queuePosition;
@@ -372,7 +380,6 @@ class OperatorQueueItem {
   final int? etaSeconds;
   final String etaState;
   final String? requestId;
-  final bool canCancel;
   // No agvId: the Operator queue is a business view and the API no longer
   // serializes the raw RDS AGV identifier.
 
@@ -388,7 +395,6 @@ class OperatorQueueItem {
     etaSeconds: _nullableInteger(json['etaSeconds']),
     etaState: json['etaState'] as String? ?? 'UNAVAILABLE',
     requestId: json['requestId'] as String?,
-    canCancel: json['canCancel'] as bool? ?? false,
   );
 }
 
@@ -685,6 +691,15 @@ class ActiveTransportRequest {
     required this.cancelDisabledCode,
     required this.cancelDisabledMessage,
     required this.execution,
+    this.partCode,
+    this.partDescription,
+    this.relationType,
+    this.readinessState = 'NOT_REQUIRED',
+    this.queuePosition,
+    this.ageSeconds,
+    this.executionElapsedSeconds,
+    this.chainState,
+    this.productionEnd = false,
   });
 
   final String requestId;
@@ -706,6 +721,32 @@ class ActiveTransportRequest {
   final String? cancelDisabledMessage;
   final ExecutionProjection execution;
 
+  /// WP-07 server-derived display values. The client never infers any of them.
+  final String? partCode;
+  final String? partDescription;
+
+  /// MAIN_PART, ALT_PART, RELATED, CONSUMABLE, OTHER, or null when the server
+  /// has no master-data evidence.
+  final String? relationType;
+  final String readinessState;
+
+  /// TKG's ordering of this machine's active requests. Not an RDS queue
+  /// position and not a robot position.
+  final int? queuePosition;
+
+  /// Seconds since creation, measured by the server clock at read time.
+  final int? ageSeconds;
+
+  /// Seconds since RDS reported execution start; null without start evidence.
+  final int? executionElapsedSeconds;
+
+  /// Server chain label: WAITING_PREDECESSOR, REMOVING_EXISTING,
+  /// PREPARING_SUCCESSOR, PREPARING, or null. Never a robot percentage.
+  final String? chainState;
+
+  /// True when the server created this request as part of production-end cleanup.
+  final bool productionEnd;
+
   factory ActiveTransportRequest.fromJson(JsonMap json) =>
       ActiveTransportRequest(
         requestId: json['requestId'] as String,
@@ -726,7 +767,79 @@ class ActiveTransportRequest {
         cancelDisabledCode: json['cancelDisabledCode'] as String?,
         cancelDisabledMessage: json['cancelDisabledMessage'] as String?,
         execution: ExecutionProjection.fromJson(_map(json['execution'])),
+        partCode: json['partCode'] as String?,
+        partDescription: json['partDescription'] as String?,
+        relationType: json['relationType'] as String?,
+        readinessState: json['readinessState'] as String? ?? 'NOT_REQUIRED',
+        queuePosition: json['queuePosition'] == null
+            ? null
+            : _integer(json['queuePosition']),
+        ageSeconds: json['ageSeconds'] == null
+            ? null
+            : _integer(json['ageSeconds']),
+        executionElapsedSeconds: json['executionElapsedSeconds'] == null
+            ? null
+            : _integer(json['executionElapsedSeconds']),
+        chainState: json['chainState'] as String?,
+        productionEnd: json['productionEnd'] == true,
       );
+}
+
+class PartDemandResult {
+  const PartDemandResult({
+    required this.requestNo,
+    required this.taskType,
+    required this.status,
+    required this.readiness,
+    this.predecessorRequestNo,
+    this.predecessorTaskType,
+    required this.idempotentReplay,
+  });
+
+  final int requestNo;
+  final String taskType;
+  final String status;
+  final String readiness;
+  final int? predecessorRequestNo;
+  final String? predecessorTaskType;
+  final bool idempotentReplay;
+
+  factory PartDemandResult.fromJson(Map<String, dynamic> json) =>
+      PartDemandResult(
+        requestNo: _integer(json['requestNo']),
+        taskType: json['taskType'] as String? ?? '',
+        status: json['status'] as String? ?? '',
+        readiness: json['readiness'] as String? ?? '',
+        predecessorRequestNo: json['predecessorRequestNo'] == null
+            ? null
+            : _integer(json['predecessorRequestNo']),
+        predecessorTaskType: json['predecessorTaskType'] as String?,
+        idempotentReplay: json['idempotentReplay'] as bool? ?? false,
+      );
+}
+
+class PartDemandBatchResult {
+  const PartDemandBatchResult({
+    required this.idempotentReplay,
+    required this.items,
+  });
+
+  final bool idempotentReplay;
+  final List<PartDemandResult> items;
+
+  factory PartDemandBatchResult.fromJson(Map<String, dynamic> json) {
+    final raw = json['items'];
+    final items = raw is List
+        ? raw
+              .whereType<Map<String, dynamic>>()
+              .map(PartDemandResult.fromJson)
+              .toList(growable: false)
+        : const <PartDemandResult>[];
+    return PartDemandBatchResult(
+      idempotentReplay: json['idempotentReplay'] as bool? ?? false,
+      items: items,
+    );
+  }
 }
 
 class OperationalContext {

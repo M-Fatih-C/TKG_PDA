@@ -70,7 +70,7 @@ function LifecycleDialog({ action, busy, onClose, onConfirm }: { action: Lifecyc
 
   useEffect(() => {
     if (!isPublish || !slotsQuery.data) return
-    const operational = slotsQuery.data.filter((s) => s.isEnabled && s.role !== 'MACHINE' && s.role !== 'OTHER')
+    const operational = slotsQuery.data.filter((s) => s.isEnabled && s.role !== 'MACHINE')
     let active = true
     setPartsLoading(true)
     Promise.all(
@@ -107,7 +107,7 @@ function LifecycleDialog({ action, busy, onClose, onConfirm }: { action: Lifecyc
     const warnings: string[] = []
 
     const enabledSlots = slots.filter((s) => s.isEnabled)
-    const operationalSlots = enabledSlots.filter((s) => s.role !== 'MACHINE' && s.role !== 'OTHER')
+    const operationalSlots = enabledSlots.filter((s) => s.role !== 'MACHINE')
 
     if (operationalSlots.length === 0) {
       critical.push('En az bir aktif operasyonel slot bulunmalıdır (MACHINE harici).')

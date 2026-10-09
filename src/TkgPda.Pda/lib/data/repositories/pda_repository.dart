@@ -3,14 +3,42 @@ import '../models/pda_models.dart';
 import '../models/preparation_area.dart';
 import '../models/store_location.dart';
 
+class DeviceNotificationRegistration {
+  const DeviceNotificationRegistration({
+    required this.registrationId,
+    required this.credential,
+    required this.pollIntervalSeconds,
+  });
+
+  final String registrationId;
+  final String credential;
+  final int pollIntervalSeconds;
+
+  factory DeviceNotificationRegistration.fromJson(Map<String, dynamic> json) =>
+      DeviceNotificationRegistration(
+        registrationId: json['registrationId'] as String? ?? '',
+        credential: json['credential'] as String? ?? '',
+        pollIntervalSeconds: json['pollIntervalSeconds'] is int
+            ? json['pollIntervalSeconds'] as int
+            : 5,
+      );
+}
+
 abstract interface class PdaDataSource {
   Future<ProductionSession?> activeProduction(String machineId);
   Future<ProductionSession> startProduction(
     ProductionStartCommand command,
     String key,
   );
-  Future<ProductionSession> endProduction(String machineId, String sessionId);
+  Future<ProductionSession> endProduction(
+    String machineId,
+    String sessionId,
+    String idempotencyKey,
+  );
   Future<LoginSession> login(String employeeNumber);
+  Future<void> heartbeatSession();
+  Future<void> logout();
+  Future<DeviceNotificationRegistration> registerDeviceNotification();
   Future<AuthenticatedUser> me();
   Future<List<MachineSummary>> machines();
   Future<OperationalContext> operationalContext(String machineId);
@@ -41,6 +69,16 @@ abstract interface class PdaDataSource {
     required String layoutId,
     required String productGroupId,
     required String partId,
+  });
+  Future<PartDemandResult> createPartDemand({
+    required String machineId,
+    required String partId,
+    required String idempotencyKey,
+  });
+  Future<PartDemandBatchResult> createPartDemandBatch({
+    required String machineId,
+    required List<String> partIds,
+    required String idempotencyKey,
   });
   Future<ContainerActionResult> createContainerAction({
     required String machineId,
@@ -77,7 +115,10 @@ abstract interface class PdaDataSource {
     int limit = 50,
   });
   Future<TransportResult> transport(String requestId);
-  Future<TransportResult> cancel(String requestId);
+  Future<TransportResult> cancel({
+    required String machineId,
+    required String requestId,
+  });
 
   /// Customer UI — Warehouse Preparation Console.
   Future<List<WarehousePreparationRequest>> warehousePreparationRequests();
@@ -111,6 +152,10 @@ abstract interface class PdaDataSource {
     required int expectedRowVersion,
   });
   Future<StoreLocation> clearStoreLocation(String locationId);
+  Future<StoreLocation> recordEmptyContainer({
+    required String locationId,
+    required String idempotencyKey,
+  });
 
   /// Customer Monitoring — Robot Alarm Visibility.
   Future<RobotAlarmSummary> robotAlarmSummary();
@@ -155,9 +200,11 @@ class PdaRepository implements PdaDataSource {
   Future<ProductionSession> endProduction(
     String machineId,
     String sessionId,
+    String idempotencyKey,
   ) async {
     final response = await _api.post(
       '/api/v1/machines/$machineId/production-sessions/$sessionId/end',
+      idempotencyKey: idempotencyKey,
     );
     return ProductionSession.fromJson(_json(_json(response.body)['session']));
   }
@@ -179,6 +226,24 @@ class PdaRepository implements PdaDataSource {
   Future<AuthenticatedUser> me() async {
     final response = await _api.get('/api/v1/auth/me');
     return AuthenticatedUser.fromJson(_json(response.body));
+  }
+
+  @override
+  Future<void> heartbeatSession() async {
+    await _api.post('/api/v1/auth/session/heartbeat');
+  }
+
+  @override
+  Future<void> logout() async {
+    await _api.post('/api/v1/auth/logout');
+  }
+
+  @override
+  Future<DeviceNotificationRegistration> registerDeviceNotification() async {
+    final response = await _api.put(
+      '/api/v1/auth/device-notifications/register',
+    );
+    return DeviceNotificationRegistration.fromJson(_json(response.body));
   }
 
   @override
@@ -280,6 +345,34 @@ class PdaRepository implements PdaDataSource {
         .whereType<Map<String, dynamic>>()
         .map(ContainerPosition.fromJson)
         .toList(growable: false);
+  }
+
+  @override
+  Future<PartDemandResult> createPartDemand({
+    required String machineId,
+    required String partId,
+    required String idempotencyKey,
+  }) async {
+    final response = await _api.post(
+      '/api/v1/machines/$machineId/part-demands',
+      idempotencyKey: idempotencyKey,
+      body: {'partId': partId},
+    );
+    return PartDemandResult.fromJson(_json(response.body));
+  }
+
+  @override
+  Future<PartDemandBatchResult> createPartDemandBatch({
+    required String machineId,
+    required List<String> partIds,
+    required String idempotencyKey,
+  }) async {
+    final response = await _api.post(
+      '/api/v1/machines/$machineId/part-demands/batch',
+      idempotencyKey: idempotencyKey,
+      body: {'partIds': partIds},
+    );
+    return PartDemandBatchResult.fromJson(_json(response.body));
   }
 
   @override
@@ -399,9 +492,12 @@ class PdaRepository implements PdaDataSource {
   }
 
   @override
-  Future<TransportResult> cancel(String requestId) async {
+  Future<TransportResult> cancel({
+    required String machineId,
+    required String requestId,
+  }) async {
     final response = await _api.post(
-      '/api/v1/transport-requests/$requestId/cancel',
+      '/api/v1/machines/$machineId/transport-requests/$requestId/cancel',
     );
     return TransportResult.fromJson(_json(response.body));
   }
@@ -511,6 +607,18 @@ class PdaRepository implements PdaDataSource {
     final response = await _api.post(
       '$_store/units/$unitId/remove',
       body: {'expectedRowVersion': expectedRowVersion},
+    );
+    return StoreLocation.fromJson(_json(response.body));
+  }
+
+  @override
+  Future<StoreLocation> recordEmptyContainer({
+    required String locationId,
+    required String idempotencyKey,
+  }) async {
+    final response = await _api.post(
+      '$_store/locations/$locationId/empty-container',
+      idempotencyKey: idempotencyKey,
     );
     return StoreLocation.fromJson(_json(response.body));
   }

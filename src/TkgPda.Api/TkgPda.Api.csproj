@@ -7,4 +7,7 @@
     <ProjectReference Include="../TkgPda.Domain/TkgPda.Domain.csproj" />
     <ProjectReference Include="../TkgPda.Infrastructure.Postgres/TkgPda.Infrastructure.Postgres.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="TkgPda.Api.Tests" />
+  </ItemGroup>
 </Project>

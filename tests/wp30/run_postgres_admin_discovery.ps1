@@ -58,9 +58,28 @@ try {
         'db\migrations\008_warehouse_preparation_areas.sql',
         'db\migrations\009_preparation_placement_key.sql',
         'db\migrations\010_finished_goods_store.sql',
+        'db\migrations\011_warehouse_operator_roles.sql',
+        'db\migrations\012_client_device_machine_binding.sql',
+        'db\migrations\013_user_sessions.sql',
+        'db\migrations\014_transport_event_context.sql',
+        'db\migrations\015_part_demand_dependencies.sql',
+        'db\migrations\016_finished_goods_areas.sql',
+        'db\seeds\004_finished_goods_internal_locations.sql',
+        'db\migrations\017_internal_device_notifications.sql',
+        'db\migrations\018_production_end_priorities.sql',
+        'db\migrations\019_robot_alarm_observations.sql',
+        'db\migrations\020_robot_alarm_observation_state.sql',
+        'db\migrations\021_production_end_cleanup.sql',
+        'db\migrations\022_variant_scoped_rds_worksite_commissioning.sql',
+        'db\migrations\023_rds_variant_commissioning_hardening.sql',
+        'db\migrations\024_operational_reporting.sql',
+        'db\migrations\025_profile_scoped_shared_endpoints.sql',
+        'db\migrations\026_canonical_shared_endpoint_identities.sql',
         'db\seeds\generated\002a_customer_textual_master_data.sql',
         'db\seeds\generated\002b_customer_physical_layouts.sql',
-        'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'
+        'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql',
+        'db\seeds\generated\003_tkg_rds_variant_commissioning.sql',
+        'db\seeds\generated\005_tkg_variant_task_templates.sql'
     )) {
         Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot $file)))
     }

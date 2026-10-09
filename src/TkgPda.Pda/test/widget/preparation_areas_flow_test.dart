@@ -47,6 +47,7 @@ void main() {
 
     expect(find.byKey(const Key('preparation-area-1')), findsOneWidget);
     expect(find.byKey(const Key('fill-area-1')), findsOneWidget);
+    expect(find.text('Talep Seç'), findsWidgets);
     expect(find.byKey(const Key('ready-area-1')), findsNothing);
     expect(find.byKey(const Key('collected-area-1')), findsNothing);
   });

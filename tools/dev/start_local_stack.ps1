@@ -28,6 +28,8 @@ param(
     [switch]$NoOperator,
     [switch]$NoAdmin,
     [switch]$EnableSimulationTrialMappings = $true,
+    [switch]$ResetSimulationState,
+    [switch]$ForceSeeds,
     [switch]$Wait
 )
 
@@ -251,29 +253,99 @@ if ($LASTEXITCODE -ne 0) { throw "Applying 004_transport_request_readiness.sql f
 Write-Host 'Applying migration 005 (005_layout_slot_part_mapping.sql)...' -ForegroundColor Cyan
 & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\005_layout_slot_part_mapping.sql') | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Applying 005_layout_slot_part_mapping.sql failed with exit code $LASTEXITCODE" }
-Write-Host 'Applying migration 006 (006_production_sessions.sql)...' -ForegroundColor Cyan
-Write-Host 'Applying migration 007 (007_bring_full_task_type.sql)...' -ForegroundColor Cyan
-Write-Host 'Applying migration 008 (008_warehouse_preparation_areas.sql)...' -ForegroundColor Cyan
-Write-Host 'Applying migration 009 (009_preparation_placement_key.sql)...' -ForegroundColor Cyan
-Write-Host 'Applying migration 010 (010_finished_goods_store.sql)...' -ForegroundColor Cyan
-& $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\006_production_sessions.sql') | Out-Null
-& $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\007_bring_full_task_type.sql') | Out-Null
-& $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\008_warehouse_preparation_areas.sql') | Out-Null
-& $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\009_preparation_placement_key.sql') | Out-Null
-& $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'db\migrations\010_finished_goods_store.sql') | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Applying 006_production_sessions.sql failed with exit code $LASTEXITCODE" }
-if ($LASTEXITCODE -ne 0) { throw "Applying 007_bring_full_task_type.sql failed with exit code $LASTEXITCODE" }
-if ($LASTEXITCODE -ne 0) { throw "Applying 008_warehouse_preparation_areas.sql failed with exit code $LASTEXITCODE" }
-if ($LASTEXITCODE -ne 0) { throw "Applying 009_preparation_placement_key.sql failed with exit code $LASTEXITCODE" }
-if ($LASTEXITCODE -ne 0) { throw "Applying 010_finished_goods_store.sql failed with exit code $LASTEXITCODE" }
+foreach ($migration in @(
+    '006_production_sessions.sql',
+    '007_bring_full_task_type.sql',
+    '008_warehouse_preparation_areas.sql',
+    '009_preparation_placement_key.sql',
+    '010_finished_goods_store.sql',
+    '011_warehouse_operator_roles.sql',
+    '012_client_device_machine_binding.sql',
+    '013_user_sessions.sql',
+    '014_transport_event_context.sql',
+    '015_part_demand_dependencies.sql',
+    '016_finished_goods_areas.sql',
+    '017_internal_device_notifications.sql',
+    '018_production_end_priorities.sql',
+    '019_robot_alarm_observations.sql',
+    '020_robot_alarm_observation_state.sql',
+    '021_production_end_cleanup.sql',
+    '022_variant_scoped_rds_worksite_commissioning.sql',
+    '023_rds_variant_commissioning_hardening.sql',
+    '024_operational_reporting.sql',
+    '025_profile_scoped_shared_endpoints.sql',
+    '026_canonical_shared_endpoint_identities.sql'
+)) {
+    Write-Host "Applying migration $migration..." -ForegroundColor Cyan
+    & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot "db\migrations\$migration") | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Applying $migration failed with exit code $LASTEXITCODE" }
+}
 
-Write-Host 'Applying customer master seeds (002a, 002b, 002c)...' -ForegroundColor Cyan
-$seedFiles = @(
+Write-Host 'Applying replay-safe customer master seeds (002a, 002b, 002c)...' -ForegroundColor Cyan
+foreach ($sf in @(
     (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql'),
     (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql'),
     (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')
-)
-foreach ($sf in $seedFiles) {
+)) {
+    & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Applying master seed failed: $sf" }
+}
+
+# Determine whether the commissioning registry (003) is structurally complete using seed invariants
+$regCheckSql = @"
+SELECT
+    count(*) AS profile_count,
+    count(DISTINCT robot_map_name) AS map_count,
+    count(DISTINCT code) AS code_count,
+    (SELECT count(*) FROM master.variant_navigation_profile_assignments vnpa JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS assignment_count,
+    (SELECT count(*) FROM master.navigation_profiles np WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1' AND np.config_json ->> 'layoutBindingState' = 'SOURCE_BACKED') AS source_backed_count,
+    (SELECT count(*) FROM integration.rds_worksite_plans p JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS plan_count,
+    (SELECT count(*) FROM integration.layout_slot_rds_plan_bindings b JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS binding_count,
+    (SELECT count(*) FROM integration.layout_slot_rds_plan_bindings b JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id WHERE np.code = 'TKG_SEALER_V03_NAV') AS sealer_bindings,
+    (SELECT count(*) FROM integration.rds_worksite_plans p JOIN integration.rds_worksites w ON w.rds_site_id = p.planned_rds_site_id JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1') AS live_name_collisions
+FROM master.navigation_profiles
+WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
+"@
+
+$regRaw = Invoke-DevPsqlScalar $Database $regCheckSql
+$regParts = if ($regRaw) { $regRaw.Trim().Split('|') } else { @() }
+
+$profileCount      = if ($regParts.Length -ge 1 -and [int]::TryParse($regParts[0], [ref]$null)) { [int]$regParts[0] } else { 0 }
+$mapCount          = if ($regParts.Length -ge 2 -and [int]::TryParse($regParts[1], [ref]$null)) { [int]$regParts[1] } else { 0 }
+$codeCount         = if ($regParts.Length -ge 3 -and [int]::TryParse($regParts[2], [ref]$null)) { [int]$regParts[2] } else { 0 }
+$assignmentCount   = if ($regParts.Length -ge 4 -and [int]::TryParse($regParts[3], [ref]$null)) { [int]$regParts[3] } else { 0 }
+$sourceBackedCount = if ($regParts.Length -ge 5 -and [int]::TryParse($regParts[4], [ref]$null)) { [int]$regParts[4] } else { 0 }
+$planCount         = if ($regParts.Length -ge 6 -and [int]::TryParse($regParts[5], [ref]$null)) { [int]$regParts[5] } else { 0 }
+$bindingCount      = if ($regParts.Length -ge 7 -and [int]::TryParse($regParts[6], [ref]$null)) { [int]$regParts[6] } else { 0 }
+$sealerBindings    = if ($regParts.Length -ge 8 -and [int]::TryParse($regParts[7], [ref]$null)) { [int]$regParts[7] } else { 0 }
+$liveCollisions    = if ($regParts.Length -ge 9 -and [int]::TryParse($regParts[8], [ref]$null)) { [int]$regParts[8] } else { 0 }
+
+$regComplete = ($profileCount -eq 25 -and
+    $mapCount -eq 25 -and
+    $codeCount -eq 25 -and
+    $assignmentCount -eq 25 -and
+    $sourceBackedCount -eq 24 -and
+    $planCount -eq 1775 -and
+    $bindingCount -eq 208 -and
+    $sealerBindings -eq 0)
+
+if ($regComplete) {
+    Write-Host "Commissioning registry structurally complete." -ForegroundColor Green
+    Write-Host "Bypassing 003 seed replay." -ForegroundColor Green
+} elseif ($liveCollisions -eq 0) {
+    Write-Host 'Applying commissioning registry seed (003_tkg_rds_variant_commissioning.sql)...' -ForegroundColor Cyan
+    $seed003 = (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql')
+    & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $seed003 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Applying 003_tkg_rds_variant_commissioning.sql failed" }
+} else {
+    throw "Cannot apply 003_tkg_rds_variant_commissioning.sql: Commissioning registry is incomplete (profiles=$profileCount/25, maps=$mapCount/25, codes=$codeCount/25, assignments=$assignmentCount/25, source_backed=$sourceBackedCount/24, plans=$planCount/1775, bindings=$bindingCount/208, sealer_bindings=$sealerBindings/0) and $liveCollisions live WorkSite collision(s) exist in integration.rds_worksites."
+}
+
+Write-Host 'Applying replay-safe production task templates and internal finished goods locations (005, 004)...' -ForegroundColor Cyan
+foreach ($sf in @(
+    (Join-Path $projectRoot 'db\seeds\generated\005_tkg_variant_task_templates.sql'),
+    (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')
+)) {
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Applying seed failed: $sf" }
 }
@@ -287,28 +359,31 @@ if ($EnableSimulationTrialMappings) {
     Write-Host 'Simulation trial mappings bypassed (production isolation active).' -ForegroundColor Gray
 }
 
-# Clean up any leftover test parts, test slots, or test users from integration test suites
-$testCleanupSql = @"
-DELETE FROM ops.transport_requests 
-WHERE part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%')
-   OR idempotency_key LIKE 'wp33-%'
-   OR product_group_id IN (SELECT id FROM master.product_groups WHERE main_part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%'));
-UPDATE ops.slot_runtime_state 
-SET current_part_id = NULL, current_container_type_id = NULL, occupancy_state = 'VACANT', load_state = 'UNKNOWN'
-WHERE current_part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%');
-DELETE FROM ops.slot_runtime_state
-WHERE layout_slot_id IN (SELECT id FROM master.layout_slots WHERE code LIKE 'BUFFER-TEST-%');
-DELETE FROM master.layout_slot_parts
-WHERE part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%')
-   OR layout_slot_id IN (SELECT id FROM master.layout_slots WHERE code LIKE 'BUFFER-TEST-%');
-DELETE FROM master.layout_slots WHERE code LIKE 'BUFFER-TEST-%';
-DELETE FROM master.product_groups WHERE main_part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'WP33-%');
-DELETE FROM master.parts WHERE part_code LIKE 'WP33-%';
-DELETE FROM auth.user_roles WHERE user_id IN (SELECT id FROM auth.users WHERE username = 'user-3c55a45bff');
-DELETE FROM auth.users WHERE username = 'user-3c55a45bff';
-DELETE FROM audit.client_devices WHERE device_code = 'PDA-3c55a45bff';
+if ($ResetSimulationState) {
+    Write-Host 'Resetting simulation slot runtime states (-ResetSimulationState active)...' -ForegroundColor Yellow
+    $resetSimSql = @"
+UPDATE ops.slot_runtime_state
+SET occupancy_state = 'OCCUPIED', load_state = 'EMPTY', current_part_id = NULL, current_container_type_id = NULL, row_version = row_version + 1, updated_at = now()
+WHERE layout_slot_id IN ('c2000000-0000-0000-0000-000000000001', 'c2000000-0000-0000-0000-000000000003');
+
+UPDATE ops.slot_runtime_state
+SET occupancy_state = 'VACANT', load_state = 'UNKNOWN', current_part_id = NULL, current_container_type_id = NULL, row_version = row_version + 1, updated_at = now()
+WHERE layout_slot_id IN ('c2000000-0000-0000-0000-000000000002', 'c2000000-0000-0000-0000-000000000004');
+
+UPDATE ops.slot_runtime_state
+SET occupancy_state = 'VACANT', load_state = 'UNKNOWN', current_part_id = NULL, current_container_type_id = NULL, row_version = row_version + 1, updated_at = now()
+WHERE layout_slot_id IN (
+    SELECT ls.id FROM master.layout_slots ls
+    JOIN master.layouts l ON l.id = ls.layout_id
+    JOIN master.machines m ON m.id = l.machine_id
+    WHERE m.code = 'SH-01-A' AND ls.slot_role NOT IN ('EMPTY_STORAGE', 'DROP')
+);
 "@
-$testCleanupSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
+    $resetSimSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
+}
+
+# Persistent startup never owns historical test-prefixed operational records.
+# Test harnesses retire their exact owned IDs in their isolated database.
 
 # Resolve development password
 $plainPassword = $null
@@ -333,8 +408,6 @@ if (-not [string]::IsNullOrWhiteSpace($Password)) {
 if (-not [string]::IsNullOrWhiteSpace($plainPassword)) {
     $passwordHash = New-Pbkdf2Hash51 $plainPassword
     $passwordHashSql = "'" + $passwordHash.Replace("'", "''") + "'"
-    $fatihPasswordHash = New-Pbkdf2Hash51 '123456789123'
-    $fatihPasswordHashSql = "'" + $fatihPasswordHash.Replace("'", "''") + "'"
     $plainPassword = $null
     $passwordHash = $null
 
@@ -344,8 +417,7 @@ VALUES
   ('dev-admin', __PASSWORD_HASH__, 'Development Administrator', 'DEV-ADM', true),
   ('dev-supervisor', __PASSWORD_HASH__, 'Development Supervisor', 'DEV-SUP', true),
   ('dev-line', __PASSWORD_HASH__, 'Development Line Operator', 'DEV-LINE', true),
-  ('dev-warehouse', __PASSWORD_HASH__, 'Development Warehouse Operator', 'DEV-WH', true),
-  ('fatih', __FATIH_PASSWORD_HASH__, 'Fatih', '11111111', true)
+  ('dev-warehouse', __PASSWORD_HASH__, 'Development Warehouse Operator', 'DEV-WH', true)
 ON CONFLICT (username) DO UPDATE
 SET password_hash = EXCLUDED.password_hash,
     full_name = EXCLUDED.full_name,
@@ -372,12 +444,8 @@ SELECT u.id, r.id FROM auth.users u CROSS JOIN auth.roles r
 WHERE u.username = 'dev-warehouse' AND r.code = 'WAREHOUSE_OPERATOR'
 ON CONFLICT DO NOTHING;
 
-INSERT INTO auth.user_roles (user_id, role_id)
-SELECT u.id, r.id FROM auth.users u CROSS JOIN auth.roles r
-WHERE u.username = 'fatih' AND r.code = 'ADMIN'
-ON CONFLICT DO NOTHING;
 "@
-    $devBootstrapSql = $devBootstrapSql.Replace('__PASSWORD_HASH__', $passwordHashSql).Replace('__FATIH_PASSWORD_HASH__', $fatihPasswordHashSql)
+    $devBootstrapSql = $devBootstrapSql.Replace('__PASSWORD_HASH__', $passwordHashSql)
     $devBootstrapSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Dev user provisioning failed with exit code $LASTEXITCODE" }
 }
@@ -393,25 +461,25 @@ VALUES
 ON CONFLICT (device_code) DO UPDATE
 SET name = EXCLUDED.name, is_active = true;
 
--- Permissions on SH-01-A
+-- Permissions for all active machines
 INSERT INTO auth.user_machine_permissions (user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
 SELECT u.id, m.id, true, true, true, false
 FROM auth.users u CROSS JOIN master.machines m
-WHERE u.username = 'dev-supervisor' AND m.code = 'SH-01-A'
+WHERE u.username = 'dev-supervisor' AND m.is_active
 ON CONFLICT (user_id, machine_id) DO UPDATE
 SET can_view = true, can_operate = true, can_change_variant = true, can_manage_slots = false;
 
 INSERT INTO auth.user_machine_permissions (user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
 SELECT u.id, m.id, true, true, false, false
 FROM auth.users u CROSS JOIN master.machines m
-WHERE u.username = 'dev-line' AND m.code = 'SH-01-A'
+WHERE u.username = 'dev-line' AND m.is_active
 ON CONFLICT (user_id, machine_id) DO UPDATE
 SET can_view = true, can_operate = true, can_change_variant = false, can_manage_slots = false;
 
 INSERT INTO auth.user_machine_permissions (user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
 SELECT u.id, m.id, true, true, false, false
 FROM auth.users u CROSS JOIN master.machines m
-WHERE u.username = 'dev-warehouse' AND m.code = 'SH-01-A'
+WHERE u.username = 'dev-warehouse' AND m.is_active
 ON CONFLICT (user_id, machine_id) DO UPDATE
 SET can_view = true, can_operate = true, can_change_variant = false, can_manage_slots = false;
 '@
@@ -452,7 +520,7 @@ JOIN master.navigation_profiles np ON np.machine_id = m.id AND np.code = 'DEV-RD
 WHERE m.code = 'SH-01-A'
 ON CONFLICT (variant_id, navigation_profile_id) DO UPDATE SET is_default = true;
 
--- Machine runtime state for SH-01-A
+-- Machine runtime state for SH-01-A (preserve existing valid selection)
 INSERT INTO ops.machine_runtime_state (
     machine_id, active_variant_id, active_layout_id, active_navigation_id
 )
@@ -469,48 +537,133 @@ SET active_variant_id = EXCLUDED.active_variant_id,
     active_layout_id = EXCLUDED.active_layout_id,
     active_navigation_id = EXCLUDED.active_navigation_id,
     row_version = ops.machine_runtime_state.row_version + 1,
-    updated_at = now();
+    updated_at = now()
+WHERE ops.machine_runtime_state.active_variant_id IS NULL
+   OR ops.machine_runtime_state.active_layout_id IS NULL;
 '@
 }
 
 $devEnvironmentSql += @'
 
--- Initial 3 test slot states for SH-01-A default layout
-WITH candidate_slots AS (
-    SELECT ls.id, ROW_NUMBER() OVER (ORDER BY ls.display_order, ls.code) as rn
+-- Ensure baseline runtime state exists for every active customer machine with published layout.
+-- Missing rows are inserted only; existing valid selections are NEVER overwritten.
+WITH candidate_variants AS (
+    SELECT
+        m.id AS machine_id,
+        v.id AS variant_id,
+        vla.layout_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY m.id
+            ORDER BY
+                (CASE WHEN vla.is_default THEN 0 ELSE 1 END),
+                v.display_order ASC,
+                v.code ASC,
+                l.version DESC,
+                l.code ASC
+        ) as rn
     FROM master.machines m
-    JOIN master.variants v ON v.machine_id = m.id AND v.code = '1'
-    JOIN master.variant_layout_assignments a ON a.variant_id = v.id AND a.machine_id = m.id AND a.is_default
-    JOIN master.layout_slots ls ON ls.layout_id = a.layout_id
-    WHERE m.code = 'SH-01-A' AND ls.slot_role <> 'MACHINE' AND ls.is_enabled
+    JOIN master.variants v ON v.machine_id = m.id AND v.is_active
+    JOIN master.variant_layout_assignments vla ON vla.variant_id = v.id AND vla.machine_id = m.id
+    JOIN master.layouts l ON l.id = vla.layout_id AND l.machine_id = m.id AND l.status = 'PUBLISHED'
+    WHERE m.is_active
+),
+selected_machine_defaults AS (
+    SELECT cv.machine_id, cv.variant_id, cv.layout_id
+    FROM candidate_variants cv
+    WHERE cv.rn = 1
+),
+nav_candidates AS (
+    SELECT
+        smd.machine_id,
+        np.id AS navigation_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY smd.machine_id
+            ORDER BY (CASE WHEN vnpa.is_default THEN 0 ELSE 1 END), np.version DESC
+        ) AS nav_rn,
+        COUNT(*) OVER (
+            PARTITION BY smd.machine_id
+        ) AS nav_count
+    FROM selected_machine_defaults smd
+    JOIN master.variant_navigation_profile_assignments vnpa
+      ON vnpa.variant_id = smd.variant_id AND vnpa.machine_id = smd.machine_id
+    JOIN master.navigation_profiles np
+      ON np.id = vnpa.navigation_profile_id AND np.machine_id = smd.machine_id AND np.status = 'PUBLISHED'
 )
-INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state, current_part_id, current_container_type_id)
+INSERT INTO ops.machine_runtime_state (
+    machine_id,
+    active_variant_id,
+    active_layout_id,
+    active_navigation_id,
+    row_version,
+    updated_at
+)
 SELECT
-    cs.id,
-    CASE cs.rn
-        WHEN 1 THEN 'VACANT'
-        WHEN 2 THEN 'OCCUPIED'
-        WHEN 3 THEN 'OCCUPIED'
-    END,
-    CASE cs.rn
-        WHEN 1 THEN 'UNKNOWN'
-        WHEN 2 THEN 'EMPTY'
-        WHEN 3 THEN 'FULL'
-    END,
-    NULL,
-    NULL
-FROM candidate_slots cs
-WHERE cs.rn IN (1, 2, 3)
-ON CONFLICT (layout_slot_id) DO UPDATE
-SET occupancy_state = EXCLUDED.occupancy_state,
-    load_state = EXCLUDED.load_state,
-    current_part_id = NULL,
-    current_container_type_id = NULL,
-    row_version = ops.slot_runtime_state.row_version + 1,
-    updated_at = now();
+    smd.machine_id,
+    smd.variant_id,
+    smd.layout_id,
+    CASE WHEN nc.nav_count = 1 THEN nc.navigation_id ELSE NULL END,
+    0,
+    now()
+FROM selected_machine_defaults smd
+LEFT JOIN nav_candidates nc ON nc.machine_id = smd.machine_id AND nc.nav_rn = 1
+ON CONFLICT (machine_id) DO UPDATE
+SET active_variant_id = EXCLUDED.active_variant_id,
+    active_layout_id = EXCLUDED.active_layout_id,
+    active_navigation_id = EXCLUDED.active_navigation_id,
+    updated_at = now()
+WHERE ops.machine_runtime_state.active_variant_id IS NULL
+   OR ops.machine_runtime_state.active_layout_id IS NULL;
+
+-- Ensure all enabled layout slots for active machines have an initial slot runtime state row if missing
+INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+SELECT ls.id, 'VACANT', 'UNKNOWN'
+FROM master.layout_slots ls
+JOIN master.layouts l ON l.id = ls.layout_id AND l.status = 'PUBLISHED'
+JOIN master.machines m ON m.id = l.machine_id AND m.is_active
+WHERE ls.is_enabled
+ON CONFLICT (layout_slot_id) DO NOTHING;
+
+-- Development default priorities for production end cleanup (REMOVE_FULL=40, REMOVE_EMPTY=70)
+INSERT INTO master.production_end_priorities (operation_code, priority)
+VALUES ('REMOVE_FULL', 40), ('REMOVE_EMPTY', 70)
+ON CONFLICT (operation_code) DO NOTHING;
 '@
 $devEnvironmentSql | & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Dev environment seeding failed with exit code $LASTEXITCODE" }
+
+# Local startup preflight validation
+$preflightSql = @"
+SELECT
+    (SELECT count(*) FROM master.machines WHERE is_active)::text
+    || '|' || (SELECT count(*) FROM ops.machine_runtime_state rs JOIN master.machines m ON m.id = rs.machine_id WHERE m.is_active AND rs.active_variant_id IS NOT NULL AND rs.active_layout_id IS NOT NULL)::text
+    || '|' || (SELECT count(*) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1')::text
+    || '|' || (SELECT count(DISTINCT v.id) FROM master.variants v JOIN master.variant_navigation_profile_assignments a ON a.variant_id = v.id JOIN master.navigation_profiles n ON n.id = a.navigation_profile_id WHERE n.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1' AND n.config_json ->> 'layoutBindingState' = 'SOURCE_BACKED')::text
+    || '|' || (SELECT count(*) FROM master.task_templates WHERE config_json ->> 'templateRegistry' = 'tkg_variant_task_templates_v1')::text
+    || '|' || (SELECT count(*) FROM ops.store_locations WHERE code ~ '^FG-(0[1-9]|1[0-9])$' AND is_enabled)::text
+    || '|' || (SELECT count(*) FROM integration.rds_worksites)::text
+"@
+
+$pfRaw = Invoke-DevPsqlScalar $Database $preflightSql
+$pfParts = if ($pfRaw) { $pfRaw.Trim().Split('|') } else { @() }
+$pfActiveMachines   = if ($pfParts.Length -ge 1) { $pfParts[0] } else { '0' }
+$pfConfiguredRows   = if ($pfParts.Length -ge 2) { $pfParts[1] } else { '0' }
+$pfRegistryProfiles = if ($pfParts.Length -ge 3) { $pfParts[2] } else { '0' }
+$pfSourceVariants   = if ($pfParts.Length -ge 4) { $pfParts[3] } else { '0' }
+$pfGenericTemplates = if ($pfParts.Length -ge 5) { $pfParts[4] } else { '0' }
+$pfFgLocations      = if ($pfParts.Length -ge 6) { $pfParts[5] } else { '0' }
+$pfLiveWorksites    = if ($pfParts.Length -ge 7) { $pfParts[6] } else { '0' }
+
+Write-Host ""
+Write-Host "================ Preflight Validation ================" -ForegroundColor Cyan
+Write-Host ("  Active Machines:          {0,-4} (baseline: 9)" -f $pfActiveMachines)
+Write-Host ("  Configured Machine Rows:  {0,-4} (baseline: 9)" -f $pfConfiguredRows)
+Write-Host ("  Registry NAV Profiles:    {0,-4} (baseline: 25)" -f $pfRegistryProfiles)
+Write-Host ("  Source-backed Variants:   {0,-4} (baseline: 24)" -f $pfSourceVariants)
+Write-Host ("  Generic Task Templates:   {0,-4} (baseline: 96)" -f $pfGenericTemplates)
+Write-Host ("  FG Internal Locations:    {0,-4} (baseline: 19)" -f $pfFgLocations)
+Write-Host ("  Live RDS WorkSites:       {0,-4} (persistent state)" -f $pfLiveWorksites)
+Write-Host "======================================================" -ForegroundColor Cyan
+Write-Host ""
 
 # 2. Check if previous stack processes are running; stop them safely before building
 # 2a. Check .runtime/api.pid
@@ -819,7 +972,6 @@ Write-Host "RDS:"
 Write-Host $rdsStatusDisplay
 Write-Host ""
 Write-Host "Accounts:"
-Write-Host "fatih (Password: 123456789123 / Sicil: 11111111 / Role: ADMIN)"
 Write-Host "dev-admin"
 Write-Host "dev-supervisor"
 Write-Host "dev-line"

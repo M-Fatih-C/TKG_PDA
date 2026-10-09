@@ -201,6 +201,15 @@ public static class PdaOperationalContextPolicy
 
     private static PdaExecutionReadinessRecord ExecutionReadiness(RdsWorkSiteProjectionRecord workSite)
     {
+        if (workSite.IsMapped && workSite.PhysicalState is { } state)
+        {
+            var code = workSite.ConsistencyResult == "PHYSICAL_STATE_MISMATCH" ? "RDS_WORKSITE_OCCUPANCY_CONFLICT"
+                : RdsPhysicalAvailabilityPolicy.ErrorCode(state)
+                    ?? (workSite.ConsistencyResult == "PHYSICAL_STATE_UNKNOWN" ? "RDS_WORKSITE_STATE_UNKNOWN" : null);
+            return new(true, code is null, code,
+                code is null ? null : "Fiziksel alanı ve TKG konumunu kontrol edip RDS senkronundan sonra yeniden deneyin.", workSite.ConsistencyResult);
+        }
+
         if (!workSite.IsMapped)
         {
             return new(false, false, "RDS_WORKSITE_NOT_MAPPED", "Bu lojistik konumu henüz bir RDS WorkSite ile eşleştirilmemiştir.");
@@ -277,6 +286,12 @@ public static class PdaOperationalContextPolicy
             return Disabled(operation, "SLOT_BUSY", "Bu lojistik konumunu kullanan aktif bir taşıma talebi bulunuyor.");
         }
 
+        if (slot.RdsWorkSite.IsMapped && slot.RdsWorkSite.PhysicalState is not null)
+        {
+            var readiness = ExecutionReadiness(slot.RdsWorkSite);
+            if (!readiness.IsExecutionReady) return Disabled(operation, readiness.ReadinessCode!, readiness.ReadinessMessage!);
+        }
+
         var stateMatches = action switch
         {
             TransportTaskType.BringEmpty or TransportTaskType.BringFull =>
@@ -311,10 +326,19 @@ public static class PdaOperationalContextPolicy
             request.ContainerTypeId,
             request.Priority,
             request.CreatedAt,
+            request.PartCode,
+            request.PartDescription,
+            request.RelationType,
+            request.ReadinessState,
+            request.QueuePosition,
+            Math.Max(0, request.AgeSeconds),
+            request.ExecutionElapsedSeconds is { } elapsed ? Math.Max(0, elapsed) : null,
             cancellation.Enabled,
             cancellation.DisabledCode,
             cancellation.DisabledMessage,
-            PdaExecutionProjector.Project(request));
+            PdaExecutionProjector.Project(request),
+            request.ChainState,
+            request.ProductionEnd);
     }
 
     private static PdaAvailableActionRecord EvaluateCancellation(
@@ -332,13 +356,13 @@ public static class PdaOperationalContextPolicy
             return Disabled("CANCEL", "MACHINE_OPERATION_NOT_PERMITTED", "Bu makinede operasyon yetkiniz bulunmuyor.");
         }
 
-        var elevated = actor.Roles.Contains(KnownRoleCodes.Admin)
+        // WP-05: the machine-scoped cancel endpoint requires PolicyNames.ProductionOperator
+        // (ADMIN, SUPERVISOR, LINE_OPERATOR). No warehouse role may cancel, not even its
+        // own delivery, so the UI must not offer a button that the endpoint refuses.
+        var mayCancel = actor.Roles.Contains(KnownRoleCodes.Admin)
             || actor.Roles.Contains(KnownRoleCodes.Supervisor)
             || actor.Roles.Contains(KnownRoleCodes.LineOperator);
-        var warehouseOwnBring = actor.Roles.Contains(KnownRoleCodes.WarehouseOperator)
-            && TransportRules.DeliversToMachine(request.Operation)
-            && request.IsMine;
-        if (!elevated && !warehouseOwnBring)
+        if (!mayCancel)
         {
             return Disabled("CANCEL", "CANCELLATION_NOT_ALLOWED_FOR_ROLE", "Bu talebi iptal etme yetkiniz bulunmuyor.");
         }

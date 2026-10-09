@@ -16,7 +16,8 @@ public sealed record DeviceRecord(
     string Code,
     string Name,
     string Type,
-    bool IsActive);
+    bool IsActive,
+    Guid? MachineId = null);
 
 public sealed record MachinePermissionRecord(
     Guid MachineId,
@@ -57,7 +58,9 @@ public sealed record MachineRelatedPartRecord(
     Guid PartId,
     string PartCode,
     string? Description,
-    string RelationType);
+    string RelationType,
+    bool Requestable = true,
+    IReadOnlyList<string>? Blockers = null);
 
 /// <summary>
 /// WP-03A: a machine-level main-part selection option, deduplicated across all
@@ -92,7 +95,9 @@ public sealed record RdsWorkSiteProjectionRecord(
     int? SyncFailed,
     string? Content,
     string? AgvId,
-    DateTimeOffset? LastSyncAt);
+    DateTimeOffset? LastSyncAt,
+    string? PhysicalState = null,
+    string? ConsistencyResult = null);
 
 public sealed record SlotContextDataRecord(
     Guid Id,
@@ -128,7 +133,8 @@ public sealed record PdaExecutionReadinessRecord(
     bool RdsWorkSiteMapped,
     bool IsExecutionReady,
     string? ReadinessCode,
-    string? ReadinessMessage);
+    string? ReadinessMessage,
+    string? ConsistencyResult = null);
 
 public sealed record SlotContextRecord(
     Guid Id,
@@ -226,7 +232,22 @@ public sealed record ActiveTransportDataRecord(
     string? FailureCode,
     string? FailureMessage,
     Guid CorrelationId,
-    RdsTaskDataRecord? RdsTask);
+    RdsTaskDataRecord? RdsTask,
+    // WP-07 projection-only values. Everything below is derived server-side from
+    // PostgreSQL (master data, request row, server clock); none of it is persisted.
+    string? PartCode = null,
+    string? PartDescription = null,
+    // MAIN_PART, ALT_PART, RELATED, CONSUMABLE, OTHER, or null when master data
+    // gives no evidence. Never guessed.
+    string? RelationType = null,
+    string ReadinessState = "NOT_REQUIRED",
+    // TKG's deterministic ordering of this machine's active requests (1-based).
+    // It is not an RDS queue position and not a robot position.
+    int? QueuePosition = null,
+    long AgeSeconds = 0,
+    long? ExecutionElapsedSeconds = null,
+    string? ChainState = null,
+    bool ProductionEnd = false);
 
 /// <summary>
 /// Business execution view for the PDA. Raw RDS identifiers — taskRecordId,
@@ -269,10 +290,19 @@ public sealed record ActiveTransportRequestRecord(
     Guid? ContainerTypeId,
     int Priority,
     DateTimeOffset CreatedAt,
+    string? PartCode,
+    string? PartDescription,
+    string? RelationType,
+    string ReadinessState,
+    int? QueuePosition,
+    long AgeSeconds,
+    long? ExecutionElapsedSeconds,
     bool CanCancel,
     string? CancelDisabledCode,
     string? CancelDisabledMessage,
-    PdaExecutionProjectionRecord Execution);
+    PdaExecutionProjectionRecord Execution,
+    string? ChainState = null,
+    bool ProductionEnd = false);
 
 /// <summary>
 /// Customer UI — Warehouse Preparation Console: the minimum, self-contained
