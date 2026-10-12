@@ -68,6 +68,9 @@ Type: filesandordirs; Name: "{app}\Tools"
 Type: filesandordirs; Name: "{app}\PostgreSQL"
 
 [Code]
+function SetEnvironmentVariable(lpName, lpValue: string): BOOL;
+external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
 var
   ServerPage: TInputQueryWizardPage;
   DbPage: TInputQueryWizardPage;
@@ -210,6 +213,9 @@ begin
     if RdsPage.Values[5] = '0' then
       DispatchFlag := '$false';
 
+    SetEnvironmentVariable('TKG_SETUP_DB_PASSWORD', DbPage.Values[4]);
+    SetEnvironmentVariable('TKG_SETUP_ADMIN_PASSWORD', AdminAuthPage.Values[0]);
+
     Params := Format('-NoProfile -ExecutionPolicy Bypass -File "%s\Tools\Install-TkgServer.ps1" ' +
       '-SourceDir "%s" ' +
       '-InstallDir "%s" ' +
@@ -219,9 +225,7 @@ begin
       '-DbPort %s ' +
       '-DbName "%s" ' +
       '-DbUser "%s" ' +
-      '-DbPassword "%s" ' +
       '-AppDbUser "%s" ' +
-      '-AdminPassword "%s" ' +
       '-RdsBaseUrl "%s" ' +
       '-RdsCoreBaseUrl "%s" ' +
       '-RdsCallbackUrl "%s" ' +
@@ -238,9 +242,7 @@ begin
         DbPage.Values[1],
         DbPage.Values[2],
         DbPage.Values[3],
-        DbPage.Values[4],
         DbPage.Values[5],
-        AdminAuthPage.Values[0],
         RdsPage.Values[0],
         RdsPage.Values[1],
         RdsPage.Values[2],
@@ -250,7 +252,13 @@ begin
         '{#AppVersion}'
       ]);
 
-    Exec(PwshExe, Params, '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+    try
+      Exec(PwshExe, Params, '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+    finally
+      SetEnvironmentVariable('TKG_SETUP_DB_PASSWORD', '');
+      SetEnvironmentVariable('TKG_SETUP_ADMIN_PASSWORD', '');
+    end;
+
     if ResultCode <> 0 then
     begin
       MsgBox('Sunucu kurulumu basarisiz oldu. Ayrintilar icin C:\ProgramData\TKG PDA\Logs altindaki log dosyasini inceleyin.', mbCriticalError, MB_OK);

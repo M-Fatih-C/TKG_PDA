@@ -23,7 +23,9 @@ param(
     [string]$MigrationsDir = '',
     [string]$SeedsDir = '',
     [switch]$IsUpdate = $false,
-    [switch]$SkipServiceRegistration = $false
+    [switch]$SkipServiceRegistration = $false,
+    [switch]$RotateAppPassword = $false,
+    [string]$SecretsFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,14 +133,37 @@ if (-not (Test-Path $MigrationsDir)) {
     throw "Migrations directory not found: $MigrationsDir"
 }
 
-# 3. Connection Environment
+# 3. Resolve Secrets from Transient File / Environment
+if (![string]::IsNullOrWhiteSpace($SecretsFile) -and (Test-Path $SecretsFile)) {
+    try {
+        $sJson = Get-Content -Path $SecretsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($sJson.Password) { $Password = $sJson.Password }
+        if ($sJson.DbPassword) { $Password = $sJson.DbPassword }
+        if ($sJson.AppPassword) { $AppPassword = $sJson.AppPassword }
+        if ($sJson.AppDbPassword) { $AppPassword = $sJson.AppDbPassword }
+        if ($sJson.AdminPassword) { $AdminPassword = $sJson.AdminPassword }
+    } catch {
+        Write-SecureLog "Warning: Failed to read secrets file: $($_.Exception.Message)" "WARN"
+    }
+}
+if ([string]::IsNullOrWhiteSpace($Password) -and -not [string]::IsNullOrWhiteSpace($env:TKG_SETUP_DB_PASSWORD)) {
+    $Password = $env:TKG_SETUP_DB_PASSWORD
+}
+if ([string]::IsNullOrWhiteSpace($AppPassword) -and -not [string]::IsNullOrWhiteSpace($env:TKG_SETUP_APP_DB_PASSWORD)) {
+    $AppPassword = $env:TKG_SETUP_APP_DB_PASSWORD
+}
+if ([string]::IsNullOrWhiteSpace($AdminPassword) -and -not [string]::IsNullOrWhiteSpace($env:TKG_SETUP_ADMIN_PASSWORD)) {
+    $AdminPassword = $env:TKG_SETUP_ADMIN_PASSWORD
+}
+
+# 4. Connection Environment
 $prevPgPassword = $env:PGPASSWORD
 if (![string]::IsNullOrWhiteSpace($Password)) {
     $env:PGPASSWORD = $Password
 }
 
 try {
-    # 4. Check PostgreSQL Availability
+    # 5. Check PostgreSQL Availability
     Write-SecureLog "Checking PostgreSQL connectivity at $HostName`:$Port..."
     $ready = $false
     for ($i = 0; $i -lt 5; $i++) {
@@ -238,32 +263,39 @@ try {
         return ($out -join "`n").Trim()
     }
 
-    # Ensure dedicated application password exists
-    if ([string]::IsNullOrWhiteSpace($AppPassword)) {
-        $rngBytes = New-Object byte[] 24
-        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-        $rng.GetBytes($rngBytes)
-        $rng.Dispose()
-        $AppPassword = [Convert]::ToBase64String($rngBytes).Replace('+','a').Replace('/','b').Replace('=','c')
-    }
-
-    # Check/Create dedicated AppUser
+    # Check/Create dedicated AppUser with least-privilege boundary
     $userExists = Invoke-AdminPsqlScalar 'postgres' "SELECT 1 FROM pg_roles WHERE rolname = '$AppUser';"
     if ($userExists -ne '1') {
-        Write-SecureLog "Creating dedicated application role '$AppUser'..."
-        & $psql @commonAdminPsql -d 'postgres' -c "CREATE ROLE $AppUser WITH LOGIN PASSWORD '$AppPassword';" | Out-Null
+        # Fresh install or initial creation: ensure application password exists
+        if ([string]::IsNullOrWhiteSpace($AppPassword)) {
+            $rngBytes = New-Object byte[] 24
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            $rng.GetBytes($rngBytes)
+            $rng.Dispose()
+            $AppPassword = [Convert]::ToBase64String($rngBytes).Replace('+','a').Replace('/','b').Replace('=','c')
+        }
+        $escapedAppPw = $AppPassword.Replace("'", "''")
+        Write-SecureLog "Creating dedicated application role '$AppUser' (NOSUPERUSER, NOCREATEDB)..."
+        & $psql @commonAdminPsql -d 'postgres' -c "CREATE ROLE $AppUser WITH LOGIN PASSWORD '$escapedAppPw' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to create database role $AppUser" }
+    } elseif ($RotateAppPassword -and (-not [string]::IsNullOrWhiteSpace($AppPassword))) {
+        # Explicit rotation requested
+        $escapedAppPw = $AppPassword.Replace("'", "''")
+        Write-SecureLog "Explicit password rotation requested for application role '$AppUser'..."
+        & $psql @commonAdminPsql -d 'postgres' -c "ALTER ROLE $AppUser WITH LOGIN PASSWORD '$escapedAppPw' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to rotate password for database role $AppUser" }
     } else {
-        Write-SecureLog "Updating password for existing application role '$AppUser'..."
-        & $psql @commonAdminPsql -d 'postgres' -c "ALTER ROLE $AppUser WITH LOGIN PASSWORD '$AppPassword';" | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Failed to update database role $AppUser" }
+        # Normal update or role already exists: PRESERVE existing credentials without ALTER ROLE
+        Write-SecureLog "Existing application role '$AppUser' found. Preserving runtime credentials without modification."
+        # Ensure least-privilege boundary is strictly maintained
+        & $psql @commonAdminPsql -d 'postgres' -c "ALTER ROLE $AppUser NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;" | Out-Null
     }
 
-    # Check/Create Database
+    # Check/Create Database (Owned by maintenance deployment user)
     $dbCheck = Invoke-AdminPsqlScalar 'postgres' "SELECT 1 FROM pg_database WHERE datname = '$Database';"
     if ($dbCheck -ne '1') {
-        Write-SecureLog "Database '$Database' does not exist. Creating with owner '$AppUser'..."
-        & $psql @commonAdminPsql -d 'postgres' -c "CREATE DATABASE $Database OWNER $AppUser ENCODING 'UTF8';" | Out-Null
+        Write-SecureLog "Database '$Database' does not exist. Creating with owner '$Username'..."
+        & $psql @commonAdminPsql -d 'postgres' -c "CREATE DATABASE $Database OWNER $Username ENCODING 'UTF8';" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to create database $Database" }
         Write-SecureLog "Database '$Database' created successfully."
     } else {
@@ -439,4 +471,10 @@ END `$`$;
 }
 finally {
     $env:PGPASSWORD = $prevPgPassword
+    Remove-Item Env:TKG_SETUP_DB_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:TKG_SETUP_APP_DB_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:TKG_SETUP_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+    if (![string]::IsNullOrWhiteSpace($SecretsFile) -and (Test-Path $SecretsFile)) {
+        Remove-Item -Path $SecretsFile -Force -ErrorAction SilentlyContinue
+    }
 }

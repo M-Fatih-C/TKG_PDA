@@ -36,7 +36,9 @@ param(
     [string]$RdsIntegrationKey = '',
     [string]$RdsCallbackKey = '',
     [bool]$RdsDispatchEnabled = $true,
-    [string]$Version = '1.0.0'
+    [string]$Version = '1.0.0',
+    [string]$SecretsFile = '',
+    [switch]$SkipServiceRegistration = $false
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,7 +81,28 @@ function Test-IsLoopbackHost {
 }
 
 try {
-    # 2. Topology Validation
+    # 2. Resolve Secrets from Transient File / Environment
+    if (![string]::IsNullOrWhiteSpace($SecretsFile) -and (Test-Path $SecretsFile)) {
+        try {
+            $sJson = Get-Content -Path $SecretsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($sJson.DbPassword) { $DbPassword = $sJson.DbPassword }
+            if ($sJson.AppDbPassword) { $AppDbPassword = $sJson.AppDbPassword }
+            if ($sJson.AdminPassword) { $AdminPassword = $sJson.AdminPassword }
+        } catch {
+            Log-Message "Warning: Failed to read secrets file: $($_.Exception.Message)" "WARN"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($DbPassword) -and -not [string]::IsNullOrWhiteSpace($env:TKG_SETUP_DB_PASSWORD)) {
+        $DbPassword = $env:TKG_SETUP_DB_PASSWORD
+    }
+    if ([string]::IsNullOrWhiteSpace($AppDbPassword) -and -not [string]::IsNullOrWhiteSpace($env:TKG_SETUP_APP_DB_PASSWORD)) {
+        $AppDbPassword = $env:TKG_SETUP_APP_DB_PASSWORD
+    }
+    if ([string]::IsNullOrWhiteSpace($AdminPassword) -and -not [string]::IsNullOrWhiteSpace($env:TKG_SETUP_ADMIN_PASSWORD)) {
+        $AdminPassword = $env:TKG_SETUP_ADMIN_PASSWORD
+    }
+
+    # 3. Topology Validation
     if ([string]::IsNullOrWhiteSpace($RdsCallbackUrl)) {
         $RdsCallbackUrl = "http://127.0.0.1:$ServerPort/api/integrations/rds/events"
     }
@@ -155,6 +178,9 @@ try {
     $destPg = Join-Path $InstallDir 'PostgreSQL'
     if (Test-Path $srcPg) {
         Log-Message "Deploying bundled PostgreSQL runtime..."
+        if (-not (Test-Path $destPg)) {
+            New-Item -ItemType Directory -Path $destPg -Force | Out-Null
+        }
         Copy-Item -Path "$srcPg\*" -Destination $destPg -Recurse -Force
     }
 
@@ -193,6 +219,9 @@ try {
     if (-not (Test-Path (Join-Path $candidatePgBin 'psql.exe'))) {
         $candidatePgBin = Join-Path $SourceDir 'PostgreSQL\bin'
     }
+    if (-not (Test-Path (Join-Path $candidatePgBin 'psql.exe'))) {
+        $candidatePgBin = ''
+    }
 
     $dbResult = & $installDbScript `
         -HostName $DbHost `
@@ -206,7 +235,8 @@ try {
         -PgBinPath $candidatePgBin `
         -DataDir $pgDataDir `
         -MigrationsDir $migrationsDir `
-        -SeedsDir $seedsDir
+        -SeedsDir $seedsDir `
+        -SkipServiceRegistration:$SkipServiceRegistration
 
     Log-Message "Database initialization verified with dedicated app user '$($dbResult.AppUser)'."
 
@@ -238,6 +268,12 @@ try {
 
         $cbKeyBytes = [System.Text.Encoding]::UTF8.GetBytes($RdsCallbackKey)
         $encCallbackKey = "dpapi:" + [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect($cbKeyBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine))
+
+        # Encrypt maintenance database credentials (never exposed to runtime API)
+        $maintUser = if ($dbResult.Username) { $dbResult.Username } else { $DbUser }
+        $maintPw = if ($dbResult.Password) { $dbResult.Password } else { $DbPassword }
+        $maintPwBytes = [System.Text.Encoding]::UTF8.GetBytes($maintPw)
+        $encMaintPassword = "dpapi:" + [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect($maintPwBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine))
     }
     catch {
         throw "DPAPI_ENCRYPTION_FAILED: DPAPI protection failed ($($_.Exception.Message)). Installation aborted to prevent insecure configuration."
@@ -314,46 +350,57 @@ try {
     $prodConfig | ConvertTo-Json -Depth 6 | Set-Content -Path $prodConfigFile -Encoding UTF8
     Log-Message "Production configuration saved to $prodConfigFile"
 
-    # Restrict ACL on Config directory to SYSTEM and Administrators
-    try {
-        & icacls "$configDir" /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null
-        Log-Message "Config directory ACL secured."
-    } catch {
-        Log-Message "ACL restriction warning: $_" "WARN"
+    # Save Separate Maintenance Database Configuration (DPAPI protected, restricted ACL)
+    $maintConfig = @{
+        Host = $DbHost
+        Port = $DbPort
+        Database = $DbName
+        MaintenanceUser = $maintUser
+        MaintenancePassword = $encMaintPassword
     }
+    $maintConfigFile = Join-Path $configDir 'maintenance.json'
+    $maintConfig | ConvertTo-Json -Depth 4 | Set-Content -Path $maintConfigFile -Encoding UTF8
+    Log-Message "Maintenance database credentials saved to $maintConfigFile (DPAPI protected, restricted ACL)."
 
-    # 8. Configure Windows Firewall
-    Log-Message "Configuring Windows Firewall for port $ServerPort..."
-    $fwScript = Join-Path $toolsDir 'Configure-Firewall.ps1'
-    if (-not (Test-Path $fwScript)) { $fwScript = Join-Path $SourceDir 'Tools\Configure-Firewall.ps1' }
-    & $fwScript -Port $ServerPort -Action Add
+    # Maintenance credentials are stored DPAPI LocalMachine protected in maintenance.json
+    Log-Message "Maintenance configuration secured with DPAPI LocalMachine."
 
-    # 9. Install & Start Windows Service
-    Log-Message "Registering and starting Windows Service 'TKG PDA Server'..."
-    $serviceScript = Join-Path $toolsDir 'Install-Service.ps1'
-    if (-not (Test-Path $serviceScript)) { $serviceScript = Join-Path $SourceDir 'Tools\Install-Service.ps1' }
+    if (-not $SkipServiceRegistration) {
+        # 8. Configure Windows Firewall
+        Log-Message "Configuring Windows Firewall for port $ServerPort..."
+        $fwScript = Join-Path $toolsDir 'Configure-Firewall.ps1'
+        if (-not (Test-Path $fwScript)) { $fwScript = Join-Path $SourceDir 'Tools\Configure-Firewall.ps1' }
+        & $fwScript -Port $ServerPort -Action Add
 
-    $apiExe = Join-Path $serverDir 'TkgPda.Api.exe'
-    & $serviceScript -Action Install -BinaryPath $apiExe -ServiceName 'TKG PDA Server'
+        # 9. Install & Start Windows Service
+        Log-Message "Registering and starting Windows Service 'TKG PDA Server'..."
+        $serviceScript = Join-Path $toolsDir 'Install-Service.ps1'
+        if (-not (Test-Path $serviceScript)) { $serviceScript = Join-Path $SourceDir 'Tools\Install-Service.ps1' }
 
-    # Configure Service Dependency on local PostgreSQL if local service exists
-    $localPgSvc = Get-Service -Name 'tkg-pda-postgres' -ErrorAction SilentlyContinue
-    if ($localPgSvc) {
-        Log-Message "Configuring service dependency: 'TKG PDA Server' -> 'tkg-pda-postgres'..."
-        & sc.exe config "TKG PDA Server" depend= "tkg-pda-postgres" | Out-Null
+        $apiExe = Join-Path $serverDir 'TkgPda.Api.exe'
+        & $serviceScript -Action Install -BinaryPath $apiExe -ServiceName 'TKG PDA Server'
+
+        # Configure Service Dependency on local PostgreSQL if local service exists
+        $localPgSvc = Get-Service -Name 'tkg-pda-postgres' -ErrorAction SilentlyContinue
+        if ($localPgSvc) {
+            Log-Message "Configuring service dependency: 'TKG PDA Server' -> 'tkg-pda-postgres'..."
+            & sc.exe config "TKG PDA Server" depend= "tkg-pda-postgres" | Out-Null
+        }
+
+        & $serviceScript -Action Start -ServiceName 'TKG PDA Server'
+
+        # 10. Verify Installation Health
+        Log-Message "Performing deployment smoke tests..."
+        Start-Sleep -Seconds 3
+
+        $testScript = Join-Path $toolsDir 'test-installed-server.ps1'
+        if (-not (Test-Path $testScript)) { $testScript = Join-Path $SourceDir 'Tools\test-installed-server.ps1' }
+
+        & $testScript -ServerHost '127.0.0.1' -Port $ServerPort -ServiceName 'TKG PDA Server'
+        Log-Message "Deployment smoke tests PASSED!"
+    } else {
+        Log-Message "SkipServiceRegistration is active: skipping firewall, Windows service, and smoke test."
     }
-
-    & $serviceScript -Action Start -ServiceName 'TKG PDA Server'
-
-    # 10. Verify Installation Health
-    Log-Message "Performing deployment smoke tests..."
-    Start-Sleep -Seconds 3
-
-    $testScript = Join-Path $toolsDir 'test-installed-server.ps1'
-    if (-not (Test-Path $testScript)) { $testScript = Join-Path $SourceDir 'Tools\test-installed-server.ps1' }
-
-    & $testScript -ServerHost '127.0.0.1' -Port $ServerPort -ServiceName 'TKG PDA Server'
-    Log-Message "Deployment smoke tests PASSED!"
 
     Log-Message "=================================================="
     Log-Message "INSTALLATION COMPLETED SUCCESSFULLY"
@@ -374,4 +421,12 @@ catch {
     Log-Message "INSTALLATION FAILED: $($_.Exception.Message)" "ERROR"
     Log-Message $_.ScriptStackTrace "ERROR"
     throw
+}
+finally {
+    Remove-Item Env:TKG_SETUP_DB_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:TKG_SETUP_ADMIN_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:TKG_SETUP_APP_DB_PASSWORD -ErrorAction SilentlyContinue
+    if (![string]::IsNullOrWhiteSpace($SecretsFile) -and (Test-Path $SecretsFile)) {
+        Remove-Item -Path $SecretsFile -Force -ErrorAction SilentlyContinue
+    }
 }
