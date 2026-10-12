@@ -57,9 +57,12 @@ if (Test-Path $configDir) {
 # 4. Database Dump via pg_dump
 $candidatePaths = @(
     $PgBinPath,
+    (Join-Path $InstallDir 'PostgreSQL\bin'),
+    'C:\Program Files\TKG PDA\PostgreSQL\bin',
     'C:\Program Files\PostgreSQL\18\bin',
     'C:\Program Files\PostgreSQL\17\bin',
-    'C:\Program Files\PostgreSQL\16\bin'
+    'C:\Program Files\PostgreSQL\16\bin',
+    'C:\Program Files\PostgreSQL\15\bin'
 )
 
 $pgdump = $null

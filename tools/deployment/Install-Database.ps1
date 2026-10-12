@@ -5,6 +5,8 @@
     Executes all required schema migrations (001-026) and canonical customer seeds
     idempotently without destroying or fabricating persistent data.
     Supports existing PostgreSQL instances as well as dedicated local instances.
+    Enforces SCRAM authentication, dedicated application user (tkg_app),
+    deterministic seed tracking via ops.applied_seeds, and secure first-admin bootstrap.
 #>
 [CmdletBinding()]
 param(
@@ -13,11 +15,15 @@ param(
     [string]$Database = 'tkg_pda',
     [string]$Username = 'postgres',
     [string]$Password = '',
+    [string]$AppUser = 'tkg_app',
+    [string]$AppPassword = '',
+    [string]$AdminPassword = '',
     [string]$PgBinPath = '',
     [string]$DataDir = 'C:\ProgramData\TKG PDA\PostgreSQL\data',
     [string]$MigrationsDir = '',
     [string]$SeedsDir = '',
-    [switch]$IsUpdate = $false
+    [switch]$IsUpdate = $false,
+    [switch]$SkipServiceRegistration = $false
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,33 +34,67 @@ function Write-SecureLog {
     Write-Host "[$timestamp][$Level] $Message"
 }
 
+# Helper: PBKDF2 SHA-512 password hasher (canonical TKG format)
+function New-Pbkdf2Hash51 {
+    param([Parameter(Mandatory = $true)][string]$PlainPassword)
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $salt = New-Object byte[] 16
+    $rng.GetBytes($salt)
+    $rng.Dispose()
+
+    $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
+        $PlainPassword,
+        $salt,
+        210000,
+        [System.Security.Cryptography.HashAlgorithmName]::SHA512
+    )
+    $hash = $derive.GetBytes(32)
+    $derive.Dispose()
+
+    return '$tkg-pbkdf2-sha512$v=1$i=210000$' + [Convert]::ToBase64String($salt) + '$' + [Convert]::ToBase64String($hash)
+}
+
 # 1. Resolve PostgreSQL Binaries
-$candidatePaths = @(
-    $PgBinPath,
-    'C:\Program Files\PostgreSQL\18\bin',
-    'C:\Program Files\PostgreSQL\17\bin',
-    'C:\Program Files\PostgreSQL\16\bin',
-    'C:\Program Files\PostgreSQL\15\bin'
-)
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Resolve-Path (Join-Path $scriptDir '..\..') -ErrorAction SilentlyContinue
 
 $resolvedPgBin = $null
-foreach ($cand in $candidatePaths) {
-    if (![string]::IsNullOrWhiteSpace($cand) -and (Test-Path (Join-Path $cand 'psql.exe'))) {
-        $resolvedPgBin = $cand
-        break
+if (![string]::IsNullOrWhiteSpace($PgBinPath)) {
+    if (Test-Path (Join-Path $PgBinPath 'psql.exe')) {
+        $resolvedPgBin = (Resolve-Path $PgBinPath).Path
+    } else {
+        throw "PostgreSQL client utilities (psql.exe) could not be found at specified path: $PgBinPath"
+    }
+} else {
+    $candidatePaths = @(
+        (Join-Path $scriptDir 'PostgreSQL\bin'),
+        (Join-Path $scriptDir '..\PostgreSQL\bin'),
+        (Join-Path (Split-Path -Parent $scriptDir) 'PostgreSQL\bin'),
+        'C:\Program Files\TKG PDA\PostgreSQL\bin',
+        'C:\Program Files\PostgreSQL\18\bin',
+        'C:\Program Files\PostgreSQL\17\bin',
+        'C:\Program Files\PostgreSQL\16\bin',
+        'C:\Program Files\PostgreSQL\15\bin'
+    )
+
+    foreach ($cand in $candidatePaths) {
+        if (![string]::IsNullOrWhiteSpace($cand) -and (Test-Path (Join-Path $cand 'psql.exe'))) {
+            $resolvedPgBin = (Resolve-Path $cand).Path
+            break
+        }
+    }
+
+    if (-not $resolvedPgBin) {
+        # Check PATH
+        $inPath = Get-Command 'psql.exe' -ErrorAction SilentlyContinue
+        if ($inPath) {
+            $resolvedPgBin = Split-Path $inPath.Source
+        }
     }
 }
 
 if (-not $resolvedPgBin) {
-    # Check PATH
-    $inPath = Get-Command 'psql.exe' -ErrorAction SilentlyContinue
-    if ($inPath) {
-        $resolvedPgBin = Split-Path $inPath.Source
-    }
-}
-
-if (-not $resolvedPgBin) {
-    throw "PostgreSQL client utilities (psql.exe) could not be found. Please install PostgreSQL or specify -PgBinPath."
+    throw "PostgreSQL client utilities (psql.exe) could not be found. Please specify -PgBinPath or install PostgreSQL."
 }
 
 Write-SecureLog "Using PostgreSQL binaries at: $resolvedPgBin"
@@ -62,14 +102,13 @@ $psql = Join-Path $resolvedPgBin 'psql.exe'
 $createdb = Join-Path $resolvedPgBin 'createdb.exe'
 $pgisready = Join-Path $resolvedPgBin 'pg_isready.exe'
 $initdb = Join-Path $resolvedPgBin 'initdb.exe'
+$pgctl = Join-Path $resolvedPgBin 'pg_ctl.exe'
 
 # 2. Resolve Migrations and Seeds directories
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$projectRoot = Resolve-Path (Join-Path $scriptDir '..\..') -ErrorAction SilentlyContinue
-
 if ([string]::IsNullOrWhiteSpace($MigrationsDir)) {
     $candMigrations = @(
         (Join-Path $scriptDir 'db\migrations'),
+        (Join-Path $scriptDir '..\db\migrations'),
         (Join-Path $projectRoot 'db\migrations')
     )
     foreach ($c in $candMigrations) {
@@ -80,6 +119,7 @@ if ([string]::IsNullOrWhiteSpace($MigrationsDir)) {
 if ([string]::IsNullOrWhiteSpace($SeedsDir)) {
     $candSeeds = @(
         (Join-Path $scriptDir 'db\seeds'),
+        (Join-Path $scriptDir '..\db\seeds'),
         (Join-Path $projectRoot 'db\seeds')
     )
     foreach ($c in $candSeeds) {
@@ -115,19 +155,72 @@ try {
         if (($HostName -eq '127.0.0.1' -or $HostName -eq 'localhost') -and (-not $IsUpdate)) {
             Write-SecureLog "PostgreSQL is not listening. Checking local data directory: $DataDir"
             if (-not (Test-Path (Join-Path $DataDir 'PG_VERSION'))) {
-                Write-SecureLog "Initializing dedicated local PostgreSQL cluster..."
+                Write-SecureLog "Initializing dedicated local PostgreSQL cluster with SCRAM authentication..."
                 if (-not (Test-Path $DataDir)) {
                     New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
                 }
-                & $initdb -D $DataDir -U $Username -A trust -E UTF8 --no-locale
-                if ($LASTEXITCODE -ne 0) { throw "initdb failed with exit code $LASTEXITCODE" }
+                
+                # If superuser password is not passed, generate strong password
+                if ([string]::IsNullOrWhiteSpace($Password)) {
+                    $rngBytes = New-Object byte[] 24
+                    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+                    $rng.GetBytes($rngBytes)
+                    $rng.Dispose()
+                    $Password = [Convert]::ToBase64String($rngBytes).Replace('+','a').Replace('/','b').Replace('=','c')
+                    $env:PGPASSWORD = $Password
+                }
+
+                $tempPwFile = [System.IO.Path]::GetTempFileName()
+                try {
+                    $Password | Set-Content -Path $tempPwFile -Encoding Ascii
+                    & $initdb -D $DataDir -U $Username -E UTF8 --no-locale -A scram-sha-256 --pwfile=$tempPwFile
+                    if ($LASTEXITCODE -ne 0) { throw "initdb failed with exit code $LASTEXITCODE" }
+                }
+                finally {
+                    if (Test-Path $tempPwFile) { Remove-Item -Path $tempPwFile -Force -ErrorAction SilentlyContinue }
+                }
             }
-            # Start local cluster
-            $pgctl = Join-Path $resolvedPgBin 'pg_ctl.exe'
-            $pgLog = Join-Path (Split-Path $DataDir -Parent) 'postgres_service.log'
-            Write-SecureLog "Starting PostgreSQL cluster..."
-            & $pgctl -D $DataDir -l $pgLog -o "-p $Port -h 127.0.0.1" -w start
-            if ($LASTEXITCODE -ne 0) { throw "pg_ctl start failed with exit code $LASTEXITCODE" }
+
+            # Register as Windows Service if elevated and not skipped
+            $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            $svcName = 'tkg-pda-postgres'
+            $existingSvc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+
+            if ($isElevated -and -not $SkipServiceRegistration) {
+                # Grant NetworkService rights to data directory for Windows Service hosting
+                try {
+                    & icacls "$DataDir" /grant "NT AUTHORITY\NetworkService:(OI)(CI)F" /T /Q | Out-Null
+                } catch { }
+
+                if (-not $existingSvc) {
+                    Write-SecureLog "Registering local PostgreSQL Windows Service '$svcName'..."
+                    & $pgctl register -N $svcName -D $DataDir -S auto -o "-p $Port -h 127.0.0.1"
+                    if ($LASTEXITCODE -ne 0) { throw "pg_ctl register failed with exit code $LASTEXITCODE" }
+                    & sc.exe description $svcName "TKG PDA Dedicated PostgreSQL Server" | Out-Null
+                    & sc.exe failure $svcName reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+                    & sc.exe failureflag $svcName 1 | Out-Null
+                }
+
+                Write-SecureLog "Starting Windows Service '$svcName'..."
+                Start-Service -Name $svcName
+            } else {
+                # In non-elevated or dev environments, start via pg_ctl
+                $pgLog = Join-Path (Split-Path $DataDir -Parent) 'postgres_service.log'
+                Write-SecureLog "Starting local PostgreSQL cluster via pg_ctl..."
+                & $pgctl -D $DataDir -l $pgLog -o "-p $Port -h 127.0.0.1" -w start
+                if ($LASTEXITCODE -ne 0) { throw "pg_ctl start failed with exit code $LASTEXITCODE" }
+            }
+
+            # Wait for readiness
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+                & $pgisready -h $HostName -p $Port -U $Username | Out-Null
+                if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+                Start-Sleep -Seconds 1
+            }
+            if (-not $ready) {
+                throw "PostgreSQL service failed to become ready after start."
+            }
         } else {
             throw "PostgreSQL server at $HostName`:$Port is not accessible."
         }
@@ -135,28 +228,53 @@ try {
 
     Write-SecureLog "PostgreSQL instance is online."
 
-    # 5. Create database if absent
-    $commonPsql = @('-X', '-h', $HostName, '-p', "$Port", '-U', $Username, '-w', '-v', 'ON_ERROR_STOP=1')
+    # 5. Dedicated Application User & Database Setup
+    $commonAdminPsql = @('-X', '-h', $HostName, '-p', "$Port", '-U', $Username, '-w', '-v', 'ON_ERROR_STOP=1')
 
-    function Invoke-PsqlScalar {
+    function Invoke-AdminPsqlScalar {
         param([string]$TargetDb, [string]$Sql)
-        $out = (& $psql @commonPsql -d $TargetDb -t -A -c $Sql 2>$null)
+        $out = (& $psql @commonAdminPsql -d $TargetDb -t -A -c $Sql 2>$null)
         if ($null -eq $out) { return '' }
         return ($out -join "`n").Trim()
     }
 
-    $dbCheck = Invoke-PsqlScalar 'postgres' "SELECT 1 FROM pg_database WHERE datname = '$Database';"
+    # Ensure dedicated application password exists
+    if ([string]::IsNullOrWhiteSpace($AppPassword)) {
+        $rngBytes = New-Object byte[] 24
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        $rng.GetBytes($rngBytes)
+        $rng.Dispose()
+        $AppPassword = [Convert]::ToBase64String($rngBytes).Replace('+','a').Replace('/','b').Replace('=','c')
+    }
+
+    # Check/Create dedicated AppUser
+    $userExists = Invoke-AdminPsqlScalar 'postgres' "SELECT 1 FROM pg_roles WHERE rolname = '$AppUser';"
+    if ($userExists -ne '1') {
+        Write-SecureLog "Creating dedicated application role '$AppUser'..."
+        & $psql @commonAdminPsql -d 'postgres' -c "CREATE ROLE $AppUser WITH LOGIN PASSWORD '$AppPassword';" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create database role $AppUser" }
+    } else {
+        Write-SecureLog "Updating password for existing application role '$AppUser'..."
+        & $psql @commonAdminPsql -d 'postgres' -c "ALTER ROLE $AppUser WITH LOGIN PASSWORD '$AppPassword';" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to update database role $AppUser" }
+    }
+
+    # Check/Create Database
+    $dbCheck = Invoke-AdminPsqlScalar 'postgres' "SELECT 1 FROM pg_database WHERE datname = '$Database';"
     if ($dbCheck -ne '1') {
-        Write-SecureLog "Database '$Database' does not exist. Creating..."
-        & $psql @commonPsql -d 'postgres' -c "CREATE DATABASE $Database ENCODING 'UTF8';"
+        Write-SecureLog "Database '$Database' does not exist. Creating with owner '$AppUser'..."
+        & $psql @commonAdminPsql -d 'postgres' -c "CREATE DATABASE $Database OWNER $AppUser ENCODING 'UTF8';" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Failed to create database $Database" }
         Write-SecureLog "Database '$Database' created successfully."
     } else {
         Write-SecureLog "Database '$Database' already exists."
     }
 
+    # Grant privileges on Database to AppUser
+    & $psql @commonAdminPsql -d 'postgres' -c "GRANT ALL PRIVILEGES ON DATABASE $Database TO $AppUser;" | Out-Null
+
     # 6. Apply Schema Migrations in numerical order (001 to 026)
-    $baseSchemaExists = Invoke-PsqlScalar $Database "SELECT to_regclass('auth.roles');"
+    $baseSchemaExists = Invoke-AdminPsqlScalar $Database "SELECT to_regclass('auth.roles');"
     Write-SecureLog "Executing migrations from: $MigrationsDir (BaseSchemaExists=$baseSchemaExists)"
     $migrationFiles = Get-ChildItem -Path $MigrationsDir -Filter "*.sql" | Sort-Object Name
     foreach ($mFile in $migrationFiles) {
@@ -165,65 +283,137 @@ try {
             continue
         }
         Write-SecureLog "Applying migration: $($mFile.Name)..."
-        & $psql @commonPsql -d $Database -f $mFile.FullName | Out-Null
+        & $psql @commonAdminPsql -d $Database -f $mFile.FullName | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Migration $($mFile.Name) failed with exit code $LASTEXITCODE"
         }
     }
     Write-SecureLog "All schema migrations applied successfully."
 
-    # 7. Apply Seeds
+    # Grant schema permissions to AppUser
+    $grantSql = @"
+GRANT USAGE, CREATE ON SCHEMA auth, master, ops, integration, audit TO $AppUser;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA auth, master, ops, integration, audit TO $AppUser;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA auth, master, ops, integration, audit TO $AppUser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA auth, master, ops, integration, audit GRANT ALL ON TABLES TO $AppUser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA auth, master, ops, integration, audit GRANT ALL ON SEQUENCES TO $AppUser;
+"@
+    & $psql @commonAdminPsql -d $Database -c $grantSql | Out-Null
+
+    # 7. Apply Seeds with Deterministic Version/Checksum Tracking
     if (Test-Path $SeedsDir) {
-        $masterCount = Invoke-PsqlScalar $Database "SELECT count(*) FROM master.machines;"
+        Write-SecureLog "Ensuring seed tracking table exists..."
+        $initSeedTrackingSql = @"
+CREATE SCHEMA IF NOT EXISTS ops;
+CREATE TABLE IF NOT EXISTS ops.applied_seeds (
+    seed_name text PRIMARY KEY,
+    checksum text NOT NULL,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+GRANT ALL ON ops.applied_seeds TO $AppUser;
+"@
+        & $psql @commonAdminPsql -d $Database -c $initSeedTrackingSql | Out-Null
 
-        if ($IsUpdate -and [int]$masterCount -ge 9) {
-            Write-SecureLog "Customer master data already present ($masterCount machines). Preserving existing operational records and skipping fresh seeds."
-        } else {
-            Write-SecureLog "Applying required production seeds from: $SeedsDir"
-            $seedFiles = @(
-                (Join-Path $SeedsDir 'generated\002a_customer_textual_master_data.sql'),
-                (Join-Path $SeedsDir 'generated\002b_customer_physical_layouts.sql'),
-                (Join-Path $SeedsDir 'generated\002c_customer_layout_slot_part_assignments.sql'),
-                (Join-Path $SeedsDir 'generated\003_tkg_rds_variant_commissioning.sql'),
-                (Join-Path $SeedsDir 'generated\005_tkg_variant_task_templates.sql'),
-                (Join-Path $SeedsDir '004_finished_goods_internal_locations.sql')
-            )
+        $seedFiles = @(
+            (Join-Path $SeedsDir 'generated\002a_customer_textual_master_data.sql'),
+            (Join-Path $SeedsDir 'generated\002b_customer_physical_layouts.sql'),
+            (Join-Path $SeedsDir 'generated\002c_customer_layout_slot_part_assignments.sql'),
+            (Join-Path $SeedsDir 'generated\003_tkg_rds_variant_commissioning.sql'),
+            (Join-Path $SeedsDir 'generated\005_tkg_variant_task_templates.sql'),
+            (Join-Path $SeedsDir '004_finished_goods_internal_locations.sql')
+        )
 
-            foreach ($seed in $seedFiles) {
-                if (Test-Path $seed) {
-                    $seedName = Split-Path $seed -Leaf
-                    Write-SecureLog "Applying seed: $seedName..."
-                    & $psql @commonPsql -d $Database -f $seed | Out-Null
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "Seed $seedName failed with exit code $LASTEXITCODE"
-                    }
-                }
-            }
-            Write-SecureLog "All required production seeds applied successfully."
+        # Discover any additional custom or new seeds in $SeedsDir
+        $extraSeeds = Get-ChildItem -Path $SeedsDir -Filter "*.sql" -Recurse | Where-Object {
+            $path = $_.FullName
+            -not ($seedFiles -contains $path) -and -not ($path -like "*simulation_rds_trial_mappings*")
+        } | Sort-Object Name
+
+        $allSeedsToProcess = [System.Collections.Generic.List[string]]::new()
+        foreach ($s in $seedFiles) {
+            if (Test-Path $s) { $allSeedsToProcess.Add((Resolve-Path $s).Path) }
         }
-    }
+        foreach ($es in $extraSeeds) {
+            $allSeedsToProcess.Add($es.FullName)
+        }
 
-    # 8. Replay Safety Validation
-    Write-SecureLog "Validating replay safety of migrations..."
-    # Re-running migration 006 and 026 to verify idempotency
-    $testMigrations = @(
-        (Join-Path $MigrationsDir '006_production_sessions.sql'),
-        (Join-Path $MigrationsDir '026_canonical_shared_endpoint_identities.sql')
-    )
-    foreach ($tm in $testMigrations) {
-        if (Test-Path $tm) {
-            & $psql @commonPsql -d $Database -f $tm | Out-Null
+        foreach ($seed in $allSeedsToProcess) {
+            $seedName = Split-Path $seed -Leaf
+            $hash = (Get-FileHash -Path $seed -Algorithm SHA256).Hash.ToLowerInvariant()
+
+            $existingChecksum = Invoke-AdminPsqlScalar $Database "SELECT checksum FROM ops.applied_seeds WHERE seed_name = '$seedName';"
+            if ($existingChecksum -eq $hash) {
+                Write-SecureLog "Seed '$seedName' already applied ($hash). Skipping."
+                continue
+            }
+
+            Write-SecureLog "Applying seed: $seedName (Checksum: $hash)..."
+            & $psql @commonAdminPsql -d $Database -f $seed | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                throw "Replay safety validation failed on $(Split-Path $tm -Leaf)"
+                throw "Seed $seedName failed with exit code $LASTEXITCODE"
             }
-        }
-    }
-    Write-SecureLog "Replay safety verified: PASS"
 
-    # 9. Verify Expected Customer Master Data
+            # Record in ops.applied_seeds
+            $recordSql = "INSERT INTO ops.applied_seeds (seed_name, checksum, applied_at) VALUES ('$seedName', '$hash', now()) ON CONFLICT (seed_name) DO UPDATE SET checksum = EXCLUDED.checksum, applied_at = now();"
+            & $psql @commonAdminPsql -d $Database -c $recordSql | Out-Null
+        }
+        Write-SecureLog "Production seeds verified and applied successfully."
+    }
+
+    # 8. First Administrator Bootstrap
+    $prevEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+    $adminCount = Invoke-AdminPsqlScalar $Database "SELECT count(*) FROM auth.user_roles ur JOIN auth.roles r ON ur.role_id = r.id WHERE r.code = 'ADMIN';"
+    if ([int]$adminCount -eq 0) {
+        if ([string]::IsNullOrWhiteSpace($AdminPassword)) {
+            if (-not $IsUpdate) {
+                throw "FIRST_ADMIN_BOOTSTRAP_ERROR: A non-empty secure admin password is required for fresh installation."
+            } else {
+                Write-SecureLog "Update mode: No admin user found, but AdminPassword not supplied. Skipping bootstrap." "WARN"
+            }
+        } else {
+            Write-SecureLog "Bootstrapping initial production administrator account..."
+            $adminHash = New-Pbkdf2Hash51 -PlainPassword $AdminPassword
+            $bootstrapSql = @"
+DO `$`$
+DECLARE
+    v_user_id uuid;
+    v_role_id uuid;
+BEGIN
+    SELECT id INTO v_role_id FROM auth.roles WHERE code = 'ADMIN';
+    IF v_role_id IS NULL THEN
+        RAISE EXCEPTION 'ADMIN role not found in auth.roles';
+    END IF;
+
+    INSERT INTO auth.users (id, username, password_hash, full_name, employee_no, is_active)
+    VALUES (gen_random_uuid(), 'admin', '$adminHash', 'System Administrator', 'ADM-001', true)
+    ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_active = true
+    RETURNING id INTO v_user_id;
+
+    IF v_user_id IS NULL THEN
+        SELECT id INTO v_user_id FROM auth.users WHERE username = 'admin';
+    END IF;
+
+    INSERT INTO auth.user_roles (user_id, role_id)
+    VALUES (v_user_id, v_role_id)
+    ON CONFLICT DO NOTHING;
+END `$`$;
+"@
+            & $psql @commonAdminPsql -d $Database -c $bootstrapSql | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "First administrator bootstrap failed with exit code $LASTEXITCODE"
+            }
+            Write-SecureLog "Initial production administrator ('admin') bootstrapped successfully."
+        }
+    } else {
+        Write-SecureLog "Existing administrator account found ($adminCount admin assignments). Preserving existing admin credentials without change."
+    }
+
+    # 9. Verify Customer Master Data & Connectivity
     Write-SecureLog "Verifying customer master data..."
-    $machineCount = Invoke-PsqlScalar $Database "SELECT count(*) FROM master.machines;"
-    $roleCount = Invoke-PsqlScalar $Database "SELECT count(*) FROM auth.roles;"
+    $machineCount = Invoke-AdminPsqlScalar $Database "SELECT count(*) FROM master.machines;"
+    $roleCount = Invoke-AdminPsqlScalar $Database "SELECT count(*) FROM auth.roles;"
 
     Write-SecureLog "Verification results: Machines=$machineCount, SystemRoles=$roleCount"
     if ([int]$machineCount -lt 9) {
@@ -239,6 +429,10 @@ try {
         Host = $HostName
         Port = $Port
         Database = $Database
+        Username = $Username
+        Password = $Password
+        AppUser = $AppUser
+        AppPassword = $AppPassword
         Machines = [int]$machineCount
         Roles = [int]$roleCount
     }

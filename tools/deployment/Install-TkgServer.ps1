@@ -4,11 +4,14 @@
 .DESCRIPTION
     Automates complete installation:
     - Sets up standard directories under Program Files and ProgramData
-    - Deploys self-contained .NET Kestrel server and web assets
-    - Configures and migrates PostgreSQL database
-    - Generates RDS commissioning script
+    - Deploys self-contained .NET Kestrel server, Web assets, and tools
+    - Validates network topology (rejects remote RDS with loopback callback)
+    - Deploys PostgreSQL runtime and initializes secure database with SCRAM
+    - Bootstraps initial production administrator (ADMIN role)
+    - Encrypts secrets using Windows DPAPI (fail-closed, no plaintext fallback)
+    - Generates RDS commissioning script and preserves RDSCORE_NATIVE_ORDER
     - Configures Windows Firewall for server port
-    - Registers and starts "TKG PDA Server" Windows Service
+    - Registers and starts "TKG PDA Server" Windows Service with dependency on local DB
     - Verifies service health, database connection, and web endpoints
     - Writes detailed install log
 #>
@@ -24,12 +27,15 @@ param(
     [string]$DbName = 'tkg_pda',
     [string]$DbUser = 'postgres',
     [string]$DbPassword = '',
-    [string]$RdsBaseUrl = 'http://127.0.0.1:8080',
+    [string]$AppDbUser = 'tkg_app',
+    [string]$AppDbPassword = '',
+    [string]$AdminPassword = '',
+    [string]$RdsBaseUrl = '',
+    [string]$RdsCoreBaseUrl = '',
     [string]$RdsCallbackUrl = '',
     [string]$RdsIntegrationKey = '',
     [string]$RdsCallbackKey = '',
-    [bool]$RdsDispatchEnabled = $false,
-    [string]$AdminPassword = '',
+    [bool]$RdsDispatchEnabled = $true,
     [string]$Version = '1.0.0'
 )
 
@@ -60,28 +66,62 @@ Log-Message "Data Directory:    $ProgramDataDir"
 Log-Message "Server Port:       $ServerPort"
 Log-Message "=================================================="
 
+# Helper: Loopback detection
+function Test-IsLoopbackHost {
+    param([string]$UrlString)
+    if ([string]::IsNullOrWhiteSpace($UrlString)) { return $true }
+    try {
+        $uri = [Uri]$UrlString
+        return ($uri.IsLoopback -or $uri.Host -eq '127.0.0.1' -or $uri.Host -eq 'localhost')
+    } catch {
+        return $false
+    }
+}
+
 try {
-    # 2. Create Directory Structure
+    # 2. Topology Validation
+    if ([string]::IsNullOrWhiteSpace($RdsCallbackUrl)) {
+        $RdsCallbackUrl = "http://127.0.0.1:$ServerPort/api/integrations/rds/events"
+    }
+
+    $rdsIsRemote = (-not (Test-IsLoopbackHost $RdsBaseUrl)) -or (-not (Test-IsLoopbackHost $RdsCoreBaseUrl))
+    $callbackIsLoopback = (Test-IsLoopbackHost $RdsCallbackUrl)
+
+    if ($rdsIsRemote -and $callbackIsLoopback) {
+        throw "INVALID_NETWORK_TOPOLOGY: Remote RDS host ($RdsBaseUrl / $RdsCoreBaseUrl) cannot reach loopback callback URL ($RdsCallbackUrl). Specify a non-loopback server IP/hostname in CallbackUrl."
+    }
+
+    # Validate Admin Password on fresh install
+    if ([string]::IsNullOrWhiteSpace($AdminPassword)) {
+        throw "ADMIN_PASSWORD_REQUIRED: A non-empty secure administrator password is required for initial installation."
+    }
+    if ($AdminPassword.Length -lt 8) {
+        throw "ADMIN_PASSWORD_TOO_SHORT: Administrator password must be at least 8 characters long."
+    }
+
+    # 3. Create Directory Structure
     Log-Message "Creating required directories..."
     $serverDir = Join-Path $InstallDir 'Server'
     $webAdminDir = Join-Path $InstallDir 'Web\admin'
     $webPdaDir = Join-Path $InstallDir 'Web\pda'
     $webRootDir = Join-Path $InstallDir 'Web\root'
     $toolsDir = Join-Path $InstallDir 'Tools'
+    $pgBinDir = Join-Path $InstallDir 'PostgreSQL\bin'
 
     $configDir = Join-Path $ProgramDataDir 'Config'
     $backupsDir = Join-Path $ProgramDataDir 'Backups'
     $dataDir = Join-Path $ProgramDataDir 'Data'
     $rdsDir = Join-Path $ProgramDataDir 'RDS'
+    $pgDataDir = Join-Path $ProgramDataDir 'PostgreSQL\data'
 
-    $allDirs = @($serverDir, $webAdminDir, $webPdaDir, $webRootDir, $toolsDir, $configDir, $backupsDir, $dataDir, $rdsDir)
+    $allDirs = @($serverDir, $webAdminDir, $webPdaDir, $webRootDir, $toolsDir, $configDir, $backupsDir, $dataDir, $rdsDir, $pgDataDir)
     foreach ($d in $allDirs) {
         if (-not (Test-Path $d)) {
             New-Item -ItemType Directory -Path $d -Force | Out-Null
         }
     }
 
-    # 3. Copy Application Files from Source
+    # 4. Copy Application Files from Source
     Log-Message "Deploying application server binaries..."
     $srcServer = Join-Path $SourceDir 'Server'
     if (Test-Path $srcServer) {
@@ -111,16 +151,20 @@ try {
         Copy-Item -Path "$srcTools\*" -Destination $toolsDir -Recurse -Force
     }
 
-    # 4. Generate RDS Keys and Commissioning Script
-    Log-Message "Configuring RDS settings and script..."
-    if ([string]::IsNullOrWhiteSpace($RdsCallbackUrl)) {
-        $RdsCallbackUrl = "http://127.0.0.1:$ServerPort/api/integrations/rds/events"
+    $srcPg = Join-Path $SourceDir 'PostgreSQL'
+    $destPg = Join-Path $InstallDir 'PostgreSQL'
+    if (Test-Path $srcPg) {
+        Log-Message "Deploying bundled PostgreSQL runtime..."
+        Copy-Item -Path "$srcPg\*" -Destination $destPg -Recurse -Force
     }
 
+    # 5. Generate RDS Keys and Commissioning Script
+    Log-Message "Configuring RDS settings and commissioning script..."
     $genRdsScript = Join-Path $toolsDir 'Generate-RdsScript.ps1'
     if (-not (Test-Path $genRdsScript)) { $genRdsScript = Join-Path $SourceDir 'Tools\Generate-RdsScript.ps1' }
 
     $rdsTemplate = Join-Path $SourceDir 'rds\scripts\tkg_integration_install.template.js'
+    if (-not (Test-Path $rdsTemplate)) { $rdsTemplate = Join-Path $toolsDir 'rds\scripts\tkg_integration_install.template.js' }
     $rdsScriptOut = Join-Path $rdsDir 'tkg_integration_install.js'
 
     $rdsRes = & $genRdsScript `
@@ -134,56 +178,69 @@ try {
     $RdsCallbackKey = $rdsRes.CallbackKey
     Log-Message "RDS commissioning script generated at $rdsScriptOut"
 
-    # 5. Database Setup and Migrations
-    Log-Message "Running database installation and migrations..."
+    # 6. Database Setup and Migrations
+    Log-Message "Running database installation, migrations, and seeds..."
     $installDbScript = Join-Path $toolsDir 'Install-Database.ps1'
     if (-not (Test-Path $installDbScript)) { $installDbScript = Join-Path $SourceDir 'Tools\Install-Database.ps1' }
 
     $migrationsDir = Join-Path $SourceDir 'db\migrations'
-    $seedsDir = Join-Path $SourceDir 'db\seeds'
+    if (-not (Test-Path $migrationsDir)) { $migrationsDir = Join-Path $toolsDir 'db\migrations' }
 
-    & $installDbScript `
+    $seedsDir = Join-Path $SourceDir 'db\seeds'
+    if (-not (Test-Path $seedsDir)) { $seedsDir = Join-Path $toolsDir 'db\seeds' }
+
+    $candidatePgBin = Join-Path $InstallDir 'PostgreSQL\bin'
+    if (-not (Test-Path (Join-Path $candidatePgBin 'psql.exe'))) {
+        $candidatePgBin = Join-Path $SourceDir 'PostgreSQL\bin'
+    }
+
+    $dbResult = & $installDbScript `
         -HostName $DbHost `
         -Port $DbPort `
         -Database $DbName `
         -Username $DbUser `
         -Password $DbPassword `
+        -AppUser $AppDbUser `
+        -AppPassword $AppDbPassword `
+        -AdminPassword $AdminPassword `
+        -PgBinPath $candidatePgBin `
+        -DataDir $pgDataDir `
         -MigrationsDir $migrationsDir `
         -SeedsDir $seedsDir
 
-    Log-Message "Database initialization verified."
+    Log-Message "Database initialization verified with dedicated app user '$($dbResult.AppUser)'."
 
-    # 6. Secure Server Configuration Generation
-    Log-Message "Generating production configuration..."
-    $connectionString = "Host=$DbHost;Port=$DbPort;Database=$DbName;Username=$DbUser;Password=$DbPassword;Pooling=true;Maximum Pool Size=50"
-    
-    # DPAPI Protection for sensitive fields
-    $encConnectionString = ""
-    $encJwtKey = ""
-    $encIntegrationKey = ""
-    $encCallbackKey = ""
+    # 7. Secure Server Configuration Generation (DPAPI Fail Closed)
+    Log-Message "Generating production configuration with DPAPI protection..."
+    $connectionString = "Host=$DbHost;Port=$DbPort;Database=$DbName;Username=$($dbResult.AppUser);Password=$($dbResult.AppPassword);Pooling=true;Maximum Pool Size=50"
+
+    # DPAPI Protection: MUST FAIL CLOSED. No fallback to plaintext or constant zero key!
+    if (![System.OperatingSystem]::IsWindows()) {
+        throw "PLATFORM_ERROR: Production installation requires Windows DPAPI."
+    }
 
     try {
         $csBytes = [System.Text.Encoding]::UTF8.GetBytes($connectionString)
         $encCs = [System.Security.Cryptography.ProtectedData]::Protect($csBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
         $encConnectionString = "dpapi:" + [Convert]::ToBase64String($encCs)
 
-        # Generate or protect JWT key
+        # Generate cryptographic 32-byte JWT signing key
         $jwtKeyBytes = New-Object byte[] 32
         $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
         $rng.GetBytes($jwtKeyBytes)
         $rng.Dispose()
         $rawJwtKey = [Convert]::ToBase64String($jwtKeyBytes)
-        $encJwtKey = "dpapi:" + [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect([System.Text.Encoding]::UTF8.GetBytes($rawJwtKey), $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine))
+        $jwtBytes = [System.Text.Encoding]::UTF8.GetBytes($rawJwtKey)
+        $encJwtKey = "dpapi:" + [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect($jwtBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine))
 
-        $encIntegrationKey = "dpapi:" + [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect([System.Text.Encoding]::UTF8.GetBytes($RdsIntegrationKey), $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine))
-        $encCallbackKey = "dpapi:" + [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect([System.Text.Encoding]::UTF8.GetBytes($RdsCallbackKey), $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine))
-    } catch {
-        Log-Message "DPAPI protection skipped (non-Windows or limited permission): $_" "WARN"
-        $encConnectionString = $connectionString
-        $encJwtKey = [Convert]::ToBase64String((New-Object byte[] 32))
-        $encIntegrationKey = $RdsIntegrationKey
-        $encCallbackKey = $RdsCallbackKey
+        $intKeyBytes = [System.Text.Encoding]::UTF8.GetBytes($RdsIntegrationKey)
+        $encIntegrationKey = "dpapi:" + [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect($intKeyBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine))
+
+        $cbKeyBytes = [System.Text.Encoding]::UTF8.GetBytes($RdsCallbackKey)
+        $encCallbackKey = "dpapi:" + [Convert]::ToBase64String([System.Security.Cryptography.ProtectedData]::Protect($cbKeyBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine))
+    }
+    catch {
+        throw "DPAPI_ENCRYPTION_FAILED: DPAPI protection failed ($($_.Exception.Message)). Installation aborted to prevent insecure configuration."
     }
 
     $prodConfig = @{
@@ -214,7 +271,7 @@ try {
             }
         }
         Rds = @{
-            Enabled = $true
+            Enabled = (-not [string]::IsNullOrWhiteSpace($RdsBaseUrl))
             DispatchEnabled = $RdsDispatchEnabled
             BaseUrl = $RdsBaseUrl
             TimeoutSeconds = 5
@@ -224,17 +281,18 @@ try {
             WorkerIntervalSeconds = 3
             WorkSiteFreshnessSeconds = 300
             AlarmObservationIntervalSeconds = 10
+            AllowInsecureRemoteHttp = (-not (Test-IsLoopbackHost $RdsBaseUrl))
         }
         RdsCore = @{
-            BaseUrl = "http://127.0.0.1:8088"
+            BaseUrl = $RdsCoreBaseUrl
             TimeoutSeconds = 5
-            AllowInsecureRemoteHttp = $false
+            AllowInsecureRemoteHttp = (-not (Test-IsLoopbackHost $RdsCoreBaseUrl))
         }
         RdsCoreDiscovery = @{
-            Enabled = $true
+            Enabled = (-not [string]::IsNullOrWhiteSpace($RdsCoreBaseUrl))
         }
         RdsCoreExecution = @{
-            Enabled = $true
+            Enabled = (-not [string]::IsNullOrWhiteSpace($RdsCoreBaseUrl))
             Mode = "RDSCORE_NATIVE_ORDER"
         }
         Cors = @{
@@ -264,22 +322,30 @@ try {
         Log-Message "ACL restriction warning: $_" "WARN"
     }
 
-    # 7. Configure Windows Firewall
+    # 8. Configure Windows Firewall
     Log-Message "Configuring Windows Firewall for port $ServerPort..."
     $fwScript = Join-Path $toolsDir 'Configure-Firewall.ps1'
     if (-not (Test-Path $fwScript)) { $fwScript = Join-Path $SourceDir 'Tools\Configure-Firewall.ps1' }
     & $fwScript -Port $ServerPort -Action Add
 
-    # 8. Install & Start Windows Service
+    # 9. Install & Start Windows Service
     Log-Message "Registering and starting Windows Service 'TKG PDA Server'..."
     $serviceScript = Join-Path $toolsDir 'Install-Service.ps1'
     if (-not (Test-Path $serviceScript)) { $serviceScript = Join-Path $SourceDir 'Tools\Install-Service.ps1' }
 
     $apiExe = Join-Path $serverDir 'TkgPda.Api.exe'
     & $serviceScript -Action Install -BinaryPath $apiExe -ServiceName 'TKG PDA Server'
+
+    # Configure Service Dependency on local PostgreSQL if local service exists
+    $localPgSvc = Get-Service -Name 'tkg-pda-postgres' -ErrorAction SilentlyContinue
+    if ($localPgSvc) {
+        Log-Message "Configuring service dependency: 'TKG PDA Server' -> 'tkg-pda-postgres'..."
+        & sc.exe config "TKG PDA Server" depend= "tkg-pda-postgres" | Out-Null
+    }
+
     & $serviceScript -Action Start -ServiceName 'TKG PDA Server'
 
-    # 9. Verify Installation Health
+    # 10. Verify Installation Health
     Log-Message "Performing deployment smoke tests..."
     Start-Sleep -Seconds 3
 

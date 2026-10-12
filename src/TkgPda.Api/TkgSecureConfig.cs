@@ -22,16 +22,16 @@ public static class TkgSecureConfig
 
         if (!OperatingSystem.IsWindows())
         {
-            return value;
+            throw new PlatformNotSupportedException("DPAPI decryption is only supported on Windows operating systems.");
         }
 
         try
         {
             return UnprotectWindows(value[DpapiPrefix.Length..]);
         }
-        catch
+        catch (Exception ex)
         {
-            return value;
+            throw new InvalidOperationException("Failed to decrypt DPAPI-protected configuration property.", ex);
         }
     }
 
@@ -54,7 +54,10 @@ public static class TkgSecureConfig
     public static string Protect(string plainText)
     {
         if (string.IsNullOrEmpty(plainText)) return string.Empty;
-        if (!OperatingSystem.IsWindows()) return plainText;
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("DPAPI encryption is only supported on Windows operating systems.");
+        }
 
         return ProtectWindows(plainText);
     }

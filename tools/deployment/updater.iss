@@ -82,7 +82,8 @@ begin
 
     if ResultCode <> 0 then
     begin
-      MsgBox('Guncelleme sirasinda bir hata olustu. Sistem otomatik olarak onceki surume geri donduruldu (rollback). Ayrıntılar için C:\ProgramData\TKG PDA\Logs altındaki log dosyasını inceleyin.', mbError, MB_OK);
+      MsgBox('Guncelleme sirasinda bir hata olustu. Sistem otomatik olarak onceki surume geri donduruldu (rollback). Ayrintilar icin C:\ProgramData\TKG PDA\Logs altindaki log dosyasini inceleyin.', mbCriticalError, MB_OK);
+      RaiseException('Guncelleme basarisiz oldu. Hata kodu: ' + IntToStr(ResultCode));
     end
     else
     begin
