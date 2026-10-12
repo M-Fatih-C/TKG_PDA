@@ -72,4 +72,6 @@ Thumbs.db
 /scratch/
 /TKG_PDA_Arsiv/
 *.zip
+/build_staging/
+/outputs/
 

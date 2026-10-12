@@ -1,0 +1,16 @@
+{
+  "minSupportedPreviousVersion": "1.0.0",
+  "databaseMigrationLevel": "026",
+  "version": "1.0.0",
+  "components": {
+    "server": "ASP.NET Core Kestrel (Native Windows Service)",
+    "adminWeb": "React SPA (/admin/)",
+    "pdaWeb": "Flutter Web SPA (/pda/)",
+    "database": "PostgreSQL 18"
+  },
+  "name": "TKG PDA Server",
+  "architecture": "win-x64",
+  "releaseTimestamp": "2026-10-12T07:53:50Z",
+  "fullCommit": "10cf9de722601e0020b83bdaf286d9aec980a5aa",
+  "buildCommit": "10cf9de"
+}

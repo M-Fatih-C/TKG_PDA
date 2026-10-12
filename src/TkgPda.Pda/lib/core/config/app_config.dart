@@ -20,7 +20,7 @@ class AppConfig {
         : platformInfo.isWeb
         ? (platformInfo.browserOrigin != null &&
                   platformInfo.browserOrigin!.hasPort &&
-                  platformInfo.browserOrigin!.port != 5000
+                  platformInfo.browserOrigin!.port == 7357
               ? '${platformInfo.browserOrigin!.scheme}://${platformInfo.browserOrigin!.host}:5000'
               : platformInfo.browserOrigin?.toString() ?? '')
         : _androidDevelopmentApi;

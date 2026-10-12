@@ -9,13 +9,22 @@ using TkgPda.Application;
 using TkgPda.Infrastructure.Postgres;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Host.UseWindowsService(options => options.ServiceName = "TKG PDA Server");
 
-var connectionString = builder.Configuration.GetConnectionString("TkgPda")
+var programDataConfigPath = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+    "TKG PDA", "Config", "appsettings.Production.json");
+if (File.Exists(programDataConfigPath))
+{
+    builder.Configuration.AddJsonFile(programDataConfigPath, optional: true, reloadOnChange: true);
+}
+
+var connectionString = TkgSecureConfig.UnprotectIfNeeded(builder.Configuration.GetConnectionString("TkgPda"))
     ?? throw new InvalidOperationException("ConnectionStrings:TkgPda is required.");
 var jwtOptions = new JwtOptions(
     builder.Configuration["Authentication:Jwt:Issuer"] ?? "tkg-pda",
     builder.Configuration["Authentication:Jwt:Audience"] ?? "tkg-pda-clients",
-    builder.Configuration["Authentication:Jwt:SigningKey"] ?? string.Empty,
+    TkgSecureConfig.UnprotectIfNeeded(builder.Configuration["Authentication:Jwt:SigningKey"] ?? string.Empty),
     builder.Configuration.GetValue("Authentication:Jwt:ExpiryMinutes", 15),
     builder.Configuration.GetValue("Authentication:Jwt:ClockSkewSeconds", 30));
 jwtOptions.Validate();
@@ -308,6 +317,7 @@ app.MapFinishedGoodsStore();
 app.MapDeviceNotifications();
 app.MapTkgPdaAdminApi();
 app.MapTkgPdaRdsIntegrationApi();
+app.UseTkgStaticWebHosting();
 
 app.Run();
 
