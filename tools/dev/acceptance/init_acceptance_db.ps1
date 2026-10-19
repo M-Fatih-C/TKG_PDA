@@ -31,7 +31,8 @@ if ($Database -ne 'tkg_pda_acceptance') {
 
 $psql = Join-Path $PgBin 'psql.exe'
 if (-not (Test-Path -LiteralPath $psql)) {
-    $psql = (Get-Command psql.exe -ErrorAction SilentlyContinue)?.Source
+    $cmd = Get-Command psql.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $psql = $cmd.Source }
 }
 if (-not $psql) {
     throw "PostgreSQL client (psql.exe) is required."
@@ -84,7 +85,9 @@ foreach ($s in $seeds) {
 
 # 5. Seed development users, roles, devices and default permissions.
 # The hash is random and is not a known password. Acceptance logins use employee number.
-$nonce = [Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(18))
+$rngBytes = New-Object byte[] 18
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($rngBytes)
+$nonce = [Convert]::ToBase64String($rngBytes)
 $acceptanceHash = '$tkg-pbkdf2-sha512$v=1$i=210000$' + $nonce + '$unused'
 $devBootstrapSql = @"
 INSERT INTO auth.users (username, password_hash, full_name, employee_no, is_active)
