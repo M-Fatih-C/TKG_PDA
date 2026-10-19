@@ -599,10 +599,10 @@ export function LayoutEditorPage() {
         <Panel>
           <div className="panel-header">
             <div>
-              <h2>Geometrisi olmayan slotlar</h2>
-              <p>Bu kayıtlar korunur; fiziksel kanıt olmadan koordinat tahmin edilmez.</p>
+              <h2>Konum Koordinatı Bekleyen İstasyonlar</h2>
+              <p>Henüz yerleşim koordinatı atanmamış istasyon ve slot kayıtları.</p>
             </div>
-            <StatusPill value={`${unplaced.length} NULL`} tone="warning" />
+            <StatusPill value={`${unplaced.length} KONUM`} tone="warning" />
           </div>
           <div className="unplaced-list">
             {unplaced.map((slot) => (

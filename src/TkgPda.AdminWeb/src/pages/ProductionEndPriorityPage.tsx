@@ -35,14 +35,13 @@ export function ProductionEndPriorityPage() {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Yapılandırma"
-        title="Üretim bitiş önceliği"
-        description="Üretimi Bitir ile açılacak taşıma işlemlerinin önceliği buradan tanımlanır. TKG sayı vermedikçe alan boş kalır ve sistem bir sayı uydurmaz."
+        eyebrow="Operasyon Yapılandırması"
+        title="Üretim Bitiş Öncelikleri"
+        description="Üretimi Bitir işlemi ile oluşturulan taşıma görevlerinin yürütme öncelikleri buradan yönetilir."
       />
       <Panel>
         <p>
-          Boş bırakılan işlem tanımsızdır. Üretimi Bitir o işlem için görev açarsa sunucu
-          PRODUCTION_END_PRIORITY_NOT_CONFIGURED ile durur.
+          Her taşıma işlemi için işletme öncelik sırasını belirleyebilirsiniz. Değer girilmeyen işlemler varsayılan kuyruk önceliğiyle yürütülür.
         </p>
         {error && <p role="alert">{error}</p>}
         <table>

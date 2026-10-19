@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Npgsql;
 using TkgPda.Application;
 using TkgPda.Domain;
 
@@ -39,6 +40,8 @@ public static class ApiEndpoints
             .RequireAuthorization();
 
         endpoints.MapPost("/api/v1/machines/{machineId:guid}/variant-selection", SwitchVariantAsync)
+            .RequireAuthorization(PolicyNames.VariantManager);
+        endpoints.MapPut("/api/v1/machines/{machineId:guid}/variant-selection", SwitchVariantAsync)
             .RequireAuthorization(PolicyNames.VariantManager);
 
         endpoints.MapPost("/api/v1/transport-requests", CreateTransportAsync)
@@ -130,8 +133,16 @@ public static class ApiEndpoints
     private static Task<RdsRobotAlarmOperatorSummary> RobotAlarmSummaryAsync(
         HttpContext context,
         RdsIntegrationService service,
-        CancellationToken cancellationToken) =>
-        service.GetRobotAlarmSummaryForOperatorAsync(CorrelationId(context), cancellationToken);
+        DemoModeOptions demoOptions,
+        CancellationToken cancellationToken)
+    {
+        if (demoOptions.Enabled)
+        {
+            return Task.FromResult(new RdsRobotAlarmOperatorSummary(false, null, 0));
+        }
+
+        return service.GetRobotAlarmSummaryForOperatorAsync(CorrelationId(context), cancellationToken);
+    }
 
     internal static async Task<IResult> LoginAsync(
         LoginRequest request,
@@ -1003,6 +1014,10 @@ public static class ApiEndpoints
         IApiDataStore dataStore,
         MachineAccessService access,
         RdsExecutionCoordinator rdsExecution,
+        TransportWorkflowService workflow,
+        ITransportWorkflowStore workflowStore,
+        NpgsqlDataSource dataSource,
+        DemoModeOptions demoOptions,
         CancellationToken cancellationToken)
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
@@ -1017,6 +1032,52 @@ public static class ApiEndpoints
         }
 
         _ = await access.EnsureAsync(context, machineId, MachineAccessKind.Operate, cancellationToken);
+
+        if (demoOptions.Enabled)
+        {
+            TransportRequestSnapshot cancelledRequest;
+            if (TransportStateMachine.CanCancelBeforeExecution(existing.Status) || existing.Status == TransportRequestStatus.Cancelled)
+            {
+                var local = await workflow.CancelAsync(requestId, context.User.UserId(), OperationalContext(context), cancellationToken);
+                cancelledRequest = local.Request;
+            }
+            else
+            {
+                cancelledRequest = await workflowStore.RecordExecutionOutcomeAsync(
+                    requestId,
+                    new(TransportRequestStatus.Cancelled, EvidenceType: "DEMO_SIMULATION_CANCEL"),
+                    OperationalContext(context),
+                    cancellationToken);
+
+                await using var conn = await dataSource.OpenConnectionAsync(cancellationToken);
+                await using var cancelTaskCmd = new NpgsqlCommand(
+                    """
+                    UPDATE integration.rds_tasks
+                    SET rds_status = 1004,
+                        ended_at = COALESCE(ended_at, now()),
+                        last_sync_at = now(),
+                        last_status_json = '{"state":"CANCELLED","simulated":true}'::jsonb,
+                        updated_at = now()
+                    WHERE transport_request_id = @id;
+                    """, conn);
+                cancelTaskCmd.Parameters.AddWithValue("id", requestId);
+                await cancelTaskCmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                context.User.UserId(),
+                Device(context).Id,
+                "TRANSPORT_REQUEST_CANCELLED",
+                "TRANSPORT_REQUEST",
+                requestId.ToString(),
+                new { status = cancelledRequest.Status.ToDatabase(), PendingRdsConfirmation = false },
+                cancellationToken);
+
+            return Results.Ok(ToResponse(cancelledRequest, replay: false, cancellationPending: false));
+        }
+
         var result = await rdsExecution.CancelAsync(
             requestId,
             context.User.UserId(),
@@ -1091,6 +1152,7 @@ public static class ApiEndpoints
         TransportWorkflowService workflow,
         RdsExecutionCoordinator rdsExecution,
         IApiDataStore dataStore,
+        DemoModeOptions demoOptions,
         CancellationToken cancellationToken)
     {
         _ = Device(context);
@@ -1112,13 +1174,20 @@ public static class ApiEndpoints
             cancellationToken);
 
         RdsLoadContentSyncResult contentSync;
-        try
+        if (demoOptions.Enabled)
         {
-            contentSync = await rdsExecution.SynchronizeLoadContentAsync(slotId, target, CorrelationId(context), cancellationToken);
+            contentSync = new("SIMULATED", null, null, "Yük durumu başarıyla güncellendi.");
         }
-        catch (RdsExecutionException error)
+        else
         {
-            contentSync = new("FAILED", null, null, $"TKG load state was updated; RDS content synchronization failed with {error.Code}.");
+            try
+            {
+                contentSync = await rdsExecution.SynchronizeLoadContentAsync(slotId, target, CorrelationId(context), cancellationToken);
+            }
+            catch (RdsExecutionException error)
+            {
+                contentSync = new("FAILED", null, null, $"TKG load state was updated; RDS content synchronization failed with {error.Code}.");
+            }
         }
 
         await WriteAuditAsync(
@@ -1155,12 +1224,84 @@ public static class ApiEndpoints
         MachineAccessService access,
         TransportWorkflowService workflow,
         IApiDataStore dataStore,
+        NpgsqlDataSource dataSource,
+        DemoModeOptions? demoOptions,
         CancellationToken cancellationToken)
     {
         _ = await access.EnsureAsync(context, machineId, MachineAccessKind.ChangeVariant, cancellationToken);
+        if (demoOptions?.Enabled == true)
+        {
+            await using var conn = await dataSource.OpenConnectionAsync(cancellationToken);
+            await using var cmd = new NpgsqlCommand(
+                "UPDATE ops.production_sessions SET status = 'ENDED', ended_at = now(), ended_by = started_by, ended_device_id = started_device_id WHERE machine_id = @machineId AND ended_at IS NULL",
+                conn);
+            cmd.Parameters.AddWithValue("machineId", machineId);
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
         await workflow.SwitchVariantAsync(
             new VariantSelection(machineId, request.VariantId, request.LayoutId, request.NavigationProfileId, context.User.UserId()),
             cancellationToken);
+
+        if (demoOptions?.Enabled == true)
+        {
+            await using var conn = await dataSource.OpenConnectionAsync(cancellationToken);
+            await using var startCmd = new NpgsqlCommand(
+                """
+                INSERT INTO ops.production_sessions (
+                    machine_id, variant_id, product_group_id, main_part_id, start_key, started_by, started_device_id, started_at, status
+                )
+                SELECT
+                    @machineId,
+                    @variantId,
+                    pg.id,
+                    pg.main_part_id,
+                    'demo-prod-' || substr(md5(random()::text), 1, 8),
+                    @userId,
+                    @deviceId,
+                    now(),
+                    'ACTIVE'
+                FROM master.product_groups pg
+                WHERE pg.variant_id = @variantId
+                ORDER BY pg.display_order ASC
+                LIMIT 1
+                ON CONFLICT (machine_id) WHERE ended_at IS NULL DO NOTHING;
+
+                UPDATE ops.slot_runtime_state srs
+                SET occupancy_state = CASE
+                        WHEN ls.slot_role = 'EMPTY_STORAGE' THEN 'OCCUPIED'
+                        WHEN lsp.part_id IS NOT NULL AND ls.display_order % 2 = 1 THEN 'OCCUPIED'
+                        ELSE 'VACANT'
+                    END,
+                    load_state = CASE
+                        WHEN ls.slot_role = 'EMPTY_STORAGE' THEN 'EMPTY'
+                        WHEN lsp.part_id IS NOT NULL AND ls.display_order % 2 = 1 THEN 'FULL'
+                        ELSE 'UNKNOWN'
+                    END,
+                    current_part_id = CASE
+                        WHEN ls.slot_role = 'EMPTY_STORAGE' THEN NULL
+                        WHEN lsp.part_id IS NOT NULL AND ls.display_order % 2 = 1 THEN lsp.part_id
+                        ELSE NULL
+                    END,
+                    updated_at = now()
+                FROM master.layout_slots ls
+                LEFT JOIN LATERAL (
+                    SELECT p2.id AS part_id
+                    FROM master.layout_slot_parts lsp2
+                    JOIN master.product_groups pg2 ON pg2.main_part_id = lsp2.part_id AND pg2.variant_id = @variantId
+                    JOIN master.parts p2 ON p2.id = lsp2.part_id
+                    WHERE lsp2.layout_slot_id = ls.id
+                    LIMIT 1
+                ) lsp ON true
+                WHERE ls.layout_id = @layoutId AND srs.layout_slot_id = ls.id;
+                """,
+                conn);
+            startCmd.Parameters.AddWithValue("machineId", machineId);
+            startCmd.Parameters.AddWithValue("variantId", request.VariantId);
+            startCmd.Parameters.AddWithValue("layoutId", request.LayoutId);
+            startCmd.Parameters.AddWithValue("userId", context.User.UserId());
+            startCmd.Parameters.AddWithValue("deviceId", Device(context).Id);
+            await startCmd.ExecuteNonQueryAsync(cancellationToken);
+        }
         await WriteAuditAsync(
             dataStore,
             context,
@@ -1290,8 +1431,19 @@ public static class ApiEndpoints
     private static async Task<IResult> ListRobotsAsync(
         HttpContext context,
         RdsIntegrationService service,
+        DemoModeOptions demoOptions,
         CancellationToken cancellationToken)
     {
+        if (demoOptions.Enabled)
+        {
+            var demoRobots = new[]
+            {
+                new OperatorRobotSummaryRecord("SEER-AMB-300", Online: true, BatteryLevel: 98.0, HasActiveAlarm: false),
+                new OperatorRobotSummaryRecord("SEER-AMB-300", Online: true, BatteryLevel: 100.0, HasActiveAlarm: false)
+            };
+            return Results.Ok(new { robots = demoRobots });
+        }
+
         var robots = await service.ListRobotsForOperatorAsync(CorrelationId(context), cancellationToken);
         return Results.Ok(new { robots });
     }
@@ -1317,6 +1469,11 @@ public static class ApiEndpoints
         if (vehicles is not { Count: > 0 } || vehicles.Any(string.IsNullOrWhiteSpace))
         {
             return Results.BadRequest(new { error = "VEHICLES_REQUIRED", message = "At least one valid vehicle identifier is required." });
+        }
+
+        if (context.RequestServices.GetService<DemoModeOptions>() is { Enabled: true })
+        {
+            return Results.Ok(new { success = true, simulated = true, action = action.ToString(), vehicles });
         }
 
         var correlationId = CorrelationId(context);
@@ -1457,11 +1614,37 @@ public static class ApiEndpoints
         IApiDataStore dataStore,
         MachineAccessService access,
         RdsExecutionCoordinator rdsExecution,
+        NpgsqlDataSource dataSource,
+        DemoModeOptions demoOptions,
         CancellationToken cancellationToken)
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
         _ = await access.EnsureAsync(context, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
+
+        if (demoOptions.Enabled)
+        {
+            await using var conn = await dataSource.OpenConnectionAsync(cancellationToken);
+            await using var prioCmd = new NpgsqlCommand(
+                "UPDATE ops.transport_requests SET priority = @priority, updated_at = now() WHERE id = @id",
+                conn);
+            prioCmd.Parameters.AddWithValue("priority", request.Priority);
+            prioCmd.Parameters.AddWithValue("id", requestId);
+            await prioCmd.ExecuteNonQueryAsync(cancellationToken);
+
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                context.User.UserId(),
+                Device(context).Id,
+                "RDS_EXPERT_SET_PRIORITY",
+                "TRANSPORT_REQUEST",
+                requestId.ToString(),
+                new { request.Priority, taskRecordId = $"DEMO-{existing.RequestNo}", accepted = true },
+                cancellationToken);
+
+            return Results.Ok(new RdsExpertActionResult(requestId, $"DEMO-{existing.RequestNo}", demoOptions.SimulatedAgvId, 0, "Görev önceliği güncellendi.", true));
+        }
 
         var result = await rdsExecution.SetRequestPriorityAsync(requestId, request.Priority, CorrelationId(context), cancellationToken);
         await WriteAuditAsync(
@@ -1483,11 +1666,61 @@ public static class ApiEndpoints
         IApiDataStore dataStore,
         MachineAccessService access,
         RdsExecutionCoordinator rdsExecution,
+        ITransportWorkflowStore workflowStore,
+        NpgsqlDataSource dataSource,
+        DemoModeOptions demoOptions,
         CancellationToken cancellationToken)
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
         _ = await access.EnsureAsync(context, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
+
+        if (demoOptions.Enabled)
+        {
+            var eventCtx = OperationalContext(context);
+            var reqStatus = existing.Status;
+            if (reqStatus == TransportRequestStatus.Queued)
+            {
+                await workflowStore.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds, eventCtx, cancellationToken);
+                reqStatus = TransportRequestStatus.SentToRds;
+            }
+            if (reqStatus == TransportRequestStatus.SentToRds)
+            {
+                await workflowStore.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running, eventCtx, cancellationToken);
+                reqStatus = TransportRequestStatus.Running;
+            }
+            if (reqStatus == TransportRequestStatus.Running)
+            {
+                await workflowStore.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Completed, eventCtx, cancellationToken);
+            }
+
+            await using var conn = await dataSource.OpenConnectionAsync(cancellationToken);
+            await using var completeTaskCmd = new NpgsqlCommand(
+                """
+                UPDATE integration.rds_tasks
+                SET rds_status = 1003,
+                    ended_at = COALESCE(ended_at, now()),
+                    last_sync_at = now(),
+                    last_status_json = '{"state":"COMPLETED","simulated":true}'::jsonb,
+                    updated_at = now()
+                WHERE transport_request_id = @id;
+                """, conn);
+            completeTaskCmd.Parameters.AddWithValue("id", requestId);
+            await completeTaskCmd.ExecuteNonQueryAsync(cancellationToken);
+
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                context.User.UserId(),
+                Device(context).Id,
+                "RDS_EXPERT_MANUAL_FINISH",
+                "TRANSPORT_REQUEST",
+                requestId.ToString(),
+                new { vehicle = demoOptions.SimulatedAgvId, taskRecordId = $"DEMO-{existing.RequestNo}", accepted = true },
+                cancellationToken);
+
+            return Results.Ok(new RdsExpertActionResult(requestId, $"DEMO-{existing.RequestNo}", demoOptions.SimulatedAgvId, 0, "Görev manuel olarak tamamlandı.", true));
+        }
 
         var result = await rdsExecution.ManualFinishAsync(requestId, CorrelationId(context), cancellationToken);
         await WriteAuditAsync(
@@ -1509,11 +1742,51 @@ public static class ApiEndpoints
         IApiDataStore dataStore,
         MachineAccessService access,
         RdsExecutionCoordinator rdsExecution,
+        NpgsqlDataSource dataSource,
+        DemoModeOptions demoOptions,
         CancellationToken cancellationToken)
     {
         var existing = await dataStore.FindTransportRequestAsync(requestId, cancellationToken)
             ?? throw new ApiException(StatusCodes.Status404NotFound, "REQUEST_NOT_FOUND", "The transport request does not exist.");
         _ = await access.EnsureAsync(context, existing.MachineId, MachineAccessKind.Operate, cancellationToken);
+
+        if (demoOptions.Enabled)
+        {
+            await using var conn = await dataSource.OpenConnectionAsync(cancellationToken);
+            await using var redoCmd = new NpgsqlCommand(
+                """
+                UPDATE ops.transport_requests
+                SET status = 'QUEUED',
+                    readiness_state = 'READY',
+                    ready_at = COALESCE(ready_at, now()),
+                    updated_at = now()
+                WHERE id = @id;
+
+                UPDATE integration.rds_tasks
+                SET rds_status = 1000,
+                    started_at = NULL,
+                    ended_at = NULL,
+                    last_sync_at = now(),
+                    last_status_json = '{"state":"REDO_QUEUED","simulated":true}'::jsonb,
+                    updated_at = now()
+                WHERE transport_request_id = @id;
+                """, conn);
+            redoCmd.Parameters.AddWithValue("id", requestId);
+            await redoCmd.ExecuteNonQueryAsync(cancellationToken);
+
+            await WriteAuditAsync(
+                dataStore,
+                context,
+                context.User.UserId(),
+                Device(context).Id,
+                "RDS_EXPERT_REDO_FAILED",
+                "TRANSPORT_REQUEST",
+                requestId.ToString(),
+                new { vehicle = demoOptions.SimulatedAgvId, taskRecordId = $"DEMO-{existing.RequestNo}", accepted = true },
+                cancellationToken);
+
+            return Results.Ok(new RdsExpertActionResult(requestId, $"DEMO-{existing.RequestNo}", demoOptions.SimulatedAgvId, 0, "Görev yeniden başlatılmak üzere kuyruğa alındı.", true));
+        }
 
         var result = await rdsExecution.RedoFailedAsync(requestId, CorrelationId(context), cancellationToken);
         await WriteAuditAsync(

@@ -48,7 +48,7 @@ export function ReportsPage() {
       <PageHeader
         eyebrow="Operasyon"
         title="Operasyon Kayıtları & Raporlar"
-        description="Görevler, oturumlar ve dönem özeti. Teknik JSON için Teknik Audit sayfası duruyor."
+        description="Taşıma görevleri, operatör oturumları ve operasyonel dönem analizleri."
         actions={<div className="no-print"><Button variant="secondary" onClick={() => void api.downloadReport(tab === 'sessions' ? 'sessions' : 'tasks', range, tab === 'sessions' ? 'TKG_Oturum_Raporu.csv' : 'TKG_Gorev_Raporu.csv')}>CSV indir</Button><Button variant="ghost" onClick={() => window.print()}>Yazdır</Button></div>}
       />
       <div className="no-print report-toolbar">

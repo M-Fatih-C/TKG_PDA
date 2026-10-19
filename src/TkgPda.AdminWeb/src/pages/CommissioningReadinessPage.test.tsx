@@ -37,7 +37,7 @@ describe('Commissioning readiness', () => {
     expect(screen.getByText('⚠ Boş kasa kaynağı bağlı değil')).toBeVisible()
     expect(screen.getByText('Mamul Kasası Götür')).toBeVisible()
     expect(screen.getByText('Alt / Yarı Mamul Dönüşü')).toBeVisible()
-    expect(screen.getByText('⚠ FG alan eşleşmesi eksik')).toBeVisible()
+    expect(screen.getByText('⚠ Bitmiş ürün depo alanı bağlı değil')).toBeVisible()
     expect(screen.getByText('⚠ Alt dönüş alanı eksik')).toBeVisible()
     expect(screen.getByText('⚠ Boş kasa dönüş alanı eksik')).toBeVisible()
     expect(screen.queryByText('✓ Hazır')).not.toBeInTheDocument()

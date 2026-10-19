@@ -27,8 +27,8 @@ export function DevicesPage() {
 
   if (query.isLoading || machinesQuery.isLoading) return <LoadingState label="Cihaz envanteri yükleniyor…" />
   if (query.error) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
-  return <div className="page"><PageHeader eyebrow="İstemci sağlama" title="Cihazlar" description="Saha PDA’larını ve gelecekteki servis istemcilerini sağlayın; cihaz kodları kimliktir, sır değildir." actions={<Button onClick={() => setCreating(true)}><Plus size={17} /> Cihaz ekle</Button>} />
-    <div className="info-banner"><MonitorSmartphone size={19} /><div><strong>Admin Web cihazdan bağımsızdır.</strong><span>Yalnız `PDA` tipindeki aktif kayıtlar saha login’inde X-Device-Code ile kullanılabilir.</span></div></div>
+  return <div className="page"><PageHeader eyebrow="Cihaz Yönetimi" title="Saha Cihazları & PDA'lar" description="Saha el terminalleri, tabletler ve operasyon cihazlarının yetkilendirmesini yönetin." actions={<Button onClick={() => setCreating(true)}><Plus size={17} /> Cihaz ekle</Button>} />
+    <div className="info-banner"><MonitorSmartphone size={19} /><div><strong>Saha Cihaz Oturumu</strong><span>Yalnız aktif ve PDA tipindeki kayıtlar saha terminal oturumu açabilir.</span></div></div>
     <Panel><div className="table-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Cihaz kodu, ad veya tip ara…" /><span>{filtered.length} kayıt</span></div>{filtered.length ? <TableFrame><thead><tr><th>Cihaz Kodu &amp; Ad</th><th>Tip</th><th>Makine Bağlantısı</th><th>Saha İzni</th><th>Metadata</th><th>Durum</th><th className="align-right">İşlem</th></tr></thead><tbody>{filtered.map((device) => {
       const boundMachine = device.machineId ? machineMap.get(device.machineId) : null
       return <tr key={device.id}>

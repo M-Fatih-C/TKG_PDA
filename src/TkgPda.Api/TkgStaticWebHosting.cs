@@ -21,7 +21,9 @@ public static class TkgStaticWebHosting
             Path.Combine(AppContext.BaseDirectory, "..", "web"),
             Path.Combine(AppContext.BaseDirectory, "..", "Web"),
             Path.Combine(Directory.GetCurrentDirectory(), "web"),
-            Path.Combine(Directory.GetCurrentDirectory(), "Web")
+            Path.Combine(Directory.GetCurrentDirectory(), "Web"),
+            Path.Combine(Directory.GetCurrentDirectory(), "build_staging", "Web"),
+            Path.Combine(Directory.GetCurrentDirectory(), "..", "..", "build_staging", "Web")
         };
 
         foreach (var candidate in candidates)
@@ -72,9 +74,35 @@ public static class TkgStaticWebHosting
                 ContentTypeProvider = contentTypeProvider
             });
 
-            app.MapGet("/admin", () => Results.Redirect("/admin/")).AllowAnonymous();
-            app.MapGet("/admin/{*subpath}", async (HttpContext context) =>
+            app.MapGet("/admin/{*subpath}", async (HttpContext context, string? subpath) =>
             {
+                var path = context.Request.Path.Value ?? "";
+                if (string.Equals(path, "/admin", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Response.Redirect("/admin/");
+                    return;
+                }
+
+                var relative = subpath?.TrimStart('/') ?? "";
+                var targetFile = Path.Combine(adminDir, relative.Replace('/', Path.DirectorySeparatorChar));
+                if (!string.IsNullOrEmpty(relative) && File.Exists(targetFile))
+                {
+                    if (!contentTypeProvider.TryGetContentType(targetFile, out var contentType))
+                    {
+                        contentType = "application/octet-stream";
+                    }
+                    context.Response.ContentType = contentType;
+                    await context.Response.SendFileAsync(targetFile);
+                    return;
+                }
+
+                var ext = Path.GetExtension(path);
+                if (!string.IsNullOrEmpty(ext) && !ext.Equals(".html", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+
                 var indexPath = Path.Combine(adminDir, "index.html");
                 context.Response.ContentType = "text/html; charset=utf-8";
                 await context.Response.SendFileAsync(indexPath);
@@ -92,9 +120,35 @@ public static class TkgStaticWebHosting
                 ContentTypeProvider = contentTypeProvider
             });
 
-            app.MapGet("/pda", () => Results.Redirect("/pda/")).AllowAnonymous();
-            app.MapGet("/pda/{*subpath}", async (HttpContext context) =>
+            app.MapGet("/pda/{*subpath}", async (HttpContext context, string? subpath) =>
             {
+                var path = context.Request.Path.Value ?? "";
+                if (string.Equals(path, "/pda", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Response.Redirect("/pda/");
+                    return;
+                }
+
+                var relative = subpath?.TrimStart('/') ?? "";
+                var targetFile = Path.Combine(pdaDir, relative.Replace('/', Path.DirectorySeparatorChar));
+                if (!string.IsNullOrEmpty(relative) && File.Exists(targetFile))
+                {
+                    if (!contentTypeProvider.TryGetContentType(targetFile, out var contentType))
+                    {
+                        contentType = "application/octet-stream";
+                    }
+                    context.Response.ContentType = contentType;
+                    await context.Response.SendFileAsync(targetFile);
+                    return;
+                }
+
+                var ext = Path.GetExtension(path);
+                if (!string.IsNullOrEmpty(ext) && !ext.Equals(".html", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+
                 var indexPath = Path.Combine(pdaDir, "index.html");
                 context.Response.ContentType = "text/html; charset=utf-8";
                 await context.Response.SendFileAsync(indexPath);
@@ -120,34 +174,36 @@ public static class TkgStaticWebHosting
         }
         else
         {
-            app.MapGet("/", () => Results.Content(GetDefaultLandingPageHtml(), "text/html; charset=utf-8")).AllowAnonymous();
+            app.MapGet("/", (DemoModeOptions? demo) => Results.Content(GetDefaultLandingPageHtml(demo?.Enabled ?? false), "text/html; charset=utf-8")).AllowAnonymous();
         }
 
         // 4. Version endpoint
-        app.MapGet("/version", () => Results.Ok(new
+        app.MapGet("/version", (DemoModeOptions? demo) => Results.Ok(new
         {
             version = TkgVersionInfo.Version,
             commit = TkgVersionInfo.CommitHash,
             buildTimestamp = TkgVersionInfo.BuildTimestamp,
             service = TkgVersionInfo.ServiceName,
             status = "ok",
+            demoMode = demo?.Enabled ?? false,
             adminWebMounted = adminDir != null,
             pdaWebMounted = pdaDir != null
         })).AllowAnonymous();
 
-        app.MapGet("/health/version", () => Results.Ok(new
+        app.MapGet("/health/version", (DemoModeOptions? demo) => Results.Ok(new
         {
             version = TkgVersionInfo.Version,
             commit = TkgVersionInfo.CommitHash,
             buildTimestamp = TkgVersionInfo.BuildTimestamp,
             service = TkgVersionInfo.ServiceName,
-            status = "ok"
+            status = "ok",
+            demoMode = demo?.Enabled ?? false
         })).AllowAnonymous();
 
         return app;
     }
 
-    private static string GetDefaultLandingPageHtml()
+    private static string GetDefaultLandingPageHtml(bool isDemoMode = false)
     {
         return $$"""
         <!DOCTYPE html>
@@ -338,11 +394,35 @@ public static class TkgStaticWebHosting
                   <p>Endüstriyel Ambar & Operatör Sistemi</p>
                 </div>
               </div>
-              <div class="status-pill">
-                <span class="status-dot"></span>
-                <span>Çevrimiçi (v{{TkgVersionInfo.Version}})</span>
-              </div>
+              {{(isDemoMode
+                ? """<div class="status-pill" style="background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.3); color: #fbbf24;"><span class="status-dot" style="background: #f59e0b; box-shadow: 0 0 8px #f59e0b;"></span><span>DEMO MODU (Çevrimdışı Simülasyon)</span></div>"""
+                : $"<div class=\"status-pill\"><span class=\"status-dot\"></span><span>Çevrimiçi (v{TkgVersionInfo.Version})</span></div>")}}
             </div>
+
+            {{(isDemoMode
+              ? """
+              <div style="margin-bottom: 24px; padding: 18px 20px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 14px;">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                  <span style="font-size: 18px;">💡</span>
+                  <h3 style="margin: 0; font-size: 15px; color: #fbbf24; font-weight: 600;">Demo Sunumu Hızlı Giriş Bilgileri</h3>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; font-size: 13px; color: #cbd5e1;">
+                  <div style="background: rgba(15, 23, 42, 0.5); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
+                    <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600;">PDA Operatör Terminali (/pda/)</div>
+                    <div>Cihaz Kodu: <code style="color: #38bdf8;">DEV-LINE</code> veya <code style="color: #38bdf8;">DEV-SUPERVISOR</code></div>
+                    <div>Operatör Girişi: Sicil No <strong style="color: #fff;">1001</strong> (Şifresiz Giriş)</div>
+                    <div>Süpervizör: Kullanıcı <code style="color: #fff;">dev-supervisor</code> / Şifre <code style="color: #fff;">Admin123!</code></div>
+                  </div>
+                  <div style="background: rgba(15, 23, 42, 0.5); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
+                    <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600;">Yönetim Paneli (/admin/)</div>
+                    <div>Kullanıcı: <strong style="color: #fff;">dev-admin</strong></div>
+                    <div>Şifre: <strong style="color: #fff;">Admin123!</strong></div>
+                    <div>Kapsam: 9 Makine, Varyantlar, Slotlar, Raporlar & Simülasyon</div>
+                  </div>
+                </div>
+              </div>
+              """
+              : "")}}
 
             <div class="grid">
               <a href="/pda/" class="action-card pda">

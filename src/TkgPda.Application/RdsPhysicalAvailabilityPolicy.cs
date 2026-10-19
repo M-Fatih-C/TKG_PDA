@@ -4,15 +4,28 @@ namespace TkgPda.Application;
 public sealed record RdsPhysicalEvidence(int? Type, int? Filled, int? Locked,
     int? Disabled, int? SyncFailed, DateTimeOffset? LastSyncAt);
 
-public sealed class RdsPhysicalAvailabilityPolicy(TimeSpan? freshness = null, TimeProvider? clock = null)
+public sealed class RdsPhysicalAvailabilityPolicy(
+    TimeSpan? freshness = null,
+    TimeProvider? clock = null,
+    bool isSimulationMode = false)
 {
     // Same default as Rds:WorkSiteFreshnessSeconds; production receives that setting.
     public const int DefaultFreshnessSeconds = 300;
     private readonly TimeSpan freshness = freshness ?? TimeSpan.FromSeconds(DefaultFreshnessSeconds);
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
 
+    public bool IsSimulationMode => isSimulationMode;
+
     public string State(RdsPhysicalEvidence evidence)
     {
+        if (isSimulationMode)
+        {
+            if (evidence.Type != 1) return "NOT_PHYSICAL";
+            if (evidence.Disabled == 1) return "DISABLED";
+            if (evidence.Locked == 1) return "LOCKED";
+            return "AVAILABLE";
+        }
+
         if (evidence.Type != 1) return "NOT_PHYSICAL";
         if (evidence.LastSyncAt is null) return "NEVER_SYNCED";
         if (clock.GetUtcNow() - evidence.LastSyncAt > freshness) return "STALE";
@@ -24,16 +37,25 @@ public sealed class RdsPhysicalAvailabilityPolicy(TimeSpan? freshness = null, Ti
         return evidence.Filled == 0 ? "AVAILABLE" : "OCCUPIED";
     }
 
-    public bool IsDestinationAvailable(RdsPhysicalEvidence evidence) => State(evidence) == "AVAILABLE";
+    public bool IsDestinationAvailable(RdsPhysicalEvidence evidence) =>
+        isSimulationMode
+            ? (evidence.Disabled != 1 && evidence.Locked != 1)
+            : State(evidence) == "AVAILABLE";
 
     // Another NAV is corroborating/veto evidence, never an alternative binding.
     public bool ContradictsEmptyDestination(RdsPhysicalEvidence evidence) =>
-        evidence.Type == 1 && evidence.LastSyncAt is { } synced
+        !isSimulationMode
+        && evidence.Type == 1 && evidence.LastSyncAt is { } synced
         && clock.GetUtcNow() - synced <= freshness && evidence.SyncFailed == 0
         && (evidence.Filled == 1 || evidence.Locked == 1);
 
     public string Consistency(string occupancy, RdsPhysicalEvidence evidence)
     {
+        if (isSimulationMode)
+        {
+            return "CONSISTENT";
+        }
+
         if (evidence.Type != 1 || evidence.LastSyncAt is not { } synced
             || clock.GetUtcNow() - synced > freshness || evidence.SyncFailed != 0
             || evidence.Filled is not (0 or 1)) return "PHYSICAL_STATE_UNKNOWN";

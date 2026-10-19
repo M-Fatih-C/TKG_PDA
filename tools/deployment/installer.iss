@@ -50,7 +50,7 @@ Name: "{app}\PostgreSQL"
 Source: "{#StagingDir}\Server\*"; DestDir: "{app}\Server"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagingDir}\Web\*"; DestDir: "{app}\Web"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagingDir}\Tools\*"; DestDir: "{app}\Tools"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StagingDir}\PostgreSQL\*"; DestDir: "{app}\PostgreSQL"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: DirExists(ExpandConstant('{#StagingDir}\PostgreSQL'))
+Source: "{#StagingDir}\PostgreSQL\*"; DestDir: "{app}\PostgreSQL"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagingDir}\db\*"; DestDir: "{app}\Tools\db"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagingDir}\rds\*"; DestDir: "{app}\Tools\rds"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagingDir}\manifest.json"; DestDir: "{app}"; Flags: ignoreversion
@@ -205,6 +205,13 @@ var
   PwshExe: String;
   DispatchFlag: String;
 begin
+  if CurStep = ssInstall then
+  begin
+    Exec('sc.exe', 'stop "TKG PDA Server"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('sc.exe', 'stop "tkg-pda-postgres"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(1500);
+  end;
+
   if CurStep = ssPostInstall then
   begin
     PwshExe := 'powershell.exe';

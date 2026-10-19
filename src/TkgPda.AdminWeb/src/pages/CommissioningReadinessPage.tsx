@@ -21,7 +21,7 @@ const blockerText: Record<string, string> = {
   PREPARATION_WORKSITE_MAPPING_MISSING: 'Hazırlık alanı bağlı değil',
   EMPTY_SOURCE_MAPPING_MISSING: 'Boş kasa kaynağı bağlı değil',
   EMPTY_RETURN_MAPPING_MISSING: 'Boş kasa dönüş alanı eksik',
-  FINISHED_GOODS_MAPPING_MISSING: 'FG alan eşleşmesi eksik',
+  FINISHED_GOODS_MAPPING_MISSING: 'Bitmiş ürün depo alanı bağlı değil',
   NON_FINISHED_RETURN_MAPPING_MISSING: 'Alt dönüş alanı eksik',
   BINDING_INCOMPLETE: 'Makine konum eşleşmesi eksik',
   RDS_WORKSITE_NOT_DISCOVERED: 'WorkSite henüz keşfedilmedi',

@@ -54,9 +54,11 @@ function Get-DecryptedConfigValue {
     param([string]$RawValue)
     if ([string]::IsNullOrWhiteSpace($RawValue)) { return '' }
     if ($RawValue.StartsWith('dpapi:', [StringComparison]::OrdinalIgnoreCase)) {
-        if (![System.OperatingSystem]::IsWindows()) {
+        $isWin = ($env:OS -eq 'Windows_NT') -or ([System.Environment]::OSVersion.Platform -in @([System.PlatformID]::Win32NT, [System.PlatformID]::Win32Windows))
+        if (-not $isWin) {
             throw "DPAPI_DECRYPTION_FAILED: DPAPI is only supported on Windows operating systems."
         }
+        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
         $cipherB64 = $RawValue.Substring(6)
         $cipherBytes = [Convert]::FromBase64String($cipherB64)
         try {
@@ -196,7 +198,7 @@ try {
     }
 
     $serverPort = 5000
-    if ($rawConfig.Kestrel?.Endpoints?.Http?.Url) {
+    if ($rawConfig.Kestrel -and $rawConfig.Kestrel.Endpoints -and $rawConfig.Kestrel.Endpoints.Http -and $rawConfig.Kestrel.Endpoints.Http.Url) {
         $url = $rawConfig.Kestrel.Endpoints.Http.Url
         if ($url -match ':(\d+)') { $serverPort = [int]$matches[1] }
     }
