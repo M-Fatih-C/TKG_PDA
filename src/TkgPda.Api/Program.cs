@@ -35,6 +35,7 @@ fieldSessionOptions.Validate();
 var rdsOptions = RdsOptions.FromConfiguration(builder.Configuration);
 var rdsCoreDiscoveryOptions = RdsCoreDiscoveryOptions.FromConfiguration(builder.Configuration);
 var rdsCoreExecutionOptions = RdsCoreExecutionOptions.FromConfiguration(builder.Configuration);
+var m4Options = M4Options.FromConfiguration(builder.Configuration);
 var operatorWebOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
     .Get<string[]>()?
@@ -68,6 +69,7 @@ builder.Services.AddSingleton(fieldSessionOptions);
 builder.Services.AddSingleton(rdsOptions);
 builder.Services.AddSingleton(rdsCoreDiscoveryOptions);
 builder.Services.AddSingleton(rdsCoreExecutionOptions);
+builder.Services.AddSingleton(m4Options);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Pbkdf2PasswordHasher>();
 builder.Services.AddSingleton<IPasswordHashService>(services => services.GetRequiredService<Pbkdf2PasswordHasher>());
@@ -140,6 +142,21 @@ builder.Services.AddHttpClient("RdsMutation", client =>
     AllowAutoRedirect = false
 });
 builder.Services.AddSingleton<IRdsExecutionClient, RdsExecutionClient>();
+builder.Services.AddTransient<M4AuthenticationHandler>();
+builder.Services.AddHttpClient<M4HttpClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(m4Options.TimeoutSeconds);
+    if (m4Options.BaseAddress is { } baseAddress)
+    {
+        client.BaseAddress = baseAddress;
+    }
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    UseCookies = false,
+    AllowAutoRedirect = false
+})
+.AddHttpMessageHandler<M4AuthenticationHandler>();
 builder.Services.AddSingleton<RdsIntegrationService>();
 builder.Services.AddSingleton<IRdsWorkSiteReconciler>(services =>
     services.GetRequiredService<RdsIntegrationService>());

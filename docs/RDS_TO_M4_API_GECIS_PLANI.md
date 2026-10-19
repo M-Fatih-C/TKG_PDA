@@ -819,6 +819,8 @@ Mevcut RDS verisi kaybolmadan RDS ve M4 kayıtları birlikte tutulabilir.
 
 ### WP-M4-03 — M4 HTTP/auth client
 
+**Uygulama durumu — 19 Ekim 2026:** Tamamlandı. Ayrı typed `M4HttpClient`, `xyy-app-id` / `xyy-app-key` authentication handler'ı, exact-origin allow-list, remote HTTP opt-in, redirect/cookie kapatma, bounded response okuma, timeout ve yalnız read-only transient istekler için sınırlı retry eklendi. Client allow-list dışında kalan order/robot/scene mutation route'larını ve authority override denemelerini ağ erişiminden önce reddeder. HTTP ve M4 provider hata kodları normalize edilir; credential değerleri provider mesajlarından redakte edilir ve structured loglarda yalnız method, path, status, süre, attempt ve correlation bulunur. Fake handler üzerindeki 11 health/auth/error/retry/allow-list testi geçmiştir. Canlı M4 credential veya endpoint kullanılmamıştır.
+
 **İşler**
 
 - Typed HttpClient
@@ -1468,7 +1470,7 @@ Sıradaki uygulama sırası:
 10. TKG logical endpoint -> M4 point/storage-bin eşlemesi müşteri/SEER onayıyla oluşturulur.
 11. Dört operasyonun step ve `BinTask` sözleşmesi onaylanır.
 12. Physical evidence kaynağı ve freshness semantiği kanıtlanır.
-13. Provider-neutral interface ve additive SQL migration tamamlandı; sıradaki kod dilimi fake M4 server ile HTTP/auth client'tır.
+13. Provider-neutral interface, additive SQL migration ve fake-server HTTP/auth client tamamlandı; sıradaki kod dilimi read-only scene/robot discovery adapter'ıdır.
 
 Bu sıralama, doğrulanmamış scene, location, binTask, robot veya occupancy değerlerinin kod ve veritabanına girmesini engeller.
 
