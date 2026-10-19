@@ -97,34 +97,65 @@ $manifest = @{
 $manifestPath = Join-Path $stagingDir 'manifest.json'
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8
 
-# 4. Compile Inno Setup Script
+# 4. Compile Inno Setup Installer Script
 $issPath = Join-Path $PSScriptRoot 'demo_installer.iss'
-Write-Host "Compiling Inno Setup package ($issPath)..." -ForegroundColor Cyan
+Write-Host "Compiling Inno Setup Full Package ($issPath)..." -ForegroundColor Cyan
 & $iscc "/DAppVersion=$AppVersion" "/DStagingDir=$stagingDir" "/DOutputDir=$outputDir" $issPath
 if ($LASTEXITCODE -ne 0) {
-    throw "ISCC compilation failed with exit code $LASTEXITCODE"
+    throw "ISCC compilation of demo installer failed with exit code $LASTEXITCODE"
 }
 
-# 5. Verify Output Artifact
+# 4b. Compile Inno Setup In-Place Update Package Script
+$updaterIssPath = Join-Path $PSScriptRoot 'updater.iss'
+Write-Host "Compiling Inno Setup In-Place Update Package ($updaterIssPath)..." -ForegroundColor Cyan
+& $iscc "/DAppVersion=$AppVersion" "/DStagingDir=$stagingDir" "/DOutputDir=$outputDir" $updaterIssPath
+if ($LASTEXITCODE -ne 0) {
+    throw "ISCC compilation of update package failed with exit code $LASTEXITCODE"
+}
+
+# 5. Verify Output Artifacts
 $installerExe = Join-Path $outputDir "TKG_PDA_Demo_Setup_$AppVersion.exe"
+$updaterExe = Join-Path $outputDir "TKG_PDA_Update_$AppVersion.exe"
+
 if (-not (Test-Path $installerExe)) {
     throw "Expected setup executable not found: $installerExe"
+}
+if (-not (Test-Path $updaterExe)) {
+    throw "Expected update executable not found: $updaterExe"
 }
 
 $item = Get-Item $installerExe
 $sizeMb = [Math]::Round($item.Length / 1MB, 2)
 $exeHash = (Get-FileHash -Path $installerExe -Algorithm SHA256).Hash.ToLowerInvariant()
 
+$updaterItem = Get-Item $updaterExe
+$updaterSizeMb = [Math]::Round($updaterItem.Length / 1MB, 2)
+$updaterHash = (Get-FileHash -Path $updaterExe -Algorithm SHA256).Hash.ToLowerInvariant()
+
 Write-Host ""
 Write-Host "==========================================================" -ForegroundColor Green
-Write-Host " DEMO INSTALLER PACKAGE READY!" -ForegroundColor Green
+Write-Host " RELEASE PACKAGES READY!" -ForegroundColor Green
 Write-Host "==========================================================" -ForegroundColor Green
-Write-Host " File:    $installerExe" -ForegroundColor Cyan
-Write-Host " Size:    $sizeMb MB ($($item.Length) bytes)" -ForegroundColor Cyan
-Write-Host " SHA-256: $exeHash" -ForegroundColor Gray
+Write-Host " [1] DEMO FULL SETUP (Fresh / Isolated Install):" -ForegroundColor Cyan
+Write-Host "     File:    $installerExe" -ForegroundColor Gray
+Write-Host "     Size:    $sizeMb MB ($($item.Length) bytes)" -ForegroundColor Gray
+Write-Host "     SHA-256: $exeHash" -ForegroundColor Gray
+Write-Host ""
+Write-Host " [2] IN-PLACE UPDATE PACKAGE (Serverda Kurulu Sistemi Guncelleme):" -ForegroundColor Cyan
+Write-Host "     File:    $updaterExe" -ForegroundColor Gray
+Write-Host "     Size:    $updaterSizeMb MB ($($updaterItem.Length) bytes)" -ForegroundColor Gray
+Write-Host "     SHA-256: $updaterHash" -ForegroundColor Gray
 
 # Copy directly to user Desktop
-$desktopExe = Join-Path ([Environment]::GetFolderPath('Desktop')) "TKG_PDA_Demo_Setup_$AppVersion.exe"
-Copy-Item $installerExe $desktopExe -Force
-Write-Host " Desktop: $desktopExe" -ForegroundColor Green
+$desktopDir = [Environment]::GetFolderPath('Desktop')
+$desktopInstaller = Join-Path $desktopDir "TKG_PDA_Demo_Setup_$AppVersion.exe"
+$desktopUpdater = Join-Path $desktopDir "TKG_PDA_Update_$AppVersion.exe"
+
+Copy-Item $installerExe $desktopInstaller -Force
+Copy-Item $updaterExe $desktopUpdater -Force
+
+Write-Host ""
+Write-Host " Desktop Shortcuts Created:" -ForegroundColor Green
+Write-Host "  * Full Setup:   $desktopInstaller" -ForegroundColor Yellow
+Write-Host "  * Update Patch: $desktopUpdater" -ForegroundColor Yellow
 Write-Host "==========================================================" -ForegroundColor Green

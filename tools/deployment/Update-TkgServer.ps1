@@ -131,21 +131,55 @@ try {
     }
     Log-Update "Package integrity verified: All files match cryptographic SHA-256 signatures."
 
-    # 3. Validate Existing Installation
+    # 3. Validate Existing Installation and Auto-Detect Configuration Location
     $serverDir = Join-Path $InstallDir 'Server'
     $webDir = Join-Path $InstallDir 'Web'
-    $configDir = Join-Path $ProgramDataDir 'Config'
-    $prodConfigPath = Join-Path $configDir 'appsettings.Production.json'
 
     if (-not (Test-Path (Join-Path $serverDir 'TkgPda.Api.exe'))) {
         throw "Existing TKG PDA installation not found at $InstallDir"
+    }
+
+    $configDir = Join-Path $ProgramDataDir 'Config'
+    $prodConfigPath = Join-Path $configDir 'appsettings.Production.json'
+
+    # Auto-detect ProgramData directory if not present at initial path
+    if (-not (Test-Path $prodConfigPath)) {
+        $candidateDataDirs = @(
+            'C:\ProgramData\TKG PDA Demo',
+            'C:\ProgramData\TKG PDA',
+            (Join-Path $InstallDir 'Data')
+        )
+        foreach ($cDir in $candidateDataDirs) {
+            $testPath = Join-Path $cDir 'Config\appsettings.Production.json'
+            if (Test-Path $testPath) {
+                $ProgramDataDir = $cDir
+                $configDir = Join-Path $ProgramDataDir 'Config'
+                $prodConfigPath = $testPath
+                Log-Update "Auto-detected ProgramData directory: $ProgramDataDir"
+                break
+            }
+        }
     }
 
     if (-not (Test-Path $prodConfigPath)) {
         throw "Existing configuration file not found at $prodConfigPath"
     }
 
-    Log-Update "Found existing installation at $InstallDir"
+    # Auto-detect Windows Service Name
+    $activeSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $activeSvc) {
+        $candidateServices = @('TKG PDA Demo Server', 'TKG PDA Server')
+        foreach ($cSvc in $candidateServices) {
+            $foundSvc = Get-Service -Name $cSvc -ErrorAction SilentlyContinue
+            if ($foundSvc) {
+                $ServiceName = $cSvc
+                Log-Update "Auto-detected active Windows Service: $ServiceName"
+                break
+            }
+        }
+    }
+
+    Log-Update "Found existing installation at $InstallDir (Service: $ServiceName, ProgramData: $ProgramDataDir)"
 
     # 4. Read & Decrypt Real Database Configuration
     Log-Update "Reading and decrypting installed production configuration..."
@@ -203,6 +237,18 @@ try {
         if ($url -match ':(\d+)') { $serverPort = [int]$matches[1] }
     }
 
+    # 4c. Refresh DemoMode Simulation Parameters if DemoMode is active
+    if ($rawConfig.DemoMode -and $rawConfig.DemoMode.Enabled) {
+        $rawConfig.DemoMode.SimulationDelaySeconds = 3
+        $rawConfig.DemoMode.RunningDurationSeconds = 30
+        $rawConfig.DemoMode.AutoPrepareWarehouseDemands = $false
+        if (-not $rawConfig.DemoMode.SimulatedAgvId) {
+            $rawConfig.DemoMode.SimulatedAgvId = "DEMO-AGV-01"
+        }
+        $rawConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $prodConfigPath -Encoding UTF8
+        Log-Update "Refreshed DemoMode simulation parameters in $prodConfigPath (Duration: 30s, AutoPrepare: false)."
+    }
+
     # 5. Stop Windows Service (Quiesce Application) BEFORE backup
     Log-Update "Stopping Windows Service '$ServiceName' to quiesce application before backup..."
     $svcScript = Join-Path $InstallDir 'Tools\Install-Service.ps1'
@@ -256,6 +302,30 @@ try {
 
     $migrationApplied = $true
     Log-Update "Database migrations applied and master data verified."
+
+    # 7b. If DemoMode is active, apply updated demo seeds (19 FG locations, universal accounts)
+    if ($rawConfig.DemoMode -and $rawConfig.DemoMode.Enabled) {
+        $demoSeed = Join-Path $SourceDir 'db\seeds\demo\demo_seed.sql'
+        if (-not (Test-Path $demoSeed)) { $demoSeed = Join-Path $SourceDir 'Tools\db\seeds\demo\demo_seed.sql' }
+        if (Test-Path $demoSeed) {
+            Log-Update "Applying updated demo seeds (19 finished goods store locations, universal demo accounts)..."
+            $psqlBin = 'psql.exe'
+            $chkPsql = Get-Command 'psql.exe' -ErrorAction SilentlyContinue
+            if ($chkPsql) { $psqlBin = $chkPsql.Source }
+            else {
+                $pgBinCandidates = @(
+                    (Join-Path $InstallDir 'PostgreSQL\bin\psql.exe'),
+                    'C:\Program Files\PostgreSQL\18\bin\psql.exe'
+                )
+                foreach ($c in $pgBinCandidates) { if (Test-Path $c) { $psqlBin = $c; break } }
+            }
+            if (![string]::IsNullOrWhiteSpace($maintPassword)) {
+                $env:PGPASSWORD = $maintPassword
+            }
+            & $psqlBin -X -h $dbHost -p "$dbPort" -U $maintUser -d $dbName -f $demoSeed | Out-Null
+            Log-Update "Demo master seeds verified and applied successfully."
+        }
+    }
 
     # 8. Replace Server Binaries and Web Assets
     Log-Update "Replacing application server binaries..."
