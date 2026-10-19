@@ -84,11 +84,17 @@ foreach ($s in $seeds) {
 }
 
 # 5. Seed development users, roles, devices and default permissions.
-# The hash is random and is not a known password. Acceptance logins use employee number.
-$rngBytes = New-Object byte[] 18
-[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($rngBytes)
-$nonce = [Convert]::ToBase64String($rngBytes)
-$acceptanceHash = '$tkg-pbkdf2-sha512$v=1$i=210000$' + $nonce + '$unused'
+$salt = New-Object byte[] 16
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+$derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(
+    'Admin123!',
+    $salt,
+    210000,
+    [System.Security.Cryptography.HashAlgorithmName]::SHA512
+)
+$hashBytes = $derive.GetBytes(32)
+$derive.Dispose()
+$acceptanceHash = '$tkg-pbkdf2-sha512$v=1$i=210000$' + [Convert]::ToBase64String($salt) + '$' + [Convert]::ToBase64String($hashBytes)
 $devBootstrapSql = @"
 INSERT INTO auth.users (username, password_hash, full_name, employee_no, is_active)
 VALUES

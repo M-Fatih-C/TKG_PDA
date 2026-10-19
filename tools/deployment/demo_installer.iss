@@ -37,12 +37,12 @@ UninstallDisplayName=TKG PDA Demo Server {#AppVersion}
 UninstallFilesDir={app}\Uninstall
 
 [Dirs]
-Name: "{commonappdata}\TKG PDA\Config"
-Name: "{commonappdata}\TKG PDA\Logs"
-Name: "{commonappdata}\TKG PDA\Backups"
-Name: "{commonappdata}\TKG PDA\Data"
-Name: "{commonappdata}\TKG PDA\RDS"
-Name: "{commonappdata}\TKG PDA\PostgreSQL\data"
+Name: "{commonappdata}\TKG PDA Demo\Config"
+Name: "{commonappdata}\TKG PDA Demo\Logs"
+Name: "{commonappdata}\TKG PDA Demo\Backups"
+Name: "{commonappdata}\TKG PDA Demo\Data"
+Name: "{commonappdata}\TKG PDA Demo\RDS"
+Name: "{commonappdata}\TKG PDA Demo\PostgreSQL\data"
 Name: "{app}\Server"
 Name: "{app}\Web"
 Name: "{app}\Tools"
@@ -101,8 +101,8 @@ var
 begin
   if CurStep = ssInstall then
   begin
-    Exec('sc.exe', 'stop "TKG PDA Server"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec('sc.exe', 'stop "tkg-pda-postgres"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('sc.exe', 'stop "TKG PDA Demo Server"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('sc.exe', 'stop "tkg-pda-demo-postgres"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Sleep(1500);
   end;
 
@@ -113,19 +113,22 @@ begin
     Params := Format('-NoProfile -ExecutionPolicy Bypass -File "%s\Tools\Install-TkgServer.ps1" ' +
       '-SourceDir "%s" ' +
       '-InstallDir "%s" ' +
+      '-ProgramDataDir "%s" ' +
       '-ServerPort 5000 ' +
       '-HostBinding "0.0.0.0" ' +
       '-DbHost "127.0.0.1" ' +
-      '-DbPort 5432 ' +
-      '-DbName "tkg_pda" ' +
+      '-DbPort 55452 ' +
+      '-DbName "tkg_pda_demo" ' +
       '-DbUser "postgres" ' +
       '-AppDbUser "tkg_app" ' +
-      '-AdminPassword "Admin123!" ' +
+      '-ServiceName "TKG PDA Demo Server" ' +
+      '-PgServiceName "tkg-pda-demo-postgres" ' +
       '-DemoMode ' +
       '-Version "%s"', [
         ExpandConstant('{app}'),
         ExpandConstant('{app}'),
         ExpandConstant('{app}'),
+        ExpandConstant('{commonappdata}\TKG PDA Demo'),
         '{#AppVersion}'
       ]);
 
@@ -133,7 +136,7 @@ begin
 
     if ResultCode <> 0 then
     begin
-      MsgBox('Demo sunucu kurulumu basarisiz oldu. Ayrintilar icin C:\ProgramData\TKG PDA\Logs altindaki log dosyasini inceleyin.', mbCriticalError, MB_OK);
+      MsgBox('Demo sunucu kurulumu basarisiz oldu. Ayrintilar icin C:\ProgramData\TKG PDA Demo\Logs altindaki log dosyasini inceleyin.', mbCriticalError, MB_OK);
       RaiseException('TKG PDA Demo Server kurulumu ' + IntToStr(ResultCode) + ' hata kodu ile basarisiz oldu.');
     end;
   end;
@@ -145,6 +148,6 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "& sc.exe stop ''TKG PDA Server''; & sc.exe delete ''TKG PDA Server''; Remove-NetFirewallRule -DisplayName ''TKG PDA Server (HTTP)'' -ErrorAction SilentlyContinue"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "& sc.exe stop ''TKG PDA Demo Server''; & sc.exe delete ''TKG PDA Demo Server''; & sc.exe stop ''tkg-pda-demo-postgres''; & sc.exe delete ''tkg-pda-demo-postgres''; Remove-NetFirewallRule -DisplayName ''TKG PDA Demo Server (HTTP)'' -ErrorAction SilentlyContinue"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;

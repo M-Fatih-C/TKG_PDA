@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-    Automated 5-point acceptance test suite for TKG PDA Demo Mode improvements.
+    Automated acceptance test suite for TKG PDA Demo Mode improvements.
 .DESCRIPTION
-    Validates the 5 critical acceptance criteria from the 19 October audit:
+    Validates the critical acceptance criteria from the 19 October audit:
     1. Two-tablet gate (Request sits in WAITING_PREPARATION until warehouse confirms ready).
     2. Preparation area release (OCCUPIED/READY -> COLLECTED upon transport finish).
-    3. 19 Finished goods store location delivery & operator removal ("Aldım").
+    3. 19 Finished goods store locations (Individual verification of FG-01 through FG-19, delivery, notification, and 'Aldım' removal).
     4. Idempotency (re-submitting does not duplicate pallets/store units).
-    5. Demo safety (zero live RDS/M4 dispatch calls, DispatchEnabled: false, loopback enforcement).
+    5. Demo safety & network isolation (Zero live RDS/M4 dispatch calls, DispatchEnabled: false, loopback enforcement, remote endpoint rejection).
 #>
 [CmdletBinding()]
 param(
@@ -26,6 +26,14 @@ if (-not (Test-Path -LiteralPath $psql)) {
     if ($cmd) { $psql = $cmd.Source }
 }
 
+# ------------------------------------------------------------------------------------------------
+# STRICT TEST DATABASE SAFETY GUARD
+# ------------------------------------------------------------------------------------------------
+$allowedDatabases = @('tkg_pda_acceptance', 'tkg_pda_demo')
+if ($Database -notin $allowedDatabases) {
+    throw "SAFETY ERROR: Acceptance test script with TRUNCATE can only run against test/demo databases ($($allowedDatabases -join ', ')). Current database is '$Database'. Refusing to execute."
+}
+
 function Invoke-Sql {
     param([Parameter(Mandatory = $true)][string]$Sql)
     $res = & $psql -X -h $HostName -p $Port -U $User -d $Database -t -A -c $Sql
@@ -34,9 +42,9 @@ function Invoke-Sql {
 }
 
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "   TKG PDA DEMO ACCEPTANCE AUDIT -- 5-POINT VERIFICATION         " -ForegroundColor Cyan
+Write-Host "   TKG PDA DEMO ACCEPTANCE AUDIT -- VERIFICATION SUITE           " -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "Database: $Database on $HostName`:$Port" -ForegroundColor Gray
+Write-Host "Database: $Database on $HostName`:$Port (Safety Verified)" -ForegroundColor Gray
 Write-Host "API:      $ApiBaseUrl" -ForegroundColor Gray
 Write-Host ""
 
@@ -73,7 +81,10 @@ WHERE rs.layout_slot_id = ls.id AND ls.slot_role = 'EMPTY_STORAGE';
 Write-Host "[Gate Check] Verifying API Health and Demo Status..." -ForegroundColor Cyan
 $health = Invoke-RestMethod -Uri "$ApiBaseUrl/health/live" -TimeoutSec 5
 Assert-Check "Health Live" ($health.status -eq 'live') "API is live" "API is not live"
-Assert-Check "Demo Mode" ($health.demoMode -eq $true) "DemoMode is active on server" "DemoMode is false"
+Assert-Check "Demo Mode Flag" ($health.demoMode -eq $true) "DemoMode is active on server (/health/live)" "DemoMode is false"
+
+$version = Invoke-RestMethod -Uri "$ApiBaseUrl/health/version" -TimeoutSec 5
+Assert-Check "Version Demo Flag" ($version.demoMode -eq $true) "DemoMode is active on server (/health/version)" "DemoMode is false"
 
 # Authenticate Admin
 $adminLogin = Invoke-RestMethod -Uri "$ApiBaseUrl/api/v1/admin/auth/login" -Method Post `
@@ -84,7 +95,7 @@ $adminHeaders = @{
 }
 
 # ------------------------------------------------------------------------------------------------
-# CRITERION 5: DEMO SAFETY & ZERO LIVE DISPATCH
+# CRITERION 5: DEMO SAFETY & ZERO LIVE DISPATCH & NETWORK ISOLATION
 # ------------------------------------------------------------------------------------------------
 Write-Host "`n>>> CRITERION 5: Demo Safety & Zero Live Robot Dispatch" -ForegroundColor Yellow
 $rdsStatus = Invoke-RestMethod -Uri "$ApiBaseUrl/api/v1/admin/rds/status" -Headers $adminHeaders
@@ -116,6 +127,24 @@ $whHeaders = @{
 }
 $whReg = Invoke-RestMethod -Uri "$ApiBaseUrl/api/v1/auth/device-notifications/register" -Method Put -Headers $whHeaders
 Write-Host "  Authenticated Line Operator (DEV-LINE) and Warehouse Operator (DEV-WH, RegId: $($whReg.registrationId))." -ForegroundColor Gray
+
+# Ensure SH-01-A has an active production session
+Invoke-Sql @"
+INSERT INTO ops.production_sessions (
+    id, machine_id, variant_id, product_group_id, main_part_id,
+    start_key, started_by, started_device_id, status, started_at
+)
+SELECT 
+    gen_random_uuid(), m.id, mrs.active_variant_id, pg.id, pg.main_part_id,
+    'session-sh01a-' || gen_random_uuid()::text, (SELECT id FROM auth.users WHERE username = 'dev-line' LIMIT 1),
+    (SELECT id FROM audit.client_devices WHERE device_code = 'DEV-LINE' LIMIT 1), 'ACTIVE', now()
+FROM master.machines m
+JOIN ops.machine_runtime_state mrs ON mrs.machine_id = m.id
+JOIN master.product_groups pg ON pg.variant_id = mrs.active_variant_id
+WHERE m.code = 'SH-01-A'
+  AND NOT EXISTS (SELECT 1 FROM ops.production_sessions WHERE machine_id = m.id AND status = 'ACTIVE')
+LIMIT 1;
+"@ | Out-Null
 
 # Retrieve Active Production Context for SH-01-A
 $ctxStr = Invoke-Sql @"
@@ -218,19 +247,27 @@ Assert-Check "Crit 1.4" ($readyRes.readinessState -eq 'READY' -or $readyRes.stat
     "Warehouse confirmed readiness; request state is READY/QUEUED" `
     "Failed confirming readiness on warehouse tablet"
 
-# Wait for DemoSimulationWorker to pick up, run, and complete
-Write-Host "  Waiting for simulation execution cycle (QUEUED -> SENT_TO_RDS -> RUNNING -> COMPLETED)..." -ForegroundColor Gray
+# Wait for DemoSimulationWorker to pick up, run, and complete with live countdown
+Write-Host "  Waiting for simulation execution cycle (QUEUED -> SENT_TO_RDS -> RUNNING -> COMPLETED) [Max 60s]..." -ForegroundColor Gray
 $completed = $false
-for ($i = 0; $i -lt 20; $i++) {
+$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$lastLogged = -10
+for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Seconds 1
-    $curStatus = Invoke-Sql "SELECT status FROM ops.transport_requests WHERE id = '$reqId';"
-    if ($curStatus -eq 'COMPLETED') {
+    $taskRow = Invoke-Sql "SELECT r.status, COALESCE(t.rds_status::text, 'NO_TASK'), COALESCE(t.last_status_json->>'remaining_time', '0') FROM ops.transport_requests r LEFT JOIN integration.rds_tasks t ON t.transport_request_id = r.id WHERE r.id = '$reqId';"
+    $rStatus, $tStatus, $remTime = $taskRow.Split('|')
+    $elapsedSec = [int]$stopwatch.Elapsed.TotalSeconds
+    if (($elapsedSec - $lastLogged -ge 4) -or $rStatus -eq 'COMPLETED') {
+        Write-Host "    [T+${elapsedSec}s] Request: $rStatus | RDS Task: $tStatus | Simulated Remaining: ${remTime}s" -ForegroundColor DarkGray
+        $lastLogged = $elapsedSec
+    }
+    if ($rStatus -eq 'COMPLETED') {
         $completed = $true
         break
     }
 }
 Assert-Check "Crit 2.1" ($completed -eq $true) `
-    "Transport request reached COMPLETED successfully" `
+    "Transport request reached COMPLETED successfully after simulated 30s run" `
     "Transport request did not reach COMPLETED in time"
 
 # Check pallet release in preparation area
@@ -246,14 +283,20 @@ Assert-Check "Crit 2.3" ([int]$prepEvent -ge 1) `
     "Missing PALLET_COLLECTED event"
 
 # ------------------------------------------------------------------------------------------------
-# CRITERION 3: FINISHED GOODS STORE DELIVERY & REMOVAL ("ALDIM")
+# CRITERION 3: 19 FINISHED GOODS STORE LOCATIONS & REMOVAL ("ALDIM")
 # ------------------------------------------------------------------------------------------------
-Write-Host "`n>>> CRITERION 3: 19 Finished Goods Store Delivery & Removal ('Aldım')" -ForegroundColor Yellow
-# Verify 19 store locations exist
-$locCount = [int](Invoke-Sql "SELECT count(*) FROM ops.store_locations WHERE is_enabled;")
-Assert-Check "Crit 3.1" ($locCount -ge 19) `
-    "19 Finished Goods Store Locations configured and enabled (found $locCount)" `
-    "Expected at least 19 store locations, found $locCount"
+Write-Host "`n>>> CRITERION 3: 19 Finished Goods Store Locations Verification & Removal ('Aldım')" -ForegroundColor Yellow
+
+# Verify every single store location from FG-01 to FG-19
+$activeStoreLocations = (Invoke-Sql "SELECT code FROM ops.store_locations WHERE is_enabled ORDER BY code;") -split "`n"
+Write-Host "  Active Store Locations Count: $($activeStoreLocations.Count)" -ForegroundColor Gray
+for ($fgIdx = 1; $fgIdx -le 19; $fgIdx++) {
+    $expectedCode = "FG-{0:D2}" -f $fgIdx
+    $exists = $activeStoreLocations -contains $expectedCode
+    Assert-Check "Crit 3.1 ($expectedCode)" ($exists -eq $true) `
+        "Store location '$expectedCode' is present and active in master layout" `
+        "Store location '$expectedCode' is MISSING or disabled"
+}
 
 # Set slot to OCCUPIED + FULL to simulate Kasa Doldu
 Invoke-Sql @"
@@ -281,19 +324,27 @@ $fgReq = Invoke-RestMethod -Uri "$ApiBaseUrl/api/v1/transport-requests" -Method 
 $fgReqId = $fgReq.id
 Write-Host "  REMOVE_FULL transport request created: $fgReqId" -ForegroundColor Gray
 
-# Wait for completion
-Write-Host "  Waiting for REMOVE_FULL completion by simulated AGV..." -ForegroundColor Gray
+# Wait for completion with live countdown
+Write-Host "  Waiting for REMOVE_FULL completion by simulated AGV [Max 60s]..." -ForegroundColor Gray
 $fgCompleted = $false
-for ($i = 0; $i -lt 20; $i++) {
+$stopwatchFg = [System.Diagnostics.Stopwatch]::StartNew()
+$lastLoggedFg = -10
+for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Seconds 1
-    $curStatus = Invoke-Sql "SELECT status FROM ops.transport_requests WHERE id = '$fgReqId';"
-    if ($curStatus -eq 'COMPLETED') {
+    $taskRow = Invoke-Sql "SELECT r.status, COALESCE(t.rds_status::text, 'NO_TASK'), COALESCE(t.last_status_json->>'remaining_time', '0') FROM ops.transport_requests r LEFT JOIN integration.rds_tasks t ON t.transport_request_id = r.id WHERE r.id = '$fgReqId';"
+    $rStatus, $tStatus, $remTime = $taskRow.Split('|')
+    $elapsedSec = [int]$stopwatchFg.Elapsed.TotalSeconds
+    if (($elapsedSec - $lastLoggedFg -ge 4) -or $rStatus -eq 'COMPLETED') {
+        Write-Host "    [T+${elapsedSec}s] Request: $rStatus | RDS Task: $tStatus | Simulated Remaining: ${remTime}s" -ForegroundColor DarkGray
+        $lastLoggedFg = $elapsedSec
+    }
+    if ($rStatus -eq 'COMPLETED') {
         $fgCompleted = $true
         break
     }
 }
 Assert-Check "Crit 3.2" ($fgCompleted -eq $true) `
-    "REMOVE_FULL transport reached COMPLETED" `
+    "REMOVE_FULL transport reached COMPLETED after simulated 30s run" `
     "REMOVE_FULL transport did not reach COMPLETED in time"
 
 # Check delivery in ops.store_units
@@ -361,6 +412,6 @@ Assert-Check "Crit 4.2" ($duplicateStoreCount -eq 1) `
     "Duplicate store units found: $duplicateStoreCount"
 
 Write-Host "`n=================================================================" -ForegroundColor Green
-Write-Host "   ALL 5 ACCEPTANCE CRITERIA VERIFIED SUCCESSFULLY!             " -ForegroundColor Green
+Write-Host "   ALL ACCEPTANCE CRITERIA VERIFIED SUCCESSFULLY!                " -ForegroundColor Green
 Write-Host "   PASSED: $passedCount / $( $passedCount + $failedCount ) Checks" -ForegroundColor Green
 Write-Host "=================================================================" -ForegroundColor Green

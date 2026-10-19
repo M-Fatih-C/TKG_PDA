@@ -24,11 +24,21 @@ param(
     [string]$SeedsDir = '',
     [switch]$IsUpdate = $false,
     [switch]$SkipServiceRegistration = $false,
-    [switch]$RotateAppPassword = $false,
-    [string]$SecretsFile = ''
+    [string]$SecretsFile = '',
+    [string]$ServiceName = '',
+    [switch]$DemoMode = $false
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($DemoMode) {
+    if ([string]::IsNullOrWhiteSpace($ServiceName)) { $ServiceName = 'tkg-pda-demo-postgres' }
+    if ($Database -eq 'tkg_pda') { $Database = 'tkg_pda_demo' }
+    if ($Port -eq 5432) { $Port = 55452 }
+    if ($DataDir -eq 'C:\ProgramData\TKG PDA\PostgreSQL\data') { $DataDir = 'C:\ProgramData\TKG PDA Demo\PostgreSQL\data' }
+} else {
+    if ([string]::IsNullOrWhiteSpace($ServiceName)) { $ServiceName = 'tkg-pda-postgres' }
+}
 
 function Write-SecureLog {
     param([string]$Message, [string]$Level = 'INFO')
@@ -232,7 +242,7 @@ try {
 
             # Register as Windows Service if elevated and not skipped
             $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            $svcName = 'tkg-pda-postgres'
+            $svcName = $ServiceName
             $existingSvc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
 
             if ($isElevated -and -not $SkipServiceRegistration) {
