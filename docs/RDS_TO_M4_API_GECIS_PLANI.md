@@ -803,6 +803,8 @@ RDS mevcut davranışla çalışmaya devam eder ve domain katmanı M4 sınıflar
 
 ### WP-M4-02 — SQL compatibility migration
 
+**Uygulama durumu — 19 Ekim 2026:** Tamamlandı. `027_fleet_provider_compatibility.sql` ile mevcut navigation profile ve transport request kayıtları `RDS` olarak geriye dönük dolduruldu; provider-neutral order, endpoint, slot mapping, callback inbox ve physical evidence tabloları eklendi. Mevcut `integration.rds_tasks` kayıtları `integration.fleet_orders` tablosuna backfill edilir ve compatibility trigger ile güncel tutulur. Provider/request, external order, upstream identity, callback dedupe ve profile/provider eşleşme constraint'leri fail-close çalışır. Ayrı rollback script'i M4 verisi varsa geri dönüşü reddeder ve yalnız RDS verisi varken provider-neutral ekleri kaldırır. Geçici PostgreSQL kümesindeki migration, replay, coexistence, constraint ve rollback testi geçmiştir.
+
 **İşler**
 
 - Additive SQL migration
@@ -1462,11 +1464,11 @@ Sıradaki uygulama sırası:
 6. Açıkça seçilmiş simulator location'larla no-motion payload ve ardından ayrı onaylı create/query/cancel lifecycle doğrulanır.
 7. RoboShop/M4 commissioning ile gerçek map, robot ve production Fleet Scene hazırlanır.
 8. Production authenticated read-only scene/robot/point/storage-bin discovery tamamlanır.
-8. TKG navigation profile -> M4 scene eşlemesi müşteri/SEER onayıyla oluşturulur.
-9. TKG logical endpoint -> M4 point/storage-bin eşlemesi müşteri/SEER onayıyla oluşturulur.
-10. Dört operasyonun step ve `BinTask` sözleşmesi onaylanır.
-11. Physical evidence kaynağı ve freshness semantiği kanıtlanır.
-12. Provider-neutral interface ve additive SQL migration implementasyonuna başlanır.
+9. TKG navigation profile -> M4 scene eşlemesi müşteri/SEER onayıyla oluşturulur.
+10. TKG logical endpoint -> M4 point/storage-bin eşlemesi müşteri/SEER onayıyla oluşturulur.
+11. Dört operasyonun step ve `BinTask` sözleşmesi onaylanır.
+12. Physical evidence kaynağı ve freshness semantiği kanıtlanır.
+13. Provider-neutral interface ve additive SQL migration tamamlandı; sıradaki kod dilimi fake M4 server ile HTTP/auth client'tır.
 
 Bu sıralama, doğrulanmamış scene, location, binTask, robot veya occupancy değerlerinin kod ve veritabanına girmesini engeller.
 

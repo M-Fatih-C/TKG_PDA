@@ -75,6 +75,7 @@ try {
         'db\migrations\024_operational_reporting.sql',
         'db\migrations\025_profile_scoped_shared_endpoints.sql',
         'db\migrations\026_canonical_shared_endpoint_identities.sql',
+        'db\migrations\027_fleet_provider_compatibility.sql',
         'db\seeds\generated\002a_customer_textual_master_data.sql',
         'db\seeds\generated\002b_customer_physical_layouts.sql',
         'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql',
