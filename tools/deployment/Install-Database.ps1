@@ -473,7 +473,7 @@ GRANT ALL ON ops.applied_seeds TO $AppUser;
             $seedErr = & $psql @commonAdminPsql -d $Database -f $seed 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Write-SecureLog "Seed $seedName failed: $($seedErr | Out-String)" "ERROR"
-                throw "Seed $seedName failed with exit code $LASTEXITCODE: $($seedErr | Out-String)"
+                throw "Seed $seedName failed with exit code $($LASTEXITCODE). Error: $($seedErr | Out-String)"
             }
 
             # Record in ops.applied_seeds
