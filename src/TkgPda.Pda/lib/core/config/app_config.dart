@@ -4,7 +4,7 @@ class AppConfig {
   const AppConfig({required this.apiBaseUri});
 
   static const _buildApiBaseUrl = String.fromEnvironment('TKG_API_BASE_URL');
-  static const _androidDevelopmentApi = 'http://10.0.2.2:5000';
+  static const _androidDevelopmentApi = 'http://10.4.10.111:5000';
 
   final Uri apiBaseUri;
 
