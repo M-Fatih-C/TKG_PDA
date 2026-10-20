@@ -119,6 +119,11 @@ try {
 
     foreach ($prop in $manifest.files.PSObject.Properties) {
         $relPath = $prop.Name
+        # In update packages, PostgreSQL runtime is already installed on the host and is not part of the update payload
+        if ($relPath.StartsWith('PostgreSQL/', [StringComparison]::OrdinalIgnoreCase) -or 
+            $relPath.StartsWith('PostgreSQL\', [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
         $expectedHash = $prop.Value.ToLowerInvariant()
         $fullPath = Join-Path $SourceDir $relPath
         if (-not (Test-Path $fullPath)) {

@@ -37,16 +37,20 @@ $apiProj = Join-Path $repoRoot 'src\TkgPda.Api\TkgPda.Api.csproj'
 & dotnet publish $apiProj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:IncludeNativeLibrariesForSelfExtract=true -o $serverStaging
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
-Write-Host "Syncing updated deployment tools, web interfaces and demo seed to staging..." -ForegroundColor Cyan
+Write-Host "Syncing updated deployment tools, db migrations, seeds, web interfaces and demo seed to staging..." -ForegroundColor Cyan
 $toolsStaging = Join-Path $stagingDir 'Tools'
 if (-not (Test-Path $toolsStaging)) { New-Item -ItemType Directory -Path $toolsStaging -Force | Out-Null }
 Get-ChildItem -Path (Join-Path $repoRoot 'tools\deployment\*.ps1') | ForEach-Object {
     Copy-Item $_.FullName (Join-Path $toolsStaging $_.Name) -Force
 }
-$destDb = Join-Path $stagingDir 'db\seeds\demo\demo_seed.sql'
-$destDbDir = [System.IO.Path]::GetDirectoryName($destDb)
-if (-not (Test-Path $destDbDir)) { New-Item -ItemType Directory -Path $destDbDir -Force | Out-Null }
-Copy-Item (Join-Path $repoRoot 'db\seeds\demo\demo_seed.sql') $destDb -Force
+
+$dbMigrationsStaging = Join-Path $stagingDir 'db\migrations'
+if (-not (Test-Path $dbMigrationsStaging)) { New-Item -ItemType Directory -Path $dbMigrationsStaging -Force | Out-Null }
+Copy-Item (Join-Path $repoRoot 'db\migrations\*') $dbMigrationsStaging -Recurse -Force
+
+$dbSeedsStaging = Join-Path $stagingDir 'db\seeds'
+if (-not (Test-Path $dbSeedsStaging)) { New-Item -ItemType Directory -Path $dbSeedsStaging -Force | Out-Null }
+Copy-Item (Join-Path $repoRoot 'db\seeds\*') $dbSeedsStaging -Recurse -Force
 
 $adminDist = Join-Path $repoRoot 'src\TkgPda.AdminWeb\dist'
 $adminStaging = Join-Path $stagingDir 'Web\admin'
@@ -64,21 +68,30 @@ if (Test-Path $pdaBuild) {
     Copy-Item (Join-Path $pdaBuild '*') $pdaStaging -Recurse -Force
 }
 
-# 3. Update Manifest
-Write-Host "Updating manifest.json with cryptographic signatures..." -ForegroundColor Cyan
+# 3. Update Manifests (Full and Update)
+Write-Host "Updating cryptographic manifests (full and update)..." -ForegroundColor Cyan
 $fileHashes = @{}
-$files = Get-ChildItem -Path $stagingDir -File -Recurse | Where-Object { $_.Name -ne 'manifest.json' }
+$updateFileHashes = @{}
+$files = Get-ChildItem -Path $stagingDir -File -Recurse | Where-Object { 
+    $_.Name -ne 'manifest.json' -and $_.Name -ne 'update_manifest.json' 
+}
 foreach ($file in $files) {
     $rel = $file.FullName.Substring($stagingDir.Length).TrimStart('\', '/').Replace('\', '/')
     $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     $fileHashes[$rel] = $hash
+
+    # Update manifest excludes PostgreSQL runtime since update package targets existing host
+    if (-not ($rel.StartsWith('PostgreSQL/', [StringComparison]::OrdinalIgnoreCase) -or 
+              $rel.StartsWith('PostgreSQL\', [StringComparison]::OrdinalIgnoreCase))) {
+        $updateFileHashes[$rel] = $hash
+    }
 }
 
 $shortCommit = (& git -C $repoRoot rev-parse --short HEAD).Trim()
 $fullCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
 $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-$manifest = @{
+$fullManifest = @{
     name = "TKG PDA Demo Server"
     version = $AppVersion
     buildCommit = $shortCommit
@@ -95,7 +108,25 @@ $manifest = @{
     files = $fileHashes
 }
 $manifestPath = Join-Path $stagingDir 'manifest.json'
-$manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8
+$fullManifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding UTF8
+
+$updateManifest = @{
+    name = "TKG PDA Server Update Package"
+    version = $AppVersion
+    buildCommit = $shortCommit
+    fullCommit = $fullCommit
+    releaseTimestamp = $now
+    architecture = "win-x64"
+    mode = "IN_PLACE_UPDATE"
+    components = @{
+        server = "ASP.NET Core Kestrel (Native Windows Service, Self-Contained win-x64)"
+        adminWeb = "React SPA (/admin/)"
+        pdaWeb = "Flutter Web SPA (/pda/)"
+    }
+    files = $updateFileHashes
+}
+$updateManifestPath = Join-Path $stagingDir 'update_manifest.json'
+$updateManifest | ConvertTo-Json -Depth 5 | Set-Content -Path $updateManifestPath -Encoding UTF8
 
 # 4. Compile Inno Setup Installer Script
 $issPath = Join-Path $PSScriptRoot 'demo_installer.iss'

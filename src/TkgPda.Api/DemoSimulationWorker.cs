@@ -42,7 +42,14 @@ public sealed class DemoSimulationWorker(
                 }
                 catch (Exception error)
                 {
-                    logger.LogWarning(error, "Demo simulation worker cycle encountered an error: {Message}", error.Message);
+                    try
+                    {
+                        logger.LogWarning(error, "Demo simulation worker cycle encountered an error: {Message}", error.Message);
+                    }
+                    catch
+                    {
+                        // Logging failure must never tear down the simulation worker
+                    }
                 }
                 finally
                 {

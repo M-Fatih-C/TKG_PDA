@@ -9,16 +9,34 @@ using TkgPda.Application;
 using TkgPda.Infrastructure.Postgres;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Host.UseWindowsService(options => options.ServiceName = "TKG PDA Server");
+var serviceName = Environment.GetEnvironmentVariable("TKG_SERVICE_NAME") ?? "TKG PDA Server";
+builder.Host.UseWindowsService(options => options.ServiceName = serviceName);
+
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 
 var fileLoggerProvider = new TkgFileLoggerProvider();
 builder.Logging.AddProvider(fileLoggerProvider);
 builder.Services.AddSingleton(fileLoggerProvider);
 
-var programDataConfigPath = Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-    "TKG PDA", "Config", "appsettings.Production.json");
-if (File.Exists(programDataConfigPath))
+var commonAppData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+var envProgramData = Environment.GetEnvironmentVariable("TKG_PROGRAM_DATA");
+
+string? programDataConfigPath = null;
+if (!string.IsNullOrWhiteSpace(envProgramData) && File.Exists(Path.Combine(envProgramData, "Config", "appsettings.Production.json")))
+{
+    programDataConfigPath = Path.Combine(envProgramData, "Config", "appsettings.Production.json");
+}
+else if (File.Exists(Path.Combine(commonAppData, "TKG PDA Demo", "Config", "appsettings.Production.json")))
+{
+    programDataConfigPath = Path.Combine(commonAppData, "TKG PDA Demo", "Config", "appsettings.Production.json");
+}
+else if (File.Exists(Path.Combine(commonAppData, "TKG PDA", "Config", "appsettings.Production.json")))
+{
+    programDataConfigPath = Path.Combine(commonAppData, "TKG PDA", "Config", "appsettings.Production.json");
+}
+
+if (!string.IsNullOrEmpty(programDataConfigPath))
 {
     builder.Configuration.AddJsonFile(programDataConfigPath, optional: true, reloadOnChange: true);
 }

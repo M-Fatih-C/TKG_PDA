@@ -40,7 +40,7 @@ Source: "{#StagingDir}\Web\*"; DestDir: "{app}\_update_staging\Web"; Flags: igno
 Source: "{#StagingDir}\Tools\*"; DestDir: "{app}\_update_staging\Tools"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagingDir}\db\*"; DestDir: "{app}\_update_staging\db"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StagingDir}\rds\*"; DestDir: "{app}\_update_staging\rds"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#StagingDir}\manifest.json"; DestDir: "{app}\_update_staging"; Flags: ignoreversion
+Source: "{#StagingDir}\update_manifest.json"; DestDir: "{app}\_update_staging"; DestName: "manifest.json"; Flags: ignoreversion
 
 [Code]
 function GetDefaultInstallDir(Param: String): String;

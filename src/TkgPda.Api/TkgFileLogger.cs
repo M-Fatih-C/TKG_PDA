@@ -97,9 +97,20 @@ public sealed class TkgFileLoggerProvider : ILoggerProvider
 
         try
         {
+            var envProgramData = Environment.GetEnvironmentVariable("TKG_PROGRAM_DATA");
+            if (!string.IsNullOrWhiteSpace(envProgramData))
+            {
+                return Path.Combine(envProgramData, "Logs");
+            }
+
             var programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
             if (!string.IsNullOrWhiteSpace(programData))
             {
+                var demoDir = Path.Combine(programData, "TKG PDA Demo", "Logs");
+                if (Directory.Exists(Path.Combine(programData, "TKG PDA Demo")))
+                {
+                    return demoDir;
+                }
                 return Path.Combine(programData, "TKG PDA", "Logs");
             }
         }
