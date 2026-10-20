@@ -66,6 +66,14 @@ if (Test-Path $pdaBuild) {
     Write-Host "Syncing Flutter PDA Web ($pdaBuild) to staging ($pdaStaging)..." -ForegroundColor Cyan
     if (-not (Test-Path $pdaStaging)) { New-Item -ItemType Directory -Path $pdaStaging -Force | Out-Null }
     Copy-Item (Join-Path $pdaBuild '*') $pdaStaging -Recurse -Force
+    $pdaIndex = Join-Path $pdaStaging 'index.html'
+    if (Test-Path $pdaIndex) {
+        $c = Get-Content $pdaIndex -Raw
+        if ($c -match '<base href="[^"]*">') {
+            $c = $c -replace '<base href="[^"]*">', '<base href="/pda/">'
+            Set-Content -Path $pdaIndex -Value $c -Encoding UTF8
+        }
+    }
 }
 
 # 3. Update Manifests (Full and Update)

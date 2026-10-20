@@ -153,6 +153,14 @@ public static class TkgStaticWebHosting
                 context.Response.ContentType = "text/html; charset=utf-8";
                 await context.Response.SendFileAsync(indexPath);
             }).AllowAnonymous();
+
+            // Root asset redirects in case a client or proxy requests Flutter assets without /pda/ prefix
+            var rootFlutterAssets = new[] { "flutter_bootstrap.js", "main.dart.js", "operator_service_worker.js", "flutter_service_worker.js" };
+            foreach (var asset in rootFlutterAssets)
+            {
+                var targetAsset = asset;
+                app.MapGet($"/{targetAsset}", () => Results.Redirect($"/pda/{targetAsset}", permanent: true)).AllowAnonymous();
+            }
         }
 
         // 3. Root landing page
