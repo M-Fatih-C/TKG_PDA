@@ -265,8 +265,8 @@ try {
 
     # 5. Stop Windows Service (Quiesce Application) BEFORE backup
     Log-Update "Stopping Windows Service '$ServiceName' to quiesce application before backup..."
-    $svcScript = Join-Path $InstallDir 'Tools\Install-Service.ps1'
-    if (-not (Test-Path $svcScript)) { $svcScript = Join-Path $SourceDir 'Tools\Install-Service.ps1' }
+    $svcScript = Join-Path $SourceDir 'Tools\Install-Service.ps1'
+    if (-not (Test-Path $svcScript)) { $svcScript = Join-Path $InstallDir 'Tools\Install-Service.ps1' }
 
     if (Test-Path $svcScript) {
         & $svcScript -Action Stop -ServiceName $ServiceName
@@ -276,8 +276,8 @@ try {
 
     # 6. Create Timestamped Pre-Update Backup
     Log-Update "Creating pre-update backup at quiesced boundary..."
-    $backupScript = Join-Path $InstallDir 'Tools\Backup-TkgServer.ps1'
-    if (-not (Test-Path $backupScript)) { $backupScript = Join-Path $SourceDir 'Tools\Backup-TkgServer.ps1' }
+    $backupScript = Join-Path $SourceDir 'Tools\Backup-TkgServer.ps1'
+    if (-not (Test-Path $backupScript)) { $backupScript = Join-Path $InstallDir 'Tools\Backup-TkgServer.ps1' }
 
     $backupDest = Join-Path $ProgramDataDir "Backups\$timestamp"
     $backupInfo = & $backupScript `
@@ -295,8 +295,8 @@ try {
 
     # 7. Apply Forward-Only Database Migrations and Seeds
     Log-Update "Checking and applying database migrations and seeds..."
-    $dbScript = Join-Path $InstallDir 'Tools\Install-Database.ps1'
-    if (-not (Test-Path $dbScript)) { $dbScript = Join-Path $SourceDir 'Tools\Install-Database.ps1' }
+    $dbScript = Join-Path $SourceDir 'Tools\Install-Database.ps1'
+    if (-not (Test-Path $dbScript)) { $dbScript = Join-Path $InstallDir 'Tools\Install-Database.ps1' }
 
     $migrationsDir = Join-Path $SourceDir 'db\migrations'
     $seedsDir = Join-Path $SourceDir 'db\seeds'
@@ -311,8 +311,7 @@ try {
         -AppPassword $runtimePassword `
         -MigrationsDir $migrationsDir `
         -SeedsDir $seedsDir `
-        -IsUpdate `
-        -RotateAppPassword:$false
+        -IsUpdate
 
     $migrationApplied = $true
     Log-Update "Database migrations applied and master data verified."
@@ -388,8 +387,8 @@ try {
     Log-Update "Running post-update smoke tests..."
     Start-Sleep -Seconds 3
 
-    $testScript = Join-Path $InstallDir 'Tools\test-installed-server.ps1'
-    if (-not (Test-Path $testScript)) { $testScript = Join-Path $SourceDir 'Tools\test-installed-server.ps1' }
+    $testScript = Join-Path $SourceDir 'Tools\test-installed-server.ps1'
+    if (-not (Test-Path $testScript)) { $testScript = Join-Path $InstallDir 'Tools\test-installed-server.ps1' }
 
     if (Test-Path $testScript) {
         & $testScript -ServerHost '127.0.0.1' -Port $serverPort -ServiceName $ServiceName

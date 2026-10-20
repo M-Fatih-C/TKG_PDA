@@ -23,6 +23,7 @@ param(
     [string]$MigrationsDir = '',
     [string]$SeedsDir = '',
     [switch]$IsUpdate = $false,
+    [switch]$RotateAppPassword = $false,
     [switch]$SkipServiceRegistration = $false,
     [string]$SecretsFile = '',
     [string]$ServiceName = '',
