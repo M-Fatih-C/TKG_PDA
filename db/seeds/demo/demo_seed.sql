@@ -343,7 +343,7 @@ BEGIN
     INSERT INTO integration.rds_worksites (
         navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, last_filled, last_locked, raw_state_json
     )
-    SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, 0, 0, '{}'::jsonb
+    SELECT DISTINCT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, 0, 0, '{}'::jsonb
     FROM integration.rds_worksite_plans p
     ON CONFLICT (navigation_profile_id, rds_site_id) DO UPDATE SET
         last_sync_at = now(), last_disabled = 0, last_sync_failed = 0, last_filled = 0, last_locked = 0;
@@ -520,6 +520,6 @@ BEGIN
     WHERE relation_type = 'ALT_PART' AND container_type_id IS NULL;
 
     -- 13. Clean any unremoved store units so all 19 FG locations start clean as ALAN BOŞ
-    UPDATE ops.store_units SET removed_at = now() WHERE removed_at IS NULL;
+    DELETE FROM ops.store_units;
 END $$;
 
