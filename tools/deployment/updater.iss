@@ -76,16 +76,21 @@ var
   ResultCode: Integer;
   Params: String;
   PwshExe: String;
+  UpdateScript: String;
 begin
   if CurStep = ssPostInstall then
   begin
     PwshExe := 'powershell.exe';
 
-    Params := Format('-NoProfile -ExecutionPolicy Bypass -File "%s\Tools\Update-TkgServer.ps1" ' +
+    UpdateScript := ExpandConstant('{app}\_update_staging\Tools\Update-TkgServer.ps1');
+    if not FileExists(UpdateScript) then
+      UpdateScript := ExpandConstant('{app}\Tools\Update-TkgServer.ps1');
+
+    Params := Format('-NoProfile -ExecutionPolicy Bypass -File "%s" ' +
       '-SourceDir "%s\_update_staging" ' +
       '-InstallDir "%s" ' +
       '-TargetVersion "%s"', [
-        ExpandConstant('{app}'),
+        UpdateScript,
         ExpandConstant('{app}'),
         ExpandConstant('{app}'),
         '{#AppVersion}'

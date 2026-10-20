@@ -244,11 +244,20 @@ try {
 
     # 4c. Refresh DemoMode Simulation Parameters if DemoMode is active
     if ($rawConfig.DemoMode -and $rawConfig.DemoMode.Enabled) {
-        $rawConfig.DemoMode.SimulationDelaySeconds = 3
-        $rawConfig.DemoMode.RunningDurationSeconds = 30
-        $rawConfig.DemoMode.AutoPrepareWarehouseDemands = $false
+        $setProp = {
+            param($TargetObj, [string]$PropName, $PropValue)
+            if ($null -ne $TargetObj.PSObject.Properties[$PropName]) {
+                $TargetObj.$PropName = $PropValue
+            } else {
+                $TargetObj | Add-Member -NotePropertyName $PropName -NotePropertyValue $PropValue -Force
+            }
+        }
+
+        & $setProp $rawConfig.DemoMode 'SimulationDelaySeconds' 3
+        & $setProp $rawConfig.DemoMode 'RunningDurationSeconds' 30
+        & $setProp $rawConfig.DemoMode 'AutoPrepareWarehouseDemands' $false
         if (-not $rawConfig.DemoMode.SimulatedAgvId) {
-            $rawConfig.DemoMode.SimulatedAgvId = "DEMO-AGV-01"
+            & $setProp $rawConfig.DemoMode 'SimulatedAgvId' "DEMO-AGV-01"
         }
         $rawConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $prodConfigPath -Encoding UTF8
         Log-Update "Refreshed DemoMode simulation parameters in $prodConfigPath (Duration: 30s, AutoPrepare: false)."
