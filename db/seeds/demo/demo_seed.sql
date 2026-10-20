@@ -351,7 +351,7 @@ BEGIN
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id
     )
-    SELECT DISTINCT ON (w.navigation_profile_id, 'FINISHED_GOODS', 'FG-' || LPAD(p.ordinal::text, 2, '0'))
+    SELECT DISTINCT ON (w.navigation_profile_id, p.ordinal)
         w.navigation_profile_id,
         'FINISHED_GOODS',
         'FG-' || LPAD(p.ordinal::text, 2, '0'),
@@ -362,7 +362,7 @@ BEGIN
       ON p.navigation_profile_id = w.navigation_profile_id
      AND p.planned_rds_site_id = w.rds_site_id
     WHERE p.object_family = 'FINISHED_GOODS'
-    ORDER BY w.navigation_profile_id, 'FINISHED_GOODS', 'FG-' || LPAD(p.ordinal::text, 2, '0'), w.id
+    ORDER BY w.navigation_profile_id, p.ordinal, w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
     DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id,
                   store_location_id = EXCLUDED.store_location_id;
@@ -380,7 +380,7 @@ BEGIN
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, rds_worksite_id
     )
-    SELECT DISTINCT ON (w.navigation_profile_id, 'EMPTY_SOURCE', 'EMPTY-' || LPAD(p.ordinal::text, 2, '0'))
+    SELECT DISTINCT ON (w.navigation_profile_id, p.ordinal)
         w.navigation_profile_id,
         'EMPTY_SOURCE',
         'EMPTY-' || LPAD(p.ordinal::text, 2, '0'),
@@ -390,14 +390,14 @@ BEGIN
       ON p.navigation_profile_id = w.navigation_profile_id
      AND p.planned_rds_site_id = w.rds_site_id
     WHERE p.object_family = 'EMPTY'
-    ORDER BY w.navigation_profile_id, 'EMPTY_SOURCE', 'EMPTY-' || LPAD(p.ordinal::text, 2, '0'), w.id
+    ORDER BY w.navigation_profile_id, p.ordinal, w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
     DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id;
 
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, rds_worksite_id
     )
-    SELECT DISTINCT ON (w.navigation_profile_id, 'EMPTY_RETURN', 'EMPTY-' || LPAD(p.ordinal::text, 2, '0'))
+    SELECT DISTINCT ON (w.navigation_profile_id, p.ordinal)
         w.navigation_profile_id,
         'EMPTY_RETURN',
         'EMPTY-' || LPAD(p.ordinal::text, 2, '0'),
@@ -407,14 +407,14 @@ BEGIN
       ON p.navigation_profile_id = w.navigation_profile_id
      AND p.planned_rds_site_id = w.rds_site_id
     WHERE p.object_family = 'EMPTY'
-    ORDER BY w.navigation_profile_id, 'EMPTY_RETURN', 'EMPTY-' || LPAD(p.ordinal::text, 2, '0'), w.id
+    ORDER BY w.navigation_profile_id, p.ordinal, w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
     DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id;
 
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, rds_worksite_id
     )
-    SELECT DISTINCT ON (w.navigation_profile_id, 'NON_FINISHED_RETURN', 'RETURN-' || LPAD(p.ordinal::text, 2, '0'))
+    SELECT DISTINCT ON (w.navigation_profile_id, p.ordinal)
         w.navigation_profile_id,
         'NON_FINISHED_RETURN',
         'RETURN-' || LPAD(p.ordinal::text, 2, '0'),
@@ -424,7 +424,7 @@ BEGIN
       ON p.navigation_profile_id = w.navigation_profile_id
      AND p.planned_rds_site_id = w.rds_site_id
     WHERE p.object_family = 'RETURN'
-    ORDER BY w.navigation_profile_id, 'NON_FINISHED_RETURN', 'RETURN-' || LPAD(p.ordinal::text, 2, '0'), w.id
+    ORDER BY w.navigation_profile_id, p.ordinal, w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
     DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id;
 

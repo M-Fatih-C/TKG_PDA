@@ -477,7 +477,7 @@ catch {
                         & $rPsql -X -h $maintHost -p $maintPort -U $maintUser -w -v ON_ERROR_STOP=1 -d $dbName -f $dumpFile | Out-Null
                         if ($LASTEXITCODE -eq 0) {
                             $dbRestoreSucceeded = $true
-                            foreach ($s in @('public', 'auth', 'master', 'transport', 'ops')) {
+                            foreach ($s in @('public', 'auth', 'master', 'integration', 'ops')) {
                                 & $rPsql -X -h $maintHost -p $maintPort -U $maintUser -w -d $dbName -c "GRANT USAGE ON SCHEMA $s TO $runtimeUser; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA $s TO $runtimeUser; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA $s TO $runtimeUser; GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA $s TO $runtimeUser;" 2>$null | Out-Null
                             }
                             Log-Update "Database '$dbName' restored to pre-update snapshot successfully using maintenance identity."
