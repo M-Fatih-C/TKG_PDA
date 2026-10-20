@@ -19,6 +19,11 @@ BEGIN
     SELECT id INTO v_fg_wh_role FROM auth.roles WHERE code = 'FINISHED_GOODS_WAREHOUSE_OPERATOR';
 
     -- 1. Demo Users (PBKDF2 hash for 'Admin123!')
+    -- Free up any conflicting employee numbers assigned to legacy or other test users
+    UPDATE auth.users SET employee_no = NULL
+    WHERE employee_no IN ('DEV-ADM', 'DEV-SUP', 'DEV-LINE', '1001', 'DEV-WH', '2001', '2002')
+      AND username NOT IN ('dev-admin', 'dev-supervisor', 'dev-line', 'operator-1001', 'dev-warehouse', 'dev-wh-semi', 'dev-wh-finished');
+
     INSERT INTO auth.users (username, password_hash, full_name, employee_no, is_active)
     VALUES
       ('dev-admin', '$tkg-pbkdf2-sha512$v=1$i=210000$gDFwUtCCloIXM7g+r5cw8w==$dC/4mbXQS6ztQYKdc0ejY9Mt85OPZsU1Ua3CP35BaK8=', 'Demo Yönetici (Admin)', 'DEV-ADM', true),
@@ -183,6 +188,9 @@ BEGIN
     JOIN master.variants v ON v.machine_id = m.id AND v.code = '3'
     JOIN master.layouts l ON l.machine_id = m.id AND l.code = 'CUSTOMER-PHYSICAL-SHARED-V1-V2'
     WHERE m.code = 'SEALER'
+      AND NOT EXISTS (
+          SELECT 1 FROM master.variant_layout_assignments vla WHERE vla.variant_id = v.id AND vla.is_default
+      )
     ON CONFLICT (variant_id, layout_id) DO NOTHING;
 
     -- SEALER (Layout: CUSTOMER-PHYSICAL-SHARED-V1-V2) -> Variant 1 & 2 BN000 parts and Variant 3 parts
@@ -343,7 +351,7 @@ BEGIN
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id
     )
-    SELECT
+    SELECT DISTINCT ON (w.navigation_profile_id, 'FINISHED_GOODS', 'FG-' || LPAD(p.ordinal::text, 2, '0'))
         w.navigation_profile_id,
         'FINISHED_GOODS',
         'FG-' || LPAD(p.ordinal::text, 2, '0'),
@@ -354,6 +362,7 @@ BEGIN
       ON p.navigation_profile_id = w.navigation_profile_id
      AND p.planned_rds_site_id = w.rds_site_id
     WHERE p.object_family = 'FINISHED_GOODS'
+    ORDER BY w.navigation_profile_id, 'FINISHED_GOODS', 'FG-' || LPAD(p.ordinal::text, 2, '0'), w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
     DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id,
                   store_location_id = EXCLUDED.store_location_id;
@@ -371,7 +380,7 @@ BEGIN
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, rds_worksite_id
     )
-    SELECT
+    SELECT DISTINCT ON (w.navigation_profile_id, 'EMPTY_SOURCE', 'EMPTY-' || LPAD(p.ordinal::text, 2, '0'))
         w.navigation_profile_id,
         'EMPTY_SOURCE',
         'EMPTY-' || LPAD(p.ordinal::text, 2, '0'),
@@ -381,13 +390,14 @@ BEGIN
       ON p.navigation_profile_id = w.navigation_profile_id
      AND p.planned_rds_site_id = w.rds_site_id
     WHERE p.object_family = 'EMPTY'
+    ORDER BY w.navigation_profile_id, 'EMPTY_SOURCE', 'EMPTY-' || LPAD(p.ordinal::text, 2, '0'), w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
     DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id;
 
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, rds_worksite_id
     )
-    SELECT
+    SELECT DISTINCT ON (w.navigation_profile_id, 'EMPTY_RETURN', 'EMPTY-' || LPAD(p.ordinal::text, 2, '0'))
         w.navigation_profile_id,
         'EMPTY_RETURN',
         'EMPTY-' || LPAD(p.ordinal::text, 2, '0'),
@@ -397,13 +407,14 @@ BEGIN
       ON p.navigation_profile_id = w.navigation_profile_id
      AND p.planned_rds_site_id = w.rds_site_id
     WHERE p.object_family = 'EMPTY'
+    ORDER BY w.navigation_profile_id, 'EMPTY_RETURN', 'EMPTY-' || LPAD(p.ordinal::text, 2, '0'), w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
     DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id;
 
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, rds_worksite_id
     )
-    SELECT
+    SELECT DISTINCT ON (w.navigation_profile_id, 'NON_FINISHED_RETURN', 'RETURN-' || LPAD(p.ordinal::text, 2, '0'))
         w.navigation_profile_id,
         'NON_FINISHED_RETURN',
         'RETURN-' || LPAD(p.ordinal::text, 2, '0'),
@@ -413,6 +424,7 @@ BEGIN
       ON p.navigation_profile_id = w.navigation_profile_id
      AND p.planned_rds_site_id = w.rds_site_id
     WHERE p.object_family = 'RETURN'
+    ORDER BY w.navigation_profile_id, 'NON_FINISHED_RETURN', 'RETURN-' || LPAD(p.ordinal::text, 2, '0'), w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
     DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id;
 
@@ -459,12 +471,12 @@ BEGIN
         updated_at = now();
 
     -- 10. Seed Active Production Sessions for All 9 Machines
-    -- Close any stale sessions first
+    -- Close any stale sessions first with clock_timestamp() to guarantee ended_at >= started_at
     UPDATE ops.production_sessions
     SET status = 'ENDED',
-        ended_at = now(),
-        ended_by = started_by,
-        ended_device_id = started_device_id
+        ended_at = GREATEST(clock_timestamp(), started_at),
+        ended_by = COALESCE(started_by, (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1), (SELECT id FROM auth.users LIMIT 1)),
+        ended_device_id = COALESCE(started_device_id, (SELECT id FROM audit.client_devices WHERE device_code = 'DEV-LINE' LIMIT 1), (SELECT id FROM audit.client_devices LIMIT 1))
     WHERE ended_at IS NULL;
 
     -- Start active production session on each machine's default variant & first product group
@@ -477,9 +489,9 @@ BEGIN
         pg.id,
         pg.main_part_id,
         'demo-prod-' || m.code || '-' || substr(md5(random()::text), 1, 8),
-        (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1),
-        (SELECT id FROM audit.client_devices WHERE device_code = 'DEV-LINE' LIMIT 1),
-        now(),
+        COALESCE((SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1), (SELECT id FROM auth.users LIMIT 1)),
+        COALESCE((SELECT id FROM audit.client_devices WHERE device_code = 'DEV-LINE' LIMIT 1), (SELECT id FROM audit.client_devices LIMIT 1)),
+        clock_timestamp(),
         'ACTIVE'
     FROM master.machines m
     JOIN ops.machine_runtime_state s ON s.machine_id = m.id
@@ -500,7 +512,8 @@ BEGIN
     -- 12. Seed EURO_PALET Container Type and assign to unassigned ALT_PARTs
     INSERT INTO master.container_types (code, name, category, length_mm, width_mm, height_mm)
     VALUES ('EURO_PALET', 'Euro Palet', 'PALLET', 1200, 800, 144)
-    ON CONFLICT (code) DO NOTHING;
+    ON CONFLICT (code) DO UPDATE
+    SET name = EXCLUDED.name, category = EXCLUDED.category, length_mm = EXCLUDED.length_mm, width_mm = EXCLUDED.width_mm, height_mm = EXCLUDED.height_mm;
 
     UPDATE master.product_group_parts
     SET container_type_id = (SELECT id FROM master.container_types WHERE code = 'EURO_PALET' LIMIT 1)

@@ -442,10 +442,13 @@ GRANT ALL ON ops.applied_seeds TO $AppUser;
             (Join-Path $SeedsDir '004_finished_goods_internal_locations.sql')
         )
 
-        # Discover any additional custom or new seeds in $SeedsDir
+        # Discover any additional custom or new seeds in $SeedsDir (excluding demo and simulation seeds)
         $extraSeeds = Get-ChildItem -Path $SeedsDir -Filter "*.sql" -Recurse | Where-Object {
             $path = $_.FullName
-            -not ($seedFiles -contains $path) -and -not ($path -like "*simulation_rds_trial_mappings*")
+            -not ($seedFiles -contains $path) -and 
+            -not ($path -like "*simulation_rds_trial_mappings*") -and
+            -not ($path -like "*\demo\*") -and
+            -not ($path -like "*/demo/*")
         } | Sort-Object Name
 
         $allSeedsToProcess = [System.Collections.Generic.List[string]]::new()
@@ -467,9 +470,10 @@ GRANT ALL ON ops.applied_seeds TO $AppUser;
             }
 
             Write-SecureLog "Applying seed: $seedName (Checksum: $hash)..."
-            & $psql @commonAdminPsql -d $Database -f $seed | Out-Null
+            $seedErr = & $psql @commonAdminPsql -d $Database -f $seed 2>&1
             if ($LASTEXITCODE -ne 0) {
-                throw "Seed $seedName failed with exit code $LASTEXITCODE"
+                Write-SecureLog "Seed $seedName failed: $($seedErr | Out-String)" "ERROR"
+                throw "Seed $seedName failed with exit code $LASTEXITCODE: $($seedErr | Out-String)"
             }
 
             # Record in ops.applied_seeds

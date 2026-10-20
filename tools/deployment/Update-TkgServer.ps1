@@ -335,7 +335,11 @@ try {
             if (![string]::IsNullOrWhiteSpace($maintPassword)) {
                 $env:PGPASSWORD = $maintPassword
             }
-            & $psqlBin -X -h $dbHost -p "$dbPort" -U $maintUser -d $dbName -f $demoSeed | Out-Null
+            $demoErr = & $psqlBin -X -h $dbHost -p "$dbPort" -U $maintUser -d $dbName -f $demoSeed 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Log-Update "Demo master seeds failed with exit code $LASTEXITCODE: $($demoErr | Out-String)" "ERROR"
+                throw "Demo master seeds failed with exit code $LASTEXITCODE: $($demoErr | Out-String)"
+            }
             Log-Update "Demo master seeds verified and applied successfully."
         }
     }
