@@ -18,12 +18,16 @@ class StoreScreen extends StatelessWidget {
     required this.coordinator,
     required this.onBack,
     this.onNavigate,
+    this.onLogout,
+    this.operatorLabel,
     super.key,
   });
 
   final StoreCoordinator coordinator;
   final VoidCallback onBack;
   final void Function(AppStage stage)? onNavigate;
+  final VoidCallback? onLogout;
+  final String? operatorLabel;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -41,6 +45,16 @@ class StoreScreen extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text('Bitmiş Ürün Deposu'),
+            if (operatorLabel case final label?)
+              Text(
+                label,
+                key: const Key('operator-user-banner'),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.normal,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
             if (coordinator.lastSuccessfulRefresh case final last?)
               Text(
                 coordinator.error != null
@@ -92,6 +106,13 @@ class StoreScreen extends StatelessWidget {
             onPressed: coordinator.loading ? null : () => coordinator.refresh(),
             icon: const Icon(Icons.refresh),
           ),
+          if (onLogout != null)
+            IconButton(
+              key: const Key('logout-button'),
+              tooltip: 'Çıkış',
+              onPressed: onLogout,
+              icon: const Icon(Icons.logout),
+            ),
         ],
       ),
       body: SafeArea(

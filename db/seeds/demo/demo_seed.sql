@@ -25,12 +25,16 @@ BEGIN
       ('dev-supervisor', '$tkg-pbkdf2-sha512$v=1$i=210000$gDFwUtCCloIXM7g+r5cw8w==$dC/4mbXQS6ztQYKdc0ejY9Mt85OPZsU1Ua3CP35BaK8=', 'Demo Postabaşı / Süpervizör', 'DEV-SUP', true),
       ('dev-line', '$tkg-pbkdf2-sha512$v=1$i=210000$gDFwUtCCloIXM7g+r5cw8w==$dC/4mbXQS6ztQYKdc0ejY9Mt85OPZsU1Ua3CP35BaK8=', 'Demo Hat Operatörü', 'DEV-LINE', true),
       ('operator-1001', '$tkg-pbkdf2-sha512$v=1$i=210000$gDFwUtCCloIXM7g+r5cw8w==$dC/4mbXQS6ztQYKdc0ejY9Mt85OPZsU1Ua3CP35BaK8=', 'Demo Operatör 1001', '1001', true),
-      ('dev-warehouse', '$tkg-pbkdf2-sha512$v=1$i=210000$gDFwUtCCloIXM7g+r5cw8w==$dC/4mbXQS6ztQYKdc0ejY9Mt85OPZsU1Ua3CP35BaK8=', 'Demo Depo Sorumlusu', 'DEV-WH', true)
+      ('dev-warehouse', '$tkg-pbkdf2-sha512$v=1$i=210000$gDFwUtCCloIXM7g+r5cw8w==$dC/4mbXQS6ztQYKdc0ejY9Mt85OPZsU1Ua3CP35BaK8=', 'Demo Depo Sorumlusu', 'DEV-WH', true),
+      ('dev-wh-semi', '$tkg-pbkdf2-sha512$v=1$i=210000$gDFwUtCCloIXM7g+r5cw8w==$dC/4mbXQS6ztQYKdc0ejY9Mt85OPZsU1Ua3CP35BaK8=', 'Yarı Mamul Depo Operatörü', '2001', true),
+      ('dev-wh-finished', '$tkg-pbkdf2-sha512$v=1$i=210000$gDFwUtCCloIXM7g+r5cw8w==$dC/4mbXQS6ztQYKdc0ejY9Mt85OPZsU1Ua3CP35BaK8=', 'Bitmiş Ürün Depo Operatörü', '2002', true)
     ON CONFLICT (username) DO UPDATE
     SET full_name = EXCLUDED.full_name, employee_no = EXCLUDED.employee_no, password_hash = EXCLUDED.password_hash, is_active = true;
 
     UPDATE auth.users SET employee_no = 'DEV-LINE' WHERE username = 'dev-line';
     UPDATE auth.users SET employee_no = '1001' WHERE username = 'operator-1001';
+    UPDATE auth.users SET employee_no = '2001' WHERE username = 'dev-wh-semi';
+    UPDATE auth.users SET employee_no = '2002' WHERE username = 'dev-wh-finished';
 
     -- 2. User Roles (Grant SUPERVISOR to operators so they can browse all 9 machines & change variants)
     INSERT INTO auth.user_roles (user_id, role_id)
@@ -43,11 +47,11 @@ BEGIN
     SELECT u.id, v_wh_role FROM auth.users u WHERE u.username = 'dev-warehouse' ON CONFLICT DO NOTHING;
     IF v_sf_wh_role IS NOT NULL THEN
         INSERT INTO auth.user_roles (user_id, role_id)
-        SELECT u.id, v_sf_wh_role FROM auth.users u WHERE u.username = 'dev-warehouse' ON CONFLICT DO NOTHING;
+        SELECT u.id, v_sf_wh_role FROM auth.users u WHERE u.username IN ('dev-warehouse', 'dev-wh-semi') ON CONFLICT DO NOTHING;
     END IF;
     IF v_fg_wh_role IS NOT NULL THEN
         INSERT INTO auth.user_roles (user_id, role_id)
-        SELECT u.id, v_fg_wh_role FROM auth.users u WHERE u.username = 'dev-warehouse' ON CONFLICT DO NOTHING;
+        SELECT u.id, v_fg_wh_role FROM auth.users u WHERE u.username IN ('dev-warehouse', 'dev-wh-finished') ON CONFLICT DO NOTHING;
     END IF;
 
     -- 3. Dedicated and Universal Client Devices
@@ -55,7 +59,9 @@ BEGIN
     VALUES
       ('DEV-SUPERVISOR', 'Demo Süpervizör Terminali (Tüm Makineler)', 'PDA', NULL, true),
       ('DEV-LINE', 'Demo Operatör Terminali (Tüm Makineler)', 'PDA', NULL, true),
-      ('DEV-WAREHOUSE', 'Demo Depo Terminali', 'PDA', NULL, true)
+      ('DEV-WAREHOUSE', 'Demo Depo Terminali (Genel)', 'PDA', NULL, true),
+      ('TAB-YARI-MAMUL', 'Tablet 1 — Yarı Mamul Hazırlık Deposu', 'PDA', NULL, true),
+      ('TAB-BITMIS-URUN', 'Tablet 2 — Bitmiş Ürün Deposu (19 Kasa)', 'PDA', NULL, true)
     ON CONFLICT (device_code) DO UPDATE SET name = EXCLUDED.name, machine_id = NULL, is_active = true;
 
     -- Machine-bound terminals for each of the 9 machines
@@ -490,5 +496,17 @@ BEGIN
         ('BRING_FULL', 20, now())
     ON CONFLICT (operation_code) DO UPDATE
     SET priority = EXCLUDED.priority, updated_at = now();
+
+    -- 12. Seed EURO_PALET Container Type and assign to unassigned ALT_PARTs
+    INSERT INTO master.container_types (code, name, category, length_mm, width_mm, height_mm)
+    VALUES ('EURO_PALET', 'Euro Palet', 'PALLET', 1200, 800, 144)
+    ON CONFLICT (code) DO NOTHING;
+
+    UPDATE master.product_group_parts
+    SET container_type_id = (SELECT id FROM master.container_types WHERE code = 'EURO_PALET' LIMIT 1)
+    WHERE relation_type = 'ALT_PART' AND container_type_id IS NULL;
+
+    -- 13. Clean any unremoved store units so all 19 FG locations start clean as ALAN BOŞ
+    UPDATE ops.store_units SET removed_at = now() WHERE removed_at IS NULL;
 END $$;
 

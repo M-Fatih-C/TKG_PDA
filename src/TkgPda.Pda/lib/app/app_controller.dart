@@ -468,6 +468,8 @@ class AppController extends ChangeNotifier {
       (user?.roles ?? const []).any(_finishedGoodsWarehouseRoles.contains);
   bool get canAccessAnyWarehouse =>
       canAccessSemiFinishedWarehouse || canAccessFinishedGoodsWarehouse;
+  bool get isWarehouseOnly =>
+      canAccessAnyWarehouse && !isLineOperator && !isAdminOrSupervisor;
   bool get canAccessWarehousePreparation => canAccessSemiFinishedWarehouse;
   List<WarehousePreparationRequest> get warehousePreparationRequests =>
       _warehouseRequests;
@@ -631,21 +633,37 @@ class AppController extends ChangeNotifier {
       } else if (isAdminOrSupervisor) {
         await _loadMachines();
         _stage = AppStage.machines;
-      } else if (isLegacyWarehouse || (isSemiFinished && isFinishedGoods)) {
-        _stage = AppStage.warehouseHome;
-      } else if (isSemiFinished && !isFinishedGoods) {
-        _stage = AppStage.preparationAreas;
-        if (_enablePolling) {
-          preparation.start();
-        }
-      } else if (isFinishedGoods && !isSemiFinished) {
-        _stage = AppStage.finishedGoodsStore;
-        if (_enablePolling) {
-          store.start();
-        }
       } else {
-        await _loadMachines();
-        _stage = AppStage.machines;
+        final devCodeUpper = _deviceCode?.toUpperCase() ?? '';
+        final isSemiDevice = devCodeUpper.contains('YARI') || devCodeUpper.contains('SEMI');
+        final isFgDevice = devCodeUpper.contains('BITMIS') || devCodeUpper.contains('FINISHED');
+
+        if (isSemiDevice && isSemiFinished) {
+          _stage = AppStage.preparationAreas;
+          if (_enablePolling) {
+            preparation.start();
+          }
+        } else if (isFgDevice && isFinishedGoods) {
+          _stage = AppStage.finishedGoodsStore;
+          if (_enablePolling) {
+            store.start();
+          }
+        } else if (isSemiFinished && !isFinishedGoods) {
+          _stage = AppStage.preparationAreas;
+          if (_enablePolling) {
+            preparation.start();
+          }
+        } else if (isFinishedGoods && !isSemiFinished) {
+          _stage = AppStage.finishedGoodsStore;
+          if (_enablePolling) {
+            store.start();
+          }
+        } else if (isLegacyWarehouse || (isSemiFinished && isFinishedGoods)) {
+          _stage = AppStage.warehouseHome;
+        } else {
+          await _loadMachines();
+          _stage = AppStage.machines;
+        }
       }
       _offline = false;
       _startHeartbeat();
