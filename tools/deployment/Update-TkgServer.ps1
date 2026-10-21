@@ -346,6 +346,8 @@ try {
 
     # 8. Replace Server Binaries and Web Assets
     Log-Update "Replacing application server binaries..."
+    Get-Process -Name 'TkgPda.Api' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
     $srcServer = Join-Path $SourceDir 'Server'
     if (Test-Path $srcServer) {
         Copy-Item -Path "$srcServer\*" -Destination $serverDir -Recurse -Force
@@ -403,12 +405,7 @@ try {
     Log-Update "UPDATE COMPLETED SUCCESSFULLY (Version $TargetVersion)"
     Log-Update "=================================================="
 
-    return @{
-        Status = "SUCCESS"
-        Version = $TargetVersion
-        BackupDir = $backupPath
-        LogFile = $logFile
-    }
+    exit 0
 }
 catch {
     Log-Update "UPDATE FAILED: $($_.Exception.Message)" "ERROR"

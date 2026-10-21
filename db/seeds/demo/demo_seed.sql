@@ -520,6 +520,18 @@ BEGIN
     WHERE relation_type = 'ALT_PART' AND container_type_id IS NULL;
 
     -- 13. Clean any unremoved store units so all 19 FG locations start clean as ALAN BOŞ
-    DELETE FROM ops.store_units;
+    -- Respect store_events ON DELETE RESTRICT by updating instead of deleting.
+    -- Respect ck_store_unit_removed by providing valid non-null removed_by, removed_device_id and removed_at >= delivered_at.
+    UPDATE ops.store_units
+    SET removed_at = GREATEST(clock_timestamp(), delivered_at),
+        removed_by = COALESCE(
+            (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1),
+            (SELECT id FROM auth.users LIMIT 1)
+        ),
+        removed_device_id = COALESCE(
+            (SELECT id FROM audit.client_devices WHERE device_code = 'TAB-BITMIS-URUN' LIMIT 1),
+            (SELECT id FROM audit.client_devices LIMIT 1)
+        )
+    WHERE removed_at IS NULL;
 END $$;
 

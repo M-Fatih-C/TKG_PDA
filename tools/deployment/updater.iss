@@ -103,13 +103,13 @@ begin
 
     if ResultCode <> 0 then
     begin
-      MsgBox('Guncelleme sirasinda bir hata olustu. Sistem otomatik olarak onceki surume geri donduruldu (rollback). Ayrintilar icin Logs altindaki update log dosyasini inceleyin.', mbCriticalError, MB_OK);
+      SuppressibleMsgBox('Guncelleme sirasinda bir hata olustu. Sistem otomatik olarak onceki surume geri donduruldu (rollback). Ayrintilar icin Logs altindaki update log dosyasini inceleyin.', mbCriticalError, MB_OK, IDOK);
       RaiseException('Guncelleme basarisiz oldu. Hata kodu: ' + IntToStr(ResultCode));
     end
     else
     begin
-      MsgBox('TKG PDA Server {#AppVersion} guncellemesi basariyla tamamlandi.' + #13#10 +
-             'Veritabani, kullanici yapilandirmalari ve calisan servisler basariyla korundu ve en son demo gelistirmeleriyle guncellendi.', mbInformation, MB_OK);
+      SuppressibleMsgBox('TKG PDA Server {#AppVersion} guncellemesi basariyla tamamlandi.' + #13#10 +
+             'Veritabani, kullanici yapilandirmalari ve calisan servisler basariyla korundu ve en son demo gelistirmeleriyle guncellendi.', mbInformation, MB_OK, IDOK);
     end;
   end;
 end;
