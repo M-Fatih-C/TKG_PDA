@@ -543,11 +543,19 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM ops.store_events e WHERE e.store_location_id = legacy.id)
       AND NOT EXISTS (SELECT 1 FROM ops.store_location_delivery_slots d WHERE d.store_location_id = legacy.id);
 
+    -- Ensure all FG-01..FG-19 have strictly capacity = 1 (1 pallet spot per location)
+    UPDATE ops.store_locations
+    SET capacity = 1
+    WHERE code ~ '^FG-[0-9]{2}$';
+
     -- Seed initial empty containers in FG-01 and FG-02 so Bitmiş Ürün Deposu starts with ready empty pallets
     INSERT INTO ops.store_units (store_location_id, load_state, delivered_at)
     SELECT id, 'EMPTY', clock_timestamp()
     FROM ops.store_locations
     WHERE code IN ('FG-01', 'FG-02')
-    ON CONFLICT DO NOTHING;
+      AND NOT EXISTS (
+          SELECT 1 FROM ops.store_units u 
+          WHERE u.store_location_id = ops.store_locations.id AND u.removed_at IS NULL
+      );
 END $$;
 

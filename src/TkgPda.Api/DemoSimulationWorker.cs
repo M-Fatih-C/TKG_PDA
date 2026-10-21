@@ -315,24 +315,32 @@ public sealed class DemoSimulationWorker(
     {
         await using var deliverCmd = new NpgsqlCommand(
             """
-            WITH candidate AS (
+            WITH already_delivered AS (
+                SELECT se.store_unit_id AS unit_id, se.store_location_id
+                FROM ops.store_events se
+                WHERE se.transport_request_id = @id AND se.event_type = 'UNIT_DELIVERED'
+                LIMIT 1
+            ),
+            candidate AS (
                 SELECT sl.id AS location_id
                 FROM ops.transport_requests r
                 CROSS JOIN LATERAL (
                     SELECT sl.id
                     FROM ops.store_locations sl
                     WHERE sl.is_enabled
+                      AND NOT EXISTS (
+                          SELECT 1 FROM ops.store_units u
+                          WHERE u.store_location_id = sl.id AND u.removed_at IS NULL
+                      )
                       AND (
                           (r.destination_business_code IS NOT NULL AND sl.code = r.destination_business_code)
                           OR (r.destination_business_code IS NULL)
                       )
-                    ORDER BY (
-                        SELECT count(*) FROM ops.store_units u 
-                        WHERE u.store_location_id = sl.id AND u.removed_at IS NULL
-                    ) ASC, sl.code ASC
+                    ORDER BY sl.code ASC
                     LIMIT 1
                 ) sl
                 WHERE r.id = @id
+                  AND NOT EXISTS (SELECT 1 FROM already_delivered)
                   AND NOT EXISTS (
                       SELECT 1 FROM ops.store_units existing 
                       WHERE existing.transport_request_id = r.id AND existing.removed_at IS NULL
@@ -340,9 +348,9 @@ public sealed class DemoSimulationWorker(
             ),
             inserted_unit AS (
                 INSERT INTO ops.store_units (
-                    store_location_id, transport_request_id, part_id, container_type_id, machine_id, delivered_at
+                    store_location_id, transport_request_id, part_id, container_type_id, machine_id, delivered_at, load_state
                 )
-                SELECT c.location_id, r.id, r.part_id, r.container_type_id, r.machine_id, @now
+                SELECT c.location_id, r.id, r.part_id, r.container_type_id, r.machine_id, @now, 'FULL'
                 FROM candidate c
                 JOIN ops.transport_requests r ON r.id = @id
                 ON CONFLICT (transport_request_id) WHERE transport_request_id IS NOT NULL DO NOTHING

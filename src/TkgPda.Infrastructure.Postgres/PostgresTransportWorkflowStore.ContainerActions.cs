@@ -24,6 +24,8 @@ public sealed partial class PostgresTransportWorkflowStore
         var finishedGoodsCode = await FinishedGoodsAvailabilityCodeAsync(
             connection, query.MachineId, query.LayoutId, query.VariantId, query.ProductGroupId, cancellationToken);
         var navigationId = await ActiveNavigationAsync(connection, null, query.MachineId, cancellationToken);
+        var hasAvailableEmptyStoreUnit = await HasAvailableEmptyStoreUnitAsync(connection, null, cancellationToken);
+        var hasVacantStoreLocation = await HasVacantStoreLocationAsync(connection, null, cancellationToken);
         foreach (var row in rows)
         {
             var transportState = row.ActiveRequest is null ? "READY" : ProjectExecutionState(row.ActiveRequest);
@@ -33,14 +35,18 @@ public sealed partial class PostgresTransportWorkflowStore
                 actor,
                 canOperate,
                 transportState,
-                finishedGoodsCode);
+                finishedGoodsCode,
+                hasAvailableEmptyStoreUnit,
+                hasVacantStoreLocation);
             var empty = Availability(
                 OperatorContainerAction.Empty,
                 row,
                 actor,
                 canOperate,
                 transportState,
-                finishedGoodsCode);
+                finishedGoodsCode,
+                hasAvailableEmptyStoreUnit,
+                hasVacantStoreLocation);
             if (row.ActiveRequest is null)
             {
                 var physicalCode = await SlotPhysicalBlockAsync(connection, null, row.SlotId, navigationId, row.Occupancy.ToDatabase(), cancellationToken);
@@ -133,6 +139,25 @@ public sealed partial class PostgresTransportWorkflowStore
 
         await EnsureSlotsAreAvailableAsync(connection, transaction, [slot.Id], exceptRequestId: null, cancellationToken);
         var resolution = ContainerActionResolutionPolicy.ResolveSingle(command.Action, slot.State.Occupancy, slot.State.Load);
+        if (resolution.Operation == TransportTaskType.BringEmpty && !resolution.RequiresPreparation)
+        {
+            if (!await HasAvailableEmptyStoreUnitAsync(connection, transaction, cancellationToken))
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_NO_EMPTY_CONTAINER",
+                    "Bitmiş ürün deposunda hazır boş kasa bulunmuyor. Lütfen depoya boş kasa yerleştirin.");
+            }
+        }
+        else if (resolution.Operation == TransportTaskType.RemoveFull)
+        {
+            if (!await HasVacantStoreLocationAsync(connection, transaction, cancellationToken))
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_STORE_FULL",
+                    "Bitmiş ürün deposunda boş alan bulunmuyor. Lütfen depodan mamul sevkiyatı yapın.");
+            }
+        }
+
         if (resolution.MarkFullBeforeCreate)
         {
             await UpdateSlotStateAsync(
@@ -804,7 +829,9 @@ public sealed partial class PostgresTransportWorkflowStore
         PdaActorContext actor,
         bool canOperate,
         string transportState,
-        string? finishedGoodsCode)
+        string? finishedGoodsCode,
+        bool hasAvailableEmptyStoreUnit,
+        bool hasVacantStoreLocation)
     {
         if (row.ActiveRequest is not null)
         {
@@ -830,10 +857,25 @@ public sealed partial class PostgresTransportWorkflowStore
         try
         {
             var resolution = ContainerActionResolutionPolicy.ResolveSingle(action, row.Occupancy, row.Load);
-            if (resolution.Operation == TransportTaskType.RemoveFull && finishedGoodsCode is not null)
+            if (resolution.Operation == TransportTaskType.RemoveFull)
             {
-                return new(false, "READY", finishedGoodsCode, finishedGoodsCode == "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED"
-                    ? FinishedGoodsDestinationNotConfiguredMessage : "Uygun fiziksel bitmiş ürün alanı yok. Alanı ve RDS durumunu kontrol edip ekranı yenileyin.");
+                if (finishedGoodsCode is not null)
+                {
+                    return new(false, "READY", finishedGoodsCode, finishedGoodsCode == "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED"
+                        ? FinishedGoodsDestinationNotConfiguredMessage : "Uygun fiziksel bitmiş ürün alanı yok. Alanı ve RDS durumunu kontrol edip ekranı yenileyin.");
+                }
+
+                if (!hasVacantStoreLocation)
+                {
+                    return new(false, "READY", "FINISHED_GOODS_STORE_FULL", "Bitmiş ürün alanında boş yer yok.");
+                }
+            }
+            else if (resolution.Operation == TransportTaskType.BringEmpty && !resolution.RequiresPreparation)
+            {
+                if (!hasAvailableEmptyStoreUnit)
+                {
+                    return new(false, "READY", "FINISHED_GOODS_NO_EMPTY_CONTAINER", "Bitmiş ürün alanında hazır boş kasa yok.");
+                }
             }
 
             return new(true, "READY", null, null);
@@ -949,4 +991,46 @@ public sealed partial class PostgresTransportWorkflowStore
         int? QueuePosition);
 
     private sealed record VariantPositionRow(Guid SlotId, int PositionNumber, bool HasActiveRequest);
+
+    private static async Task<bool> HasAvailableEmptyStoreUnitAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT 1
+            FROM ops.store_units u
+            JOIN ops.store_locations sl ON sl.id = u.store_location_id
+            WHERE u.load_state = 'EMPTY'
+              AND u.removed_at IS NULL
+              AND sl.is_enabled
+            LIMIT 1
+            """,
+            connection,
+            transaction);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    private static async Task<bool> HasVacantStoreLocationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT 1
+            FROM ops.store_locations sl
+            WHERE sl.is_enabled
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_units u
+                  WHERE u.store_location_id = sl.id
+                    AND u.removed_at IS NULL
+              )
+            LIMIT 1
+            """,
+            connection,
+            transaction);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
 }

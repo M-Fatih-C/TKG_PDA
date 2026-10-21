@@ -37,7 +37,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     {
         if (request.TaskType != TransportTaskType.RemoveFull) return;
 
-        Guid locationId;
+        Guid? preferredLocationId = null;
         if (request.DestinationBusinessCode is { } businessCode && businessCode.StartsWith("FG-", StringComparison.Ordinal))
         {
             await using var byCode = new NpgsqlCommand(
@@ -45,14 +45,10 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                 connection,
                 transaction);
             byCode.Parameters.AddWithValue("code", businessCode);
-            if (await byCode.ExecuteScalarAsync(cancellationToken) is not Guid found)
+            if (await byCode.ExecuteScalarAsync(cancellationToken) is Guid found)
             {
-                throw new WorkflowRuleException(
-                    "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED",
-                    "Seçilen bitmiş ürün alanı kayıtlı değil. Teslimat yazılmadı.");
+                preferredLocationId = found;
             }
-
-            locationId = found;
         }
         else if (request.DestinationSlotId is { } destinationSlotId)
         {
@@ -61,19 +57,45 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                 WHERE layout_slot_id = @slot
                 """, connection, transaction);
             lookup.Parameters.AddWithValue("slot", destinationSlotId);
-            if (await lookup.ExecuteScalarAsync(cancellationToken) is not Guid found) return;
-            locationId = found;
+            if (await lookup.ExecuteScalarAsync(cancellationToken) is Guid found)
+            {
+                preferredLocationId = found;
+            }
         }
-        else
+
+        // Each Finished Goods location represents exactly one pallet position (capacity = 1).
+        // Find a vacant enabled location (0 active units). If preferredLocationId is vacant,
+        // use it. Otherwise, allocate the first vacant location in ascending code order.
+        Guid locationId;
+        await using (var findVacant = new NpgsqlCommand("""
+            SELECT sl.id
+            FROM ops.store_locations sl
+            WHERE sl.is_enabled
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_units u
+                  WHERE u.store_location_id = sl.id
+                    AND u.removed_at IS NULL
+              )
+            ORDER BY CASE WHEN sl.id = @preferred THEN 0 ELSE 1 END, sl.code ASC
+            LIMIT 1
+            FOR UPDATE OF sl SKIP LOCKED
+            """, connection, transaction))
         {
-            return;
+            AddNullableUuid(findVacant, "preferred", preferredLocationId);
+            if (await findVacant.ExecuteScalarAsync(cancellationToken) is not Guid vacant)
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_STORE_FULL",
+                    "Bitmiş ürün deposunda boş alan kalmadı. Teslimat yazılamadı.");
+            }
+            locationId = vacant;
         }
 
         Guid unitId;
         await using (var insert = new NpgsqlCommand("""
             INSERT INTO ops.store_units
-                (store_location_id, transport_request_id, part_id, container_type_id, machine_id)
-            VALUES (@location, @request, @part, @container, @machine)
+                (store_location_id, transport_request_id, part_id, container_type_id, machine_id, load_state)
+            VALUES (@location, @request, @part, @container, @machine, 'FULL')
             -- Reconciliation can replay a completion. One delivery per
             -- transport, or the store looks twice as full as it is.
             ON CONFLICT (transport_request_id) WHERE transport_request_id IS NOT NULL

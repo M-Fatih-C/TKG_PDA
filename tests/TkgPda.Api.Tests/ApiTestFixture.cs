@@ -46,6 +46,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("024_operational_reporting.sql"));
         await ExecuteScriptAsync(MigrationFile("025_profile_scoped_shared_endpoints.sql"));
         await ExecuteScriptAsync(MigrationFile("026_canonical_shared_endpoint_identities.sql"));
+        await ExecuteScriptAsync(MigrationFile("027_store_location_unit_capacity_constraint.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -341,8 +342,14 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             WHERE layout_id = @layout_id AND slot_role = 'DROP'
             ON CONFLICT (layout_slot_id) DO NOTHING;
             INSERT INTO ops.store_locations (code, display_name, capacity)
-            VALUES (@location_code, 'Test Finished Goods Location', NULL)
-            ON CONFLICT (code) DO UPDATE SET is_enabled = true;
+            VALUES (@location_code, 'Test Finished Goods Location', 1)
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1;
+            INSERT INTO ops.store_locations (code, display_name, capacity)
+            VALUES ('TEST-FG-EMPTY', 'Test Empty Pallet Location', 1)
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1;
+            INSERT INTO ops.store_units (store_location_id, load_state, delivered_at)
+            SELECT id, 'EMPTY', now() FROM ops.store_locations WHERE code = 'TEST-FG-EMPTY'
+            AND NOT EXISTS (SELECT 1 FROM ops.store_units u WHERE u.store_location_id = ops.store_locations.id AND u.removed_at IS NULL);
             INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
             SELECT drop_slot.id, sl.id
             FROM (
