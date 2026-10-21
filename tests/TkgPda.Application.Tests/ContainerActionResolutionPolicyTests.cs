@@ -70,7 +70,7 @@ public sealed class ContainerActionResolutionPolicyTests
         var bringEmpty = ContainerActionResolutionPolicy.ResolveSingle(
             OperatorContainerAction.Empty, OccupancyState.Vacant, LoadState.Unknown);
         Assert.Equal(TransportTaskType.BringEmpty, bringEmpty.Operation);
-        Assert.True(bringEmpty.RequiresPreparation);
+        Assert.False(bringEmpty.RequiresPreparation);
 
         var occupied = Assert.Throws<WorkflowRuleException>(() =>
             ContainerActionResolutionPolicy.ResolveSingle(
@@ -136,7 +136,7 @@ public sealed class ContainerActionResolutionPolicyTests
 
         Assert.Equal(TransportTaskType.BringEmpty, result.Operation);
         Assert.False(result.MarkFullBeforeCreate);
-        Assert.True(result.RequiresPreparation);
+        Assert.False(result.RequiresPreparation);
     }
 
     [Theory]

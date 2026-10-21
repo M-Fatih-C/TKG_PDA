@@ -378,12 +378,13 @@ BEGIN
     ON CONFLICT (layout_slot_id) DO NOTHING;
 
     INSERT INTO integration.profile_shared_endpoint_bindings (
-        navigation_profile_id, endpoint_class, business_code, rds_worksite_id
+        navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id
     )
     SELECT DISTINCT ON (w.navigation_profile_id, p.ordinal)
         w.navigation_profile_id,
         'EMPTY_SOURCE',
         'EMPTY-' || LPAD(p.ordinal::text, 2, '0'),
+        (SELECT id FROM ops.store_locations WHERE code = 'FG-' || LPAD(p.ordinal::text, 2, '0') LIMIT 1),
         w.id
     FROM integration.rds_worksites w
     JOIN integration.rds_worksite_plans p
@@ -392,7 +393,8 @@ BEGIN
     WHERE p.object_family = 'EMPTY'
     ORDER BY w.navigation_profile_id, p.ordinal, w.id
     ON CONFLICT (navigation_profile_id, endpoint_class, business_code)
-    DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id;
+    DO UPDATE SET rds_worksite_id = EXCLUDED.rds_worksite_id,
+                  store_location_id = EXCLUDED.store_location_id;
 
     INSERT INTO integration.profile_shared_endpoint_bindings (
         navigation_profile_id, endpoint_class, business_code, rds_worksite_id
@@ -533,5 +535,19 @@ BEGIN
             (SELECT id FROM audit.client_devices LIMIT 1)
         )
     WHERE removed_at IS NULL;
+
+    -- 14. Clean up any legacy unrenamed FG_AREA locations so exactly 19 FG-01..FG-19 locations exist
+    DELETE FROM ops.store_locations AS legacy
+    WHERE legacy.code ~ '^FG_AREA_[0-9]{2}$'
+      AND NOT EXISTS (SELECT 1 FROM ops.store_units u WHERE u.store_location_id = legacy.id)
+      AND NOT EXISTS (SELECT 1 FROM ops.store_events e WHERE e.store_location_id = legacy.id)
+      AND NOT EXISTS (SELECT 1 FROM ops.store_location_delivery_slots d WHERE d.store_location_id = legacy.id);
+
+    -- Seed initial empty containers in FG-01 and FG-02 so Bitmiş Ürün Deposu starts with ready empty pallets
+    INSERT INTO ops.store_units (store_location_id, load_state, delivered_at)
+    SELECT id, 'EMPTY', clock_timestamp()
+    FROM ops.store_locations
+    WHERE code IN ('FG-01', 'FG-02')
+    ON CONFLICT DO NOTHING;
 END $$;
 

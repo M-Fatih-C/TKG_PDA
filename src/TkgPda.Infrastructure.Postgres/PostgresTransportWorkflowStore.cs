@@ -440,6 +440,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             // occupied here instead of becoming a store delivery.
             await ApplyNonFinishedReturnCompletionAsync(connection, transaction, request, cancellationToken);
             await RecordStoreDeliveryAsync(connection, transaction, request, cancellationToken);
+            await RecordStoreEmptyCollectionAsync(connection, transaction, request, cancellationToken);
         }
 
         request = await UpdateRequestStatusAsync(connection, transaction, request, nextStatus, cancellationToken);

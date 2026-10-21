@@ -267,6 +267,12 @@ public sealed class DemoSimulationWorker(
                 await EnsureFinishedGoodsDeliveryAsync(connection, req.Id, now, cancellationToken);
             }
 
+            // If this was BRING_EMPTY, ensure finished goods store vacates an empty container unit so FG location becomes VACANT ("ALAN BOŞ")
+            if (req.TaskType == "BRING_EMPTY")
+            {
+                await EnsureFinishedGoodsEmptyCollectionAsync(connection, req.Id, now, cancellationToken);
+            }
+
             logger.LogInformation("Demo simulation: Request {RequestNo} COMPLETED successfully. Warehouse states and slot states updated.", req.RequestNo);
         }
     }
@@ -385,6 +391,95 @@ public sealed class DemoSimulationWorker(
         deliverCmd.Parameters.AddWithValue("id", requestId);
         deliverCmd.Parameters.AddWithValue("now", now);
         await deliverCmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task EnsureFinishedGoodsEmptyCollectionAsync(
+        NpgsqlConnection connection,
+        Guid requestId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using var removeCmd = new NpgsqlCommand(
+            """
+            WITH already_removed AS (
+                SELECT se.store_unit_id AS unit_id, se.store_location_id, sl.display_name AS location_name
+                FROM ops.store_events se
+                JOIN ops.store_locations sl ON sl.id = se.store_location_id
+                WHERE se.transport_request_id = @id AND se.event_type = 'UNIT_REMOVED'
+                LIMIT 1
+            ),
+            candidate AS (
+                SELECT u.id AS unit_id, u.store_location_id, sl.display_name AS location_name
+                FROM ops.store_units u
+                JOIN ops.store_locations sl ON sl.id = u.store_location_id
+                WHERE u.load_state = 'EMPTY'
+                  AND u.removed_at IS NULL
+                  AND sl.is_enabled
+                  AND NOT EXISTS (SELECT 1 FROM already_removed)
+                ORDER BY sl.code ASC, u.delivered_at ASC, u.id ASC
+                LIMIT 1
+            ),
+            updated_unit AS (
+                UPDATE ops.store_units u
+                SET removed_at = @now,
+                    removed_by = COALESCE(
+                        (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1),
+                        (SELECT id FROM auth.users LIMIT 1)
+                    ),
+                    removed_device_id = COALESCE(
+                        (SELECT id FROM audit.client_devices WHERE device_code = 'TAB-BITMIS-URUN' LIMIT 1),
+                        (SELECT id FROM audit.client_devices LIMIT 1)
+                    ),
+                    row_version = u.row_version + 1
+                FROM candidate c
+                WHERE u.id = c.unit_id AND u.removed_at IS NULL
+                RETURNING u.id, u.store_location_id, c.location_name
+            ),
+            inserted_event AS (
+                INSERT INTO ops.store_events (
+                    store_location_id, store_unit_id, event_type,
+                    transport_request_id, occurred_at, data_json
+                )
+                SELECT u.store_location_id, u.id, 'UNIT_REMOVED',
+                       @id, @now, '{"source": "SIMULATION_EMPTY_COLLECTED"}'::jsonb
+                FROM updated_unit u
+                RETURNING store_location_id, store_unit_id
+            ),
+            resolved AS (
+                SELECT u.id AS unit_id, u.store_location_id, u.location_name FROM updated_unit u
+                UNION ALL
+                SELECT a.unit_id, a.store_location_id, a.location_name FROM already_removed a
+            )
+            INSERT INTO integration.notification_outbox
+                (event_key, registration_id, notification_type, title, body, data_json)
+            SELECT 'fg_empty:' || @id::text, reg.id, 'FINISHED_GOODS_COLLECTED',
+                   'Boş Kasa Alındı · ' || r.location_name,
+                   'Boş kasa ' || m.code || ' makinesine götürüldü. Talep no: ' || req.request_no,
+                   jsonb_build_object(
+                       'notificationType', 'FINISHED_GOODS_COLLECTED',
+                       'unitId', r.unit_id::text,
+                       'locationId', r.store_location_id::text,
+                       'locationName', r.location_name,
+                       'requestNo', req.request_no::text,
+                       'machineCode', m.code
+                   )
+            FROM resolved r
+            JOIN ops.transport_requests req ON req.id = @id
+            JOIN master.machines m ON m.id = req.machine_id
+            CROSS JOIN integration.device_notification_registrations reg
+            JOIN auth.users usr ON usr.id = reg.user_id AND usr.is_active
+            JOIN audit.client_devices d ON d.id = reg.device_id AND d.is_active
+            WHERE reg.is_active
+              AND EXISTS (
+                  SELECT 1 FROM auth.user_roles ur
+                  JOIN auth.roles role ON role.id = ur.role_id
+                  WHERE ur.user_id = reg.user_id AND role.code = ANY(ARRAY['ADMIN','WAREHOUSE_OPERATOR'])
+              )
+            ON CONFLICT (event_key, registration_id) DO NOTHING;
+            """, connection);
+        removeCmd.Parameters.AddWithValue("id", requestId);
+        removeCmd.Parameters.AddWithValue("now", now);
+        await removeCmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task ReplenishEmptyBuffersAsync(

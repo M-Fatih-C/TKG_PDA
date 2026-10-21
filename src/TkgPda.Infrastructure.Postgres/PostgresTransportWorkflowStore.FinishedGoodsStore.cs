@@ -175,6 +175,76 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         await insert.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// When a BRING_EMPTY transport completes, an empty container has been picked
+    /// from the finished-goods store / empty pool and delivered to the machine slot.
+    /// If there is an active EMPTY unit standing in ops.store_units in any enabled
+    /// store location, mark it as removed so the store location vacates (ALAN BOŞ).
+    /// </summary>
+    private static async Task RecordStoreEmptyCollectionAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        TransportRequestSnapshot request,
+        CancellationToken cancellationToken)
+    {
+        if (request.TaskType != TransportTaskType.BringEmpty) return;
+
+        Guid unitId;
+        Guid locationId;
+        await using (var find = new NpgsqlCommand(
+            """
+            SELECT u.id, u.store_location_id
+            FROM ops.store_units u
+            JOIN ops.store_locations sl ON sl.id = u.store_location_id
+            WHERE u.load_state = 'EMPTY'
+              AND u.removed_at IS NULL
+              AND sl.is_enabled
+            ORDER BY sl.code ASC, u.delivered_at ASC, u.id ASC
+            FOR UPDATE OF u SKIP LOCKED
+            LIMIT 1
+            """,
+            connection,
+            transaction))
+        {
+            await using var reader = await find.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return;
+            }
+            unitId = reader.GetGuid(0);
+            locationId = reader.GetGuid(1);
+        }
+
+        await using var removeCmd = new NpgsqlCommand(
+            """
+            UPDATE ops.store_units
+            SET removed_at = clock_timestamp(),
+                removed_by = COALESCE(@actor, (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1), (SELECT id FROM auth.users LIMIT 1)),
+                removed_device_id = COALESCE((SELECT id FROM audit.client_devices WHERE device_code = 'TAB-BITMIS-URUN' LIMIT 1), (SELECT id FROM audit.client_devices LIMIT 1)),
+                row_version = row_version + 1
+            WHERE id = @id AND removed_at IS NULL
+            """,
+            connection,
+            transaction);
+        removeCmd.Parameters.AddWithValue("id", unitId);
+        AddNullableUuid(removeCmd, "actor", request.RequestedBy);
+        await removeCmd.ExecuteNonQueryAsync(cancellationToken);
+
+        await InsertStoreEventAsync(
+            connection,
+            transaction,
+            locationId,
+            unitId,
+            "UNIT_REMOVED",
+            partId: null,
+            containerTypeId: request.ContainerTypeId,
+            transportRequestId: request.Id,
+            actorUserId: request.RequestedBy,
+            deviceId: null,
+            data: new { source = "BRING_EMPTY_COMPLETED", transport_request_id = request.Id },
+            cancellationToken);
+    }
+
     private const string FinishedGoodsDestinationNotConfiguredMessage =
         "Bitmiş ürün teslim alanı henüz yapılandırılmamış. Sistem yöneticisine başvurun.";
 
