@@ -281,8 +281,9 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
                       AND r.source_slot_id IS NULL
                       AND b.navigation_profile_id = r.navigation_id
                       AND b.endpoint_class = 'EMPTY_SOURCE'
+                      AND (r.source_business_code IS NULL OR b.business_code = r.source_business_code)
                 ) shared_source
-                ORDER BY slot_code
+                ORDER BY CASE WHEN r.source_business_code IS NOT NULL AND slot_code = r.source_business_code THEN 0 ELSE 1 END, slot_code
                 LIMIT 1
             ) prep ON true
             LEFT JOIN LATERAL (

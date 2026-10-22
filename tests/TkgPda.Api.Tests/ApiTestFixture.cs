@@ -47,6 +47,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("025_profile_scoped_shared_endpoints.sql"));
         await ExecuteScriptAsync(MigrationFile("026_canonical_shared_endpoint_identities.sql"));
         await ExecuteScriptAsync(MigrationFile("027_store_location_unit_capacity_constraint.sql"));
+        await ExecuteScriptAsync(MigrationFile("028_store_reservations_and_source_endpoint.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -59,6 +60,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
                 integration.robot_alarm_observation_state,
                 integration.notification_outbox,
                 integration.device_notification_registrations,
+                ops.store_reservations,
                 ops.store_events,
                 ops.store_units,
                 integration.rds_tasks,

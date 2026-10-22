@@ -1005,6 +1005,10 @@ public sealed partial class PostgresTransportWorkflowStore
             WHERE u.load_state = 'EMPTY'
               AND u.removed_at IS NULL
               AND sl.is_enabled
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_reservations sr
+                  WHERE sr.store_unit_id = u.id AND sr.released_at IS NULL
+              )
             LIMIT 1
             """,
             connection,
@@ -1026,6 +1030,11 @@ public sealed partial class PostgresTransportWorkflowStore
                   SELECT 1 FROM ops.store_units u
                   WHERE u.store_location_id = sl.id
                     AND u.removed_at IS NULL
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_reservations sr
+                  WHERE sr.store_location_id = sl.id
+                    AND sr.released_at IS NULL
               )
             LIMIT 1
             """,

@@ -174,7 +174,7 @@ WHERE layout_slot_id = '$slotId';
 # CRITERION 1: TWO-TABLET GATE (WAREHOUSE APPROVAL REQUIRED)
 # ------------------------------------------------------------------------------------------------
 Write-Host "`n>>> CRITERION 1: Two-Tablet Gate (Warehouse Approval Enforcement)" -ForegroundColor Yellow
-$idemKey1 = "demo-audit-bring-empty-" + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+$idemKey1 = "demo-audit-bring-full-" + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $bringPayload = @{
     machineId = $mId
     variantId = $vId
@@ -182,7 +182,7 @@ $bringPayload = @{
     productGroupId = $pgId
     partId = $partId
     containerTypeId = $null
-    operation = "BRING_EMPTY"
+    operation = "BRING_FULL"
     requiresPreparation = $true
 } | ConvertTo-Json
 

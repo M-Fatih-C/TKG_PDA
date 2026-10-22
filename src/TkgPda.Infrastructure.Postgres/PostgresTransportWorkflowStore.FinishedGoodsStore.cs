@@ -63,32 +63,59 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             }
         }
 
-        // Each Finished Goods location represents exactly one pallet position (capacity = 1).
-        // Find a vacant enabled location (0 active units). If preferredLocationId is vacant,
-        // use it. Otherwise, allocate the first vacant location in ascending code order.
-        Guid locationId;
-        await using (var findVacant = new NpgsqlCommand("""
-            SELECT sl.id
-            FROM ops.store_locations sl
-            WHERE sl.is_enabled
-              AND NOT EXISTS (
-                  SELECT 1 FROM ops.store_units u
-                  WHERE u.store_location_id = sl.id
-                    AND u.removed_at IS NULL
-              )
-            ORDER BY CASE WHEN sl.id = @preferred THEN 0 ELSE 1 END, sl.code ASC
+        // Check if an active DROP reservation exists for this transport request
+        Guid? reservedLocationId = null;
+        await using (var getRes = new NpgsqlCommand("""
+            SELECT store_location_id FROM ops.store_reservations
+            WHERE transport_request_id = @req AND reservation_type = 'DROP' AND released_at IS NULL
             LIMIT 1
-            FOR UPDATE OF sl SKIP LOCKED
             """, connection, transaction))
         {
-            AddNullableUuid(findVacant, "preferred", preferredLocationId);
-            if (await findVacant.ExecuteScalarAsync(cancellationToken) is not Guid vacant)
+            getRes.Parameters.AddWithValue("req", request.Id);
+            if (await getRes.ExecuteScalarAsync(cancellationToken) is Guid resLoc)
             {
-                throw new WorkflowRuleException(
-                    "FINISHED_GOODS_STORE_FULL",
-                    "Bitmiş ürün deposunda boş alan kalmadı. Teslimat yazılamadı.");
+                reservedLocationId = resLoc;
             }
-            locationId = vacant;
+        }
+
+        // Each Finished Goods location represents exactly one pallet position (capacity = 1).
+        // If reservedLocationId is present, we must land strictly on that location.
+        // Otherwise (legacy / unreserved fallback), find a vacant enabled location.
+        Guid locationId;
+        if (reservedLocationId is { } resLocId)
+        {
+            locationId = resLocId;
+        }
+        else
+        {
+            await using (var findVacant = new NpgsqlCommand("""
+                SELECT sl.id
+                FROM ops.store_locations sl
+                WHERE sl.is_enabled
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ops.store_units u
+                      WHERE u.store_location_id = sl.id
+                        AND u.removed_at IS NULL
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ops.store_reservations sr
+                      WHERE sr.store_location_id = sl.id
+                        AND sr.released_at IS NULL
+                  )
+                ORDER BY CASE WHEN sl.id = @preferred THEN 0 ELSE 1 END, sl.code ASC
+                LIMIT 1
+                FOR UPDATE OF sl SKIP LOCKED
+                """, connection, transaction))
+            {
+                AddNullableUuid(findVacant, "preferred", preferredLocationId);
+                if (await findVacant.ExecuteScalarAsync(cancellationToken) is not Guid vacant)
+                {
+                    throw new WorkflowRuleException(
+                        "FINISHED_GOODS_STORE_FULL",
+                        "Bitmiş ürün deposunda boş alan kalmadı. Teslimat yazılamadı.");
+                }
+                locationId = vacant;
+            }
         }
 
         Guid unitId;
@@ -110,6 +137,17 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             insert.Parameters.AddWithValue("machine", request.MachineId);
             if (await insert.ExecuteScalarAsync(cancellationToken) is not Guid inserted) return;
             unitId = inserted;
+        }
+
+        // Release DROP reservation upon successful placement
+        await using (var release = new NpgsqlCommand("""
+            UPDATE ops.store_reservations
+            SET released_at = clock_timestamp()
+            WHERE transport_request_id = @req AND released_at IS NULL
+            """, connection, transaction))
+        {
+            release.Parameters.AddWithValue("req", request.Id);
+            await release.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await InsertStoreEventAsync(connection, transaction, locationId, unitId, "UNIT_DELIVERED",
@@ -211,23 +249,41 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     {
         if (request.TaskType != TransportTaskType.BringEmpty) return;
 
-        Guid unitId;
-        Guid locationId;
-        await using (var find = new NpgsqlCommand(
-            """
-            SELECT u.id, u.store_location_id
-            FROM ops.store_units u
-            JOIN ops.store_locations sl ON sl.id = u.store_location_id
-            WHERE u.load_state = 'EMPTY'
-              AND u.removed_at IS NULL
-              AND sl.is_enabled
-            ORDER BY sl.code ASC, u.delivered_at ASC, u.id ASC
-            FOR UPDATE OF u SKIP LOCKED
+        Guid? unitId = null;
+        Guid? locationId = null;
+
+        // Check if an active PICKUP reservation exists for this transport request
+        await using (var getRes = new NpgsqlCommand("""
+            SELECT sr.store_unit_id, sr.store_location_id FROM ops.store_reservations sr
+            WHERE sr.transport_request_id = @req AND sr.reservation_type = 'PICKUP' AND sr.released_at IS NULL
             LIMIT 1
-            """,
-            connection,
-            transaction))
+            """, connection, transaction))
         {
+            getRes.Parameters.AddWithValue("req", request.Id);
+            await using var reader = await getRes.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                if (!reader.IsDBNull(0)) unitId = reader.GetGuid(0);
+                locationId = reader.GetGuid(1);
+            }
+        }
+
+        if (unitId is null || locationId is null)
+        {
+            await using var find = new NpgsqlCommand(
+                """
+                SELECT u.id, u.store_location_id
+                FROM ops.store_units u
+                JOIN ops.store_locations sl ON sl.id = u.store_location_id
+                WHERE u.load_state = 'EMPTY'
+                  AND u.removed_at IS NULL
+                  AND sl.is_enabled
+                ORDER BY sl.code ASC, u.delivered_at ASC, u.id ASC
+                FOR UPDATE OF u SKIP LOCKED
+                LIMIT 1
+                """,
+                connection,
+                transaction);
             await using var reader = await find.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
             {
@@ -248,15 +304,26 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             """,
             connection,
             transaction);
-        removeCmd.Parameters.AddWithValue("id", unitId);
+        removeCmd.Parameters.AddWithValue("id", unitId.Value);
         AddNullableUuid(removeCmd, "actor", request.RequestedBy);
         await removeCmd.ExecuteNonQueryAsync(cancellationToken);
+
+        // Release PICKUP reservation
+        await using (var release = new NpgsqlCommand("""
+            UPDATE ops.store_reservations
+            SET released_at = clock_timestamp()
+            WHERE transport_request_id = @req AND released_at IS NULL
+            """, connection, transaction))
+        {
+            release.Parameters.AddWithValue("req", request.Id);
+            await release.ExecuteNonQueryAsync(cancellationToken);
+        }
 
         await InsertStoreEventAsync(
             connection,
             transaction,
-            locationId,
-            unitId,
+            locationId.Value,
+            unitId.Value,
             "UNIT_REMOVED",
             partId: null,
             containerTypeId: request.ContainerTypeId,
@@ -449,6 +516,23 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             return current.Single();
         }
 
+        await using (var checkReservation = new NpgsqlCommand("""
+            SELECT sr.reservation_type FROM ops.store_reservations sr
+            WHERE (sr.store_unit_id = @unitId OR sr.store_location_id = @locationId)
+              AND sr.released_at IS NULL
+            LIMIT 1
+            """, connection, transaction))
+        {
+            checkReservation.Parameters.AddWithValue("unitId", command.UnitId);
+            checkReservation.Parameters.AddWithValue("locationId", locationId);
+            if (await checkReservation.ExecuteScalarAsync(cancellationToken) is string)
+            {
+                throw new WorkflowRuleException(
+                    "UNIT_RESERVED_FOR_ROBOT",
+                    "Bu kasa veya alan robot taşıması için rezerve edilmiştir. Kaldırılamaz.");
+            }
+        }
+
         if (rowVersion != command.ExpectedRowVersion)
         {
             throw new WorkflowRuleException(
@@ -491,6 +575,22 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             if (await exists.ExecuteScalarAsync(cancellationToken) is null)
             {
                 throw new WorkflowRuleException("STORE_LOCATION_NOT_FOUND", "Depo konumu bulunamadı.");
+            }
+        }
+
+        await using (var checkReservation = new NpgsqlCommand("""
+            SELECT sr.reservation_type FROM ops.store_reservations sr
+            WHERE sr.store_location_id = @locationId
+              AND sr.released_at IS NULL
+            LIMIT 1
+            """, connection, transaction))
+        {
+            checkReservation.Parameters.AddWithValue("locationId", command.LocationId);
+            if (await checkReservation.ExecuteScalarAsync(cancellationToken) is string)
+            {
+                throw new WorkflowRuleException(
+                    "LOCATION_RESERVED",
+                    "Bu alan robot taşıması için rezerve edilmiştir. Temizlenemez.");
             }
         }
 
@@ -560,6 +660,27 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             }
         }
 
+        await using (var checkOccupancy = new NpgsqlCommand("""
+            SELECT
+                EXISTS (SELECT 1 FROM ops.store_units WHERE store_location_id = @loc AND removed_at IS NULL),
+                EXISTS (SELECT 1 FROM ops.store_reservations WHERE store_location_id = @loc AND released_at IS NULL)
+            """, connection, transaction))
+        {
+            checkOccupancy.Parameters.AddWithValue("loc", command.LocationId);
+            await using var reader = await checkOccupancy.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var hasUnits = reader.GetBoolean(0);
+                var isReserved = reader.GetBoolean(1);
+                if (hasUnits || isReserved)
+                {
+                    throw new WorkflowRuleException(
+                        "LOCATION_NOT_AVAILABLE",
+                        "Bu alan dolu veya rezerve edilmiş. Boş kasa bırakılamaz.");
+                }
+            }
+        }
+
         Guid unitId;
         await using (var insert = new NpgsqlCommand("""
             INSERT INTO ops.store_units (store_location_id, load_state)
@@ -593,8 +714,11 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             SELECT l.id, l.code, l.display_name, l.capacity, l.is_enabled,
                    u.id, u.transport_request_id, r.request_no, u.part_id, p.part_code,
                    u.container_type_id, ct.code, u.machine_id, m.code,
-                   u.delivered_at, u.row_version, u.load_state
+                   u.delivered_at, u.row_version, u.load_state,
+                   sr.id IS NOT NULL AS is_reserved, sr.reservation_type, sr.transport_request_id AS res_req_id
             FROM ops.store_locations l
+            LEFT JOIN ops.store_reservations sr
+                   ON sr.store_location_id = l.id AND sr.released_at IS NULL
             LEFT JOIN ops.store_units u
                    ON u.store_location_id = l.id AND u.removed_at IS NULL
             LEFT JOIN ops.transport_requests r ON r.id = u.transport_request_id
@@ -615,13 +739,20 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             if (!units.ContainsKey(id))
             {
                 units[id] = [];
+                var isReserved = reader.GetBoolean(17);
+                var reservationType = reader.IsDBNull(18) ? null : reader.GetString(18);
+                var reservationReqId = reader.IsDBNull(19) ? (Guid?)null : reader.GetGuid(19);
+
                 locations.Add(new StoreLocationRecord(
                     Id: id,
                     Code: reader.GetString(1),
                     DisplayName: reader.GetString(2),
                     Capacity: reader.IsDBNull(3) ? null : reader.GetInt32(3),
                     IsEnabled: reader.GetBoolean(4),
-                    Units: units[id]));
+                    Units: units[id],
+                    IsReserved: isReserved,
+                    ReservationType: reservationType,
+                    ReservationRequestId: reservationReqId));
             }
 
             if (reader.IsDBNull(5)) continue;

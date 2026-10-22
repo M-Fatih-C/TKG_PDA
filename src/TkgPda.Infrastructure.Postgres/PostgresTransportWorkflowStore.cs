@@ -194,6 +194,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         }
 
         var created = await InsertRequestAsync(connection, transaction, request, taskTypeId, batchId, cancellationToken);
+        await TryReserveStoreEndpointAsync(connection, transaction, created.Id, created.TaskType, request.NavigationProfileId, request.SourceBusinessCode, request.DestinationBusinessCode, cancellationToken);
         await InsertEventAsync(
             connection,
             transaction,
@@ -209,7 +210,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 batch_id = batchId,
                 request_origin = request.Origin.ToDatabase(),
                 task_type = request.TaskType.ToDatabase(),
-                destination_business_code = request.DestinationBusinessCode
+                destination_business_code = request.DestinationBusinessCode,
+                source_business_code = request.SourceBusinessCode
             },
             cancellationToken,
             eventContext);
@@ -288,6 +290,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             request,
             TransportRequestStatus.Cancelled,
             cancellationToken);
+        await ReleaseStoreReservationAsync(connection, transaction, request.Id, cancellationToken);
         await InsertEventAsync(
             connection,
             transaction,
@@ -504,6 +507,11 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 eventContext);
         }
 
+        if (nextStatus is TransportRequestStatus.Completed or TransportRequestStatus.Failed or TransportRequestStatus.Cancelled)
+        {
+            await ReleaseStoreReservationAsync(connection, transaction, request.Id, cancellationToken);
+        }
+
         await AdvanceProductionEndRunAsync(connection, transaction, request.Id, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return request;
@@ -541,6 +549,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         TransportStateMachine.EnsureTransition(request.Status, outcome.Status);
         var previousStatus = request.Status;
         request = await UpdateRequestOutcomeAsync(connection, transaction, request, outcome, cancellationToken);
+        await ReleaseStoreReservationAsync(connection, transaction, request.Id, cancellationToken);
 
         if (outcome.Status == TransportRequestStatus.Cancelled)
         {
@@ -1332,13 +1341,13 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 id, idempotency_key, request_origin, requested_by,
                 machine_id, variant_id, layout_id, navigation_id,
                 product_group_id, part_id, container_type_id, task_type_id,
-                source_slot_id, destination_slot_id, destination_business_code, status, priority, batch_id,
+                source_slot_id, destination_slot_id, destination_business_code, source_business_code, status, priority, batch_id,
                 readiness_state, production_session_id)
             VALUES (
                 @id, @idempotency_key, @request_origin, @requested_by,
                 @machine_id, @variant_id, @layout_id, @navigation_id,
                 @product_group_id, @part_id, @container_type_id, @task_type_id,
-                @source_slot_id, @destination_slot_id, @destination_business_code, 'CREATED', @priority, @batch_id,
+                @source_slot_id, @destination_slot_id, @destination_business_code, @source_business_code, 'CREATED', @priority, @batch_id,
                 @readiness_state,
                 (SELECT id FROM ops.production_sessions WHERE machine_id = @machine_id AND ended_at IS NULL))
             RETURNING request_no
@@ -1360,6 +1369,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         AddNullableUuid(command, "source_slot_id", request.SourceSlotId);
         AddNullableUuid(command, "destination_slot_id", request.DestinationSlotId);
         AddNullableText(command, "destination_business_code", request.DestinationBusinessCode);
+        AddNullableText(command, "source_business_code", request.SourceBusinessCode);
         command.Parameters.AddWithValue("priority", request.Priority);
         AddNullableUuid(command, "batch_id", batchId);
         command.Parameters.AddWithValue("readiness_state", request.InitialReadinessState.ToDatabase());
@@ -1386,7 +1396,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             request.Priority,
             request.InitialReadinessState,
             ReadyAt: null,
-            request.DestinationBusinessCode);
+            request.DestinationBusinessCode,
+            request.SourceBusinessCode);
     }
 
     private static async Task<TransportRequestSnapshot?> FindByIdempotencyKeyAsync(
@@ -1543,7 +1554,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         reader.GetInt32(16),
         WorkflowCode.ParseReadinessState(reader.GetString(17)),
         reader.IsDBNull(18) ? null : reader.GetFieldValue<DateTimeOffset>(18),
-        reader.IsDBNull(19) ? null : reader.GetString(19));
+        reader.IsDBNull(19) ? null : reader.GetString(19),
+        reader.IsDBNull(20) ? null : reader.GetString(20));
 
     private static void EnsureEquivalentPayload(TransportRequestSnapshot existing, CreateTransportRequest request)
     {
@@ -1830,8 +1842,134 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                r.priority,
                r.readiness_state,
                r.ready_at,
-               r.destination_business_code
+               r.destination_business_code,
+               r.source_business_code
         FROM ops.transport_requests r
         JOIN master.task_types tt ON tt.id = r.task_type_id
         """;
+
+    private static async Task TryReserveStoreEndpointAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        TransportTaskType taskType,
+        Guid? navigationProfileId,
+        string? sourceBusinessCode,
+        string? destinationBusinessCode,
+        CancellationToken cancellationToken)
+    {
+        if (taskType == TransportTaskType.BringEmpty)
+        {
+            await using var cmd = new NpgsqlCommand(
+                """
+                SELECT u.id, sl.id
+                FROM ops.store_units u
+                JOIN ops.store_locations sl ON sl.id = u.store_location_id
+                WHERE u.load_state = 'EMPTY'
+                  AND u.removed_at IS NULL
+                  AND sl.is_enabled
+                  AND (
+                      @sourceCode IS NULL
+                      OR sl.code = @sourceCode
+                      OR sl.id = (
+                          SELECT store_location_id FROM integration.profile_shared_endpoint_bindings
+                          WHERE navigation_profile_id = @navProfile AND endpoint_class = 'EMPTY_SOURCE' AND business_code = @sourceCode
+                          LIMIT 1
+                      )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ops.store_reservations sr
+                      WHERE sr.store_location_id = sl.id AND sr.released_at IS NULL
+                  )
+                ORDER BY sl.code ASC, u.delivered_at ASC
+                LIMIT 1
+                FOR UPDATE OF u, sl
+                """,
+                connection,
+                transaction);
+            AddNullableText(cmd, "sourceCode", sourceBusinessCode);
+            AddNullableUuid(cmd, "navProfile", navigationProfileId);
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var unitId = reader.GetGuid(0);
+                var locId = reader.GetGuid(1);
+                reader.Close();
+
+                await using var res = new NpgsqlCommand(
+                    """
+                    INSERT INTO ops.store_reservations (store_location_id, store_unit_id, transport_request_id, reservation_type)
+                    VALUES (@loc, @unit, @req, 'PICKUP')
+                    ON CONFLICT (transport_request_id) WHERE released_at IS NULL DO NOTHING
+                    """,
+                    connection,
+                    transaction);
+                res.Parameters.AddWithValue("loc", locId);
+                res.Parameters.AddWithValue("unit", unitId);
+                res.Parameters.AddWithValue("req", requestId);
+                await res.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+        else if (taskType == TransportTaskType.RemoveFull && destinationBusinessCode is not null)
+        {
+            await using var cmd = new NpgsqlCommand(
+                """
+                SELECT sl.id
+                FROM ops.store_locations sl
+                WHERE sl.is_enabled
+                  AND (
+                      sl.code = @destCode
+                      OR sl.id = (
+                          SELECT store_location_id FROM integration.profile_shared_endpoint_bindings
+                          WHERE navigation_profile_id = @navProfile AND endpoint_class = 'FINISHED_GOODS' AND business_code = @destCode
+                          LIMIT 1
+                      )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ops.store_units u WHERE u.store_location_id = sl.id AND u.removed_at IS NULL
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ops.store_reservations sr WHERE sr.store_location_id = sl.id AND sr.released_at IS NULL
+                  )
+                LIMIT 1
+                FOR UPDATE OF sl
+                """,
+                connection,
+                transaction);
+            cmd.Parameters.AddWithValue("destCode", destinationBusinessCode);
+            AddNullableUuid(cmd, "navProfile", navigationProfileId);
+            if (await cmd.ExecuteScalarAsync(cancellationToken) is Guid locId)
+            {
+                await using var res = new NpgsqlCommand(
+                    """
+                    INSERT INTO ops.store_reservations (store_location_id, transport_request_id, reservation_type)
+                    VALUES (@loc, @req, 'DROP')
+                    ON CONFLICT (transport_request_id) WHERE released_at IS NULL DO NOTHING
+                    """,
+                    connection,
+                    transaction);
+                res.Parameters.AddWithValue("loc", locId);
+                res.Parameters.AddWithValue("req", requestId);
+                await res.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+    }
+
+    private static async Task ReleaseStoreReservationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var cmd = new NpgsqlCommand(
+            """
+            UPDATE ops.store_reservations
+            SET released_at = clock_timestamp()
+            WHERE transport_request_id = @req AND released_at IS NULL
+            """,
+            connection,
+            transaction);
+        cmd.Parameters.AddWithValue("req", requestId);
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
 }

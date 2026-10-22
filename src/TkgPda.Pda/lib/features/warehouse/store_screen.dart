@@ -294,6 +294,24 @@ class _LocationCard extends StatelessWidget {
               const Spacer(),
               if (busy)
                 const LinearProgressIndicator(minHeight: 3)
+              else if (location.isReserved)
+                SizedBox(
+                  height: 48,
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: null,
+                    icon: const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    label: Text(
+                      location.reservationType == 'PICKUP'
+                          ? 'Robot Kasa Alıyor...'
+                          : 'Robot Getiriyor...',
+                    ),
+                  ),
+                )
               else if (single != null)
                 SizedBox(
                   height: 48,
@@ -422,6 +440,24 @@ class _StorePresentation {
         Color(0xFFF1F5F9),
       );
     }
+    if (location.isReserved) {
+      if (location.reservationType == 'PICKUP') {
+        return const _StorePresentation(
+          'ROBOT KASA ALIYOR',
+          'Robot bu alandaki boş kasayı almaya geliyor.',
+          Icons.precision_manufacturing,
+          Color(0xFFB45309),
+          Color(0xFFFFFBEB),
+        );
+      }
+      return const _StorePresentation(
+        'ROBOT MAMUL GETİRİYOR',
+        'Robot bu alana dolu mamul kasası bırakmaya geliyor.',
+        Icons.precision_manufacturing,
+        Color(0xFF0369A1),
+        Color(0xFFF0F9FF),
+      );
+    }
     if (location.units.isEmpty) {
       return const _StorePresentation(
         'ALAN BOŞ',
@@ -472,11 +508,11 @@ class _StorePresentation {
       if (unknown > 0) '$unknown Durum Bilinmiyor',
     ];
     return _StorePresentation(
-      'KARMA',
-      parts.join(' · '),
-      Icons.layers,
-      const Color(0xFF1E293B),
-      const Color(0xFFF8FAFC),
+      'VERİ UYUŞMAZLIĞI',
+      '${parts.join(' · ')} (Tek palet kuralı aşıldı)',
+      Icons.warning_amber_rounded,
+      const Color(0xFFB91C1C),
+      const Color(0xFFFEF2F2),
     );
   }
 }

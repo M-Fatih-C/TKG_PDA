@@ -33,7 +33,10 @@ public sealed record StoreLocationRecord(
     string DisplayName,
     int? Capacity,
     bool IsEnabled,
-    IReadOnlyList<StoreUnitRecord> Units)
+    IReadOnlyList<StoreUnitRecord> Units,
+    bool IsReserved = false,
+    string? ReservationType = null,
+    Guid? ReservationRequestId = null)
 {
     public int UnitCount => Units.Count;
 

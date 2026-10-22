@@ -90,6 +90,9 @@ class StoreLocation {
     required this.capacity,
     required this.isEnabled,
     required this.units,
+    this.isReserved = false,
+    this.reservationType,
+    this.reservationRequestId,
   });
 
   final String id;
@@ -101,6 +104,15 @@ class StoreLocation {
   final int? capacity;
   final bool isEnabled;
   final List<StoreUnit> units;
+
+  /// Whether a robot transport is currently in-flight to or from this location.
+  final bool isReserved;
+
+  /// 'PICKUP' (robot fetching empty) or 'DROP' (robot delivering full).
+  final String? reservationType;
+
+  /// Transport request ID holding the reservation.
+  final String? reservationRequestId;
 
   int get unitCount => units.length;
   bool get isEmpty => units.isEmpty;
@@ -126,5 +138,8 @@ class StoreLocation {
       for (final unit in (json['units'] as List? ?? const []))
         if (unit is JsonMap) StoreUnit.fromJson(unit),
     ],
+    isReserved: json['isReserved'] as bool? ?? false,
+    reservationType: json['reservationType'] as String?,
+    reservationRequestId: json['reservationRequestId'] as String?,
   );
 }
