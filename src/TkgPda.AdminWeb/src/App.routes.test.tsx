@@ -12,6 +12,7 @@ describe('removed customer admin routes', () => {
     '/catalog',
     '/containers',
     '/data-quality',
+    '/commissioning',
   ])('direct navigation to %s does not render the removed page', (route) => {
     renderAuthenticated(<App />, route)
 
@@ -19,7 +20,7 @@ describe('removed customer admin routes', () => {
     expect(screen.queryByText('Layout sürümleri yükleniyor…')).not.toBeInTheDocument()
     expect(screen.queryByText('Editör')).not.toBeInTheDocument()
     const links = screen.getAllByRole('link').map((link) => link.getAttribute('href'))
-    expect(links.some((href) => href === '/layouts' || href === '/catalog' || href === '/containers' || href === '/data-quality')).toBe(false)
+    expect(links.some((href) => href === '/layouts' || href === '/catalog' || href === '/containers' || href === '/data-quality' || href === '/commissioning')).toBe(false)
   })
 
   it('keeps the allowed admin landing routes mounted', () => {
@@ -28,6 +29,7 @@ describe('removed customer admin routes', () => {
     expect(screen.queryByRole('heading', { name: 'Bu yönetim sayfası bulunamadı.' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Kullanıcılar & Yetkiler' })).toBeVisible()
     expect(screen.getByRole('link', { name: 'RDS Entegrasyonu' })).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Audit Geçmişi' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Denetim Geçmişi' })).toBeVisible()
+    expect(screen.queryByRole('link', { name: 'Devreye Alma Hazırlığı' })).not.toBeInTheDocument()
   })
 })

@@ -43,4 +43,18 @@ describe('DevicesPage machine binding', () => {
     await userEvent.selectOptions(select, '')
     expect(select.value).toBe('')
   })
+
+  it('blocks device management when the machine inventory cannot be loaded', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/devices')) return Promise.resolve(jsonResponse(devices))
+      if (url.endsWith('/machines')) return Promise.resolve(jsonResponse({ title: 'Hata', detail: 'Makine listesi alınamadı.', code: 'MACHINES_UNAVAILABLE' }, { status: 503 }))
+      return Promise.resolve(jsonResponse([]))
+    }))
+
+    renderAuthenticated(<DevicesPage />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Makine listesi alınamadı.')
+    expect(screen.queryByRole('button', { name: /Cihaz ekle/ })).not.toBeInTheDocument()
+  })
 })

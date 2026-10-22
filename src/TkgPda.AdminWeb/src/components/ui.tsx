@@ -1,6 +1,7 @@
 import { AlertTriangle, Inbox, LoaderCircle, RefreshCw, Search, X } from 'lucide-react'
 import type { ButtonHTMLAttributes, InputHTMLAttributes, PropsWithChildren, ReactNode, SelectHTMLAttributes } from 'react'
 import { ApiProblem } from '../api/client'
+import { displayStatusLabel } from '../displayLabels'
 
 export function Button({ className = '', variant = 'primary', size = 'md', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger'; size?: 'sm' | 'md' }) {
   return <button className={`button button--${variant} button--${size} ${className}`} {...props} />
@@ -29,7 +30,8 @@ export function PanelHeader({ title, description, action }: { title: string; des
 
 export function StatusPill({ value, tone }: { value: string; tone?: 'success' | 'warning' | 'danger' | 'neutral' | 'info' }) {
   const normalized = tone ?? (['ACTIVE', 'PUBLISHED', 'LOW'].includes(value) ? 'success' : ['DRAFT', 'MEDIUM'].includes(value) ? 'warning' : ['ARCHIVED', 'HIGH', 'INACTIVE'].includes(value) ? 'danger' : 'neutral')
-  return <span className={`status status--${normalized}`}>{value}</span>
+  const label = displayStatusLabel(value)
+  return <span className={`status status--${normalized}`} title={label === value ? undefined : `Teknik kod: ${value}`}>{label}</span>
 }
 
 export function Field({ label, hint, error, children }: PropsWithChildren<{ label: string; hint?: string; error?: string }>) {

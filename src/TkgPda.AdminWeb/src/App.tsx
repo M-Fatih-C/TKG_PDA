@@ -2,7 +2,6 @@ import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './auth/AuthContext'
 import { AppShell } from './components/AppShell'
 import { AuditPage } from './pages/AuditPage'
-import { CommissioningReadinessPage } from './pages/CommissioningReadinessPage'
 import { DashboardPage } from './pages/DashboardPage'
 import { DevicesPage } from './pages/DevicesPage'
 import { LoginPage } from './pages/LoginPage'
@@ -34,7 +33,6 @@ export default function App() {
         <Route path="reports" element={<ReportsPage />} />
         <Route path="production-end-priorities" element={<ProductionEndPriorityPage />} />
         <Route path="rds" element={<RdsIntegrationPage />} />
-        <Route path="commissioning" element={<CommissioningReadinessPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

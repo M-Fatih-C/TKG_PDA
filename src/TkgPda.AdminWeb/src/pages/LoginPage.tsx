@@ -36,10 +36,10 @@ export function LoginPage() {
         <div className="login-story__content">
           <span className="eyebrow eyebrow--light">Fabrika lojistiğinin doğrulanmış modeli</span>
           <h1>Operasyon gerçeğini<br />tek merkezden yönetin.</h1>
-          <p>Kullanıcılar, yetkiler, varyantlar ve fiziksel layout sürümleri tek bir güvenli yapılandırma yüzeyinde.</p>
+          <p>Kullanıcılar, yetkiler, varyantlar ve fiziksel yerleşim planları tek bir güvenli yapılandırma ekranında.</p>
           <div className="login-features">
-            <div><ShieldCheck /><span><strong>Rol tabanlı erişim</strong><small>ADMIN_WEB sınırı</small></span></div>
-            <div><LayoutTemplate /><span><strong>Versiyonlu layout</strong><small>Draft → Publish → Archive</small></span></div>
+            <div><ShieldCheck /><span><strong>Rol tabanlı erişim</strong><small>Yönetim paneli yetkisi</small></span></div>
+            <div><LayoutTemplate /><span><strong>Sürümlü yerleşim planı</strong><small>Taslak → Yayın → Arşiv</small></span></div>
             <div><Boxes /><span><strong>Kanıta dayalı veri</strong><small>Tahmin yok, izlenebilirlik var</small></span></div>
           </div>
         </div>
@@ -50,7 +50,7 @@ export function LoginPage() {
           <div className="login-form__icon"><LockKeyhole /></div>
           <span className="eyebrow">Yönetici girişi</span>
           <h2>Tekrar hoş geldiniz</h2>
-          <p>Devam etmek için ADMIN hesabınızla giriş yapın. Fiziksel PDA cihaz kodu gerekmez.</p>
+          <p>Devam etmek için yönetici hesabınızla giriş yapın. Fiziksel PDA cihaz kodu gerekmez.</p>
           {error && <div className="login-error" role="alert">{error}</div>}
           <label><span>Kullanıcı adı</span><div className="input-with-icon"><KeyRound size={18} /><TextInput autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></div></label>
           <label><span>Parola</span><div className="input-with-icon"><LockKeyhole size={18} /><TextInput type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></div></label>

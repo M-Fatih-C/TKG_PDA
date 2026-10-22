@@ -5,6 +5,7 @@ import { useAdminApi } from '../api/ApiContext'
 import type { AdminUser, MachinePermission, Role, RoleCode, UserDraft } from '../api/types'
 import { useToast } from '../components/Toast'
 import { Button, Check, EmptyState, ErrorState, Field, LoadingState, Modal, PageHeader, Panel, SearchInput, StatusPill, TableFrame, TextInput, formatDate } from '../components/ui'
+import { roleLabel } from '../displayLabels'
 
 const emptyUser: UserDraft = { username: '', password: '', fullName: '', employeeNo: null, roles: ['LINE_OPERATOR'] }
 
@@ -69,7 +70,7 @@ export function UsersPage() {
 }
 
 function RoleChecks({ roles, value, onChange }: { roles: Role[]; value: RoleCode[]; onChange: (value: RoleCode[]) => void }) {
-  return <div className="role-grid">{roles.filter((role) => role.isActive).map((role) => <Check key={role.code} label={role.name} checked={value.includes(role.code)} onChange={(checked) => onChange(checked ? [...value, role.code] : value.filter((item) => item !== role.code))} />)}</div>
+  return <div className="role-grid">{roles.filter((role) => role.isActive).map((role) => <Check key={role.code} label={roleLabel(role.code, role.name)} checked={value.includes(role.code)} onChange={(checked) => onChange(checked ? [...value, role.code] : value.filter((item) => item !== role.code))} />)}</div>
 }
 
 function CreateUserDialog({ open, roles, busy, onClose, onSubmit }: { open: boolean; roles: Role[]; busy: boolean; onClose: () => void; onSubmit: (draft: UserDraft) => void }) {
@@ -82,7 +83,7 @@ function CreateUserDialog({ open, roles, busy, onClose, onSubmit }: { open: bool
 
 function EditUserDialog({ user, roles, busy, onClose, onSubmit }: { user: AdminUser; roles: Role[]; busy: boolean; onClose: () => void; onSubmit: (user: AdminUser, profile: Pick<AdminUser, 'fullName' | 'employeeNo' | 'isActive'>, roles: RoleCode[]) => void }) {
   const [draft, setDraft] = useState(() => ({ fullName: user.fullName, employeeNo: user.employeeNo ?? '', isActive: user.isActive, roles: user.roles }))
-  return <Modal open onClose={onClose} title={`${user.fullName} düzenle`} description={`@${user.username} · ETag ${user.concurrencyToken}`} footer={<><Button variant="ghost" onClick={onClose}>Vazgeç</Button><Button disabled={busy || draft.roles.length === 0} onClick={() => onSubmit(user, { fullName: draft.fullName, employeeNo: draft.employeeNo || null, isActive: draft.isActive }, draft.roles)}><Save size={16} /> Kaydet</Button></>}>
+  return <Modal open onClose={onClose} title={`${user.fullName} düzenle`} description={`@${user.username} · Kayıt sürümü ${user.concurrencyToken}`} footer={<><Button variant="ghost" onClick={onClose}>Vazgeç</Button><Button disabled={busy || draft.roles.length === 0} onClick={() => onSubmit(user, { fullName: draft.fullName, employeeNo: draft.employeeNo || null, isActive: draft.isActive }, draft.roles)}><Save size={16} /> Kaydet</Button></>}>
     <div className="form-grid"><Field label="Ad soyad"><TextInput value={draft.fullName} onChange={(event) => setDraft({ ...draft, fullName: event.target.value })} /></Field><Field label="Sicil numarası"><TextInput value={draft.employeeNo} onChange={(event) => setDraft({ ...draft, employeeNo: event.target.value })} /></Field><div className="form-span"><Check label="Aktif kullanıcı" checked={draft.isActive} onChange={(value) => setDraft({ ...draft, isActive: value })} /></div><div className="form-span"><Field label="Sistem rolleri"><RoleChecks roles={roles} value={draft.roles} onChange={(value) => setDraft({ ...draft, roles: value })} /></Field></div></div>
   </Modal>
 }
@@ -90,13 +91,13 @@ function EditUserDialog({ user, roles, busy, onClose, onSubmit }: { user: AdminU
 function PasswordDialog({ user, busy, onClose, onSubmit }: { user: AdminUser | null; busy: boolean; onClose: () => void; onSubmit: (user: AdminUser, password: string) => void }) {
   const [password, setPassword] = useState('')
   if (!user) return null
-  return <Modal open onClose={onClose} title="Parola yenile" description={`${user.fullName} için yeni parola hashlenerek saklanacak; audit kaydı parola içermeyecek.`} footer={<><Button variant="ghost" onClick={onClose}>Vazgeç</Button><Button disabled={busy || password.length < 12} onClick={() => onSubmit(user, password)}><KeyRound size={16} /> Parolayı yenile</Button></>}><Field label="Yeni parola" hint="12–256 karakter"><TextInput autoFocus type="password" minLength={12} maxLength={256} value={password} onChange={(event) => setPassword(event.target.value)} /></Field></Modal>
+  return <Modal open onClose={onClose} title="Parola yenile" description={`${user.fullName} için yeni parola güvenli biçimde saklanacak; denetim kaydında parola yer almayacak.`} footer={<><Button variant="ghost" onClick={onClose}>Vazgeç</Button><Button disabled={busy || password.length < 12} onClick={() => onSubmit(user, password)}><KeyRound size={16} /> Parolayı yenile</Button></>}><Field label="Yeni parola" hint="12–256 karakter"><TextInput autoFocus type="password" minLength={12} maxLength={256} value={password} onChange={(event) => setPassword(event.target.value)} /></Field></Modal>
 }
 
 type PermissionKey = Exclude<keyof MachinePermission, 'machineId'>
-const permissionColumns: { key: PermissionKey; label: string }[] = [{ key: 'canView', label: 'Görüntüle' }, { key: 'canOperate', label: 'Operasyon' }, { key: 'canChangeVariant', label: 'Varyant' }, { key: 'canManageSlots', label: 'Slot' }]
+const permissionColumns: { key: PermissionKey; label: string }[] = [{ key: 'canView', label: 'Görüntüle' }, { key: 'canOperate', label: 'Operasyon' }, { key: 'canChangeVariant', label: 'Varyant' }, { key: 'canManageSlots', label: 'Alan Yönetimi' }]
 
 function PermissionDialog({ user, machines, busy, onClose, onChange }: { user: AdminUser | null; machines: { id: string; code: string; displayName: string }[]; busy: boolean; onClose: () => void; onChange: (user: AdminUser, machineId: string, key: PermissionKey, checked: boolean) => void }) {
   if (!user) return null
-  return <Modal open wide onClose={onClose} title="Makine izin matrisi" description={`${user.fullName} · Non-ADMIN hesaplarda her istek API tarafından yeniden doğrulanır.`} footer={<Button onClick={onClose}>Tamam</Button>}><div className="permission-matrix" role="grid"><div className="permission-row permission-row--head"><strong>Makine / hücre</strong>{permissionColumns.map((item) => <strong key={item.key}>{item.label}</strong>)}</div>{machines.map((machine) => { const permission = user.machinePermissions.find((item) => item.machineId === machine.id); return <div className="permission-row" key={machine.id}><div><strong>{machine.code}</strong><small>{machine.displayName}</small></div>{permissionColumns.map(({ key, label }) => <Check key={key} label={label} disabled={busy || user.roles.includes('ADMIN')} checked={permission?.[key] ?? false} onChange={(checked) => onChange(user, machine.id, key, checked)} />)}</div> })}</div>{user.roles.includes('ADMIN') && <div className="info-banner">ADMIN rolü global machine erişimine sahiptir; matristeki değerler etkisizdir.</div>}</Modal>
+  return <Modal open wide onClose={onClose} title="Makine izin matrisi" description={`${user.fullName} · Yönetici olmayan hesapların her isteği sunucu tarafından yeniden doğrulanır.`} footer={<Button onClick={onClose}>Tamam</Button>}><div className="permission-matrix" role="grid"><div className="permission-row permission-row--head"><strong>Makine / hücre</strong>{permissionColumns.map((item) => <strong key={item.key}>{item.label}</strong>)}</div>{machines.map((machine) => { const permission = user.machinePermissions.find((item) => item.machineId === machine.id); return <div className="permission-row" key={machine.id}><div><strong>{machine.code}</strong><small>{machine.displayName}</small></div>{permissionColumns.map(({ key, label }) => <Check key={key} label={label} disabled={busy || user.roles.includes('ADMIN')} checked={permission?.[key] ?? false} onChange={(checked) => onChange(user, machine.id, key, checked)} />)}</div> })}</div>{user.roles.includes('ADMIN') && <div className="info-banner">Yönetici rolü tüm makinelere erişebilir; matristeki değerler bu kullanıcı için uygulanmaz.</div>}</Modal>
 }

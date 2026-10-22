@@ -143,7 +143,7 @@ describe('operations history', () => {
     await user.click(await screen.findByText('42'))
     expect(await screen.findByText(/Talep oluşturuldu/)).toBeVisible()
     expect(screen.getAllByText(/Sicil 1234/).length).toBeGreaterThan(0)
-    await user.click(screen.getByText('Teknik Detay'))
+    await user.click(screen.getByText('Teknik Ayrıntılar'))
     const link = screen.getByRole('link', { name: 'Teknik denetime git' })
     expect(link).toHaveAttribute('href', expect.stringContaining('correlationId=22222222-2222-2222-2222-222222222222'))
   })
@@ -180,8 +180,8 @@ describe('technical audit drill-down', () => {
   it('requests the correlation from the server', async () => {
     stub()
     renderAuthenticated(<AuditPage />, '/audit?correlationId=22222222-2222-2222-2222-222222222222&entityId=11111111-1111-1111-1111-111111111111')
-    expect(await screen.findByText('REQUEST_CREATED')).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Teknik Audit Geçmişi' })).toBeVisible()
+    expect(await screen.findByText('Talep oluşturuldu')).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Teknik Denetim Geçmişi' })).toBeVisible()
     await waitFor(() => {
       expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('correlationId=22222222-2222-2222-2222-222222222222'))).toBe(true)
     })

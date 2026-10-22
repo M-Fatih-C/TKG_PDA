@@ -5,6 +5,9 @@ import { useAdminApi } from '../api/ApiContext'
 import { isRobotExecutionActive } from '../api/types'
 import { useToast } from '../components/Toast'
 import { Button, EmptyState, ErrorState, LoadingState, PageHeader, Panel, PanelHeader, SearchInput, SelectInput, StatusPill, TableFrame, formatDate } from '../components/ui'
+import { displayStatusLabel, operationLabel } from '../displayLabels'
+
+const evidenceValue = (value: number | null) => value === 1 ? 'Evet' : value === 0 ? 'Hayır' : '—'
 
 function BatteryIndicator({ level, isCharging }: { level: number | null; isCharging?: boolean | null }) {
   if (level === null || level === undefined) return <span className="muted">—</span>
@@ -91,7 +94,7 @@ export function RdsIntegrationPage() {
         client.invalidateQueries({ queryKey: ['rds-status'] }),
         client.invalidateQueries({ queryKey: ['rds-mappings'] }),
       ])
-      toast.success('WorkSite aynası güncellendi', `${result.received} okundu · ${result.created} yeni · ${result.updated} güncel`)
+      toast.success('RDS alan aynası güncellendi', `${result.received} okundu · ${result.created} yeni · ${result.updated} güncel`)
     } catch (error) { toast.error(error, 'RDS senkronizasyonu tamamlanamadı') } finally { setBusy(false) }
   }
 
@@ -99,9 +102,9 @@ export function RdsIntegrationPage() {
     setValidatingTemplate(id)
     try {
       const result = await api.validateRdsTaskTemplate(id)
-      if (result.validated) toast.success('RDS task label doğrulandı', result.message)
-      else toast.error(new Error(result.message), 'RDS task label bulunamadı')
-    } catch (error) { toast.error(error, 'RDS task template doğrulanamadı') } finally { setValidatingTemplate(null) }
+      if (result.validated) toast.success('RDS görev etiketi doğrulandı', result.message)
+      else toast.error(new Error(result.message), 'RDS görev etiketi bulunamadı')
+    } catch (error) { toast.error(error, 'RDS görev şablonu doğrulanamadı') } finally { setValidatingTemplate(null) }
   }
 
   if (status.isLoading || profiles.isLoading || mappings.isLoading || taskTemplates.isLoading) return <LoadingState label="RDS okuma durumu hazırlanıyor…" />
@@ -109,11 +112,11 @@ export function RdsIntegrationPage() {
   if (failure) return <ErrorState error={failure} onRetry={() => void Promise.all([status.refetch(), profiles.refetch(), mappings.refetch(), taskTemplates.refetch(), robots.refetch(), robotAlarms.refetch()])} />
 
   return <div className="page">
-    <PageHeader eyebrow="RDS Entegrasyonu" title="RDS Entegrasyonu" description="Robot yürütme, canlı durum, alarm ve WorkSite eşleşmeleri." actions={<Button variant="secondary" onClick={() => void Promise.all([status.refetch(), robots.refetch(), robotAlarms.refetch()])}><RefreshCw size={16} /> Bağlantıyı doğrula</Button>} />
-    <div className="warning-banner"><ShieldAlert size={20} /><div><strong>RDS değerleri dış sistem kanıtıdır.</strong><span>Bu ekran görev oluşturmaz, WorkSite durumunu değiştirmez ve robot hareketi başlatmaz. İsim benzerliği otomatik eşleme üretmez.</span></div></div>
+    <PageHeader eyebrow="RDS Entegrasyonu" title="RDS Entegrasyonu" description="Robot yürütme, canlı durum, alarm ve fiziksel alan eşleşmeleri." actions={<Button variant="secondary" onClick={() => void Promise.all([status.refetch(), robots.refetch(), robotAlarms.refetch()])}><RefreshCw size={16} /> Bağlantıyı doğrula</Button>} />
+    <div className="warning-banner"><ShieldAlert size={20} /><div><strong>RDS değerleri dış sistem kanıtıdır.</strong><span>Bu ekran görev oluşturmaz, RDS alan durumunu değiştirmez ve robot hareketi başlatmaz. İsim benzerliği otomatik eşleme üretmez.</span></div></div>
     <div className="rds-summary">
       <Panel><PanelHeader title="RDS Bağlantısı" description="Sunucu tarafından güvenli biçimde gösterilen bağlantı adresi" action={<StatusPill value={status.data?.businessMessage?.toLowerCase().includes('simülasyon') || status.data?.baseAddressDisplaySafe?.toLowerCase().includes('yerel') ? 'SİMÜLASYON (AKTİF)' : status.data?.reachable ? 'CONNECTED' : status.data?.enabled ? 'UNAVAILABLE' : 'DISABLED'} tone={status.data?.businessMessage?.toLowerCase().includes('simülasyon') || status.data?.baseAddressDisplaySafe?.toLowerCase().includes('yerel') ? 'info' : status.data?.reachable ? 'success' : 'warning'} />} /><div className="rds-card-body"><code>{status.data?.baseAddressDisplaySafe ?? 'Yapılandırılmadı'}</code><span>Son başarılı okuma: {formatDate(status.data?.lastSuccessfulRead)}</span>{status.data?.businessMessage && <small>RDS: {status.data.businessStatus} · {status.data.businessMessage}</small>}{status.data?.errorCode && <small className="danger-text">{status.data.errorCode} · {status.data.errorMessage}</small>}</div></Panel>
-      <Panel><PanelHeader title="Eşleme Durumu" description="TKG eşleme tablosu" action={<StatusPill value={`${mappedCount} EŞLENDİ`} tone="info" />} /><div className="rds-card-body"><strong>{mappings.data?.length ?? 0} layout bölgesi</strong><span>{(mappings.data?.length ?? 0) - mappedCount} bölge eşlenmemiş veya MACHINE referansıdır.</span></div></Panel>
+      <Panel><PanelHeader title="Eşleme Durumu" description="TKG eşleme tablosu" action={<StatusPill value={`${mappedCount} EŞLENDİ`} tone="info" />} /><div className="rds-card-body"><strong>{mappings.data?.length ?? 0} yerleşim bölgesi</strong><span>{(mappings.data?.length ?? 0) - mappedCount} bölge eşlenmemiş veya makine referansıdır.</span></div></Panel>
     </div>
 
     <Panel>
@@ -158,7 +161,7 @@ export function RdsIntegrationPage() {
               </small>
             </div>
             <div className={`fleet-tile${robots.data.some(r => r.isLocked === true) ? ' fleet-tile--warn' : ''}`}>
-              <span>Kilit Durumu (Control / Lock)</span>
+              <span>Kilit Durumu</span>
               <strong>
                 {robots.data.filter(r => r.isLocked === true).length} Kilitli
               </strong>
@@ -167,7 +170,7 @@ export function RdsIntegrationPage() {
               </small>
             </div>
             <div className={`fleet-tile ${fleetAlarms.critical > 0 ? 'fleet-tile--bad' : 'fleet-tile--good'}`}>
-              <span>Aktif Arıza (Fatal + Error)</span>
+              <span>Aktif Kritik Arıza</span>
               <strong>{fleetAlarms.critical}</strong>
               <small>
                 {fleetAlarms.warning} uyarı · {fleetAlarms.notice} bilgi notu (arıza sayılmaz)
@@ -180,7 +183,7 @@ export function RdsIntegrationPage() {
                 <th>Robot</th>
                 <th>Bağlantı & Sevk</th>
                 <th>Hareket & Yürütme</th>
-                <th>Kontrol (Lock)</th>
+                <th>Kilit Kontrolü</th>
                 <th>Batarya</th>
                 <th>Konum / İstasyon</th>
                 <th>Harita Telemetrisi</th>
@@ -208,7 +211,7 @@ export function RdsIntegrationPage() {
                           <strong>{robot.robotId}</strong>
                           {robot.model && <small className="table-subtitle">{robot.model}</small>}
                           {robot.rdsReportedPayloadLoaded !== undefined && robot.rdsReportedPayloadLoaded !== null && (
-                            <small className="table-subtitle" title="SEER robot teknik telemetrisi (TKG LoadState ile ilişkisizdir)">
+                            <small className="table-subtitle" title="SEER robot teknik telemetrisi (TKG yük durumundan bağımsızdır)">
                               Yük Telemetrisi: {robot.rdsReportedPayloadLoaded ? 'YÜKLÜ (RDS)' : 'BOŞ (RDS)'}
                             </small>
                           )}
@@ -276,7 +279,7 @@ export function RdsIntegrationPage() {
                     <td>
                       <div className="cell-stack">
                         <div>
-                          <small className="cell-label">Çalışma Zamanı: </small>
+                          <small className="cell-label">Etkin Harita: </small>
                           <code>{runtimeMap ?? '—'}</code>
                         </div>
                         {referenceMap && (
@@ -329,9 +332,22 @@ export function RdsIntegrationPage() {
     </Panel>
 
 
-    <Panel><PanelHeader title="Aktif Robot Alarmları" description="GET /api/agv-report/core üzerinden okunan anlık robot alarmları. Onaylama/temizleme veya RDS komutu içermez." action={<Button variant="secondary" onClick={() => void robotAlarms.refetch()}><RefreshCw size={16} /> Yenile</Button>} />{robotAlarms.isLoading ? <LoadingState label="Robot alarmları okunuyor…" /> : robotAlarms.error ? <ErrorState error={robotAlarms.error} onRetry={() => void robotAlarms.refetch()} /> : robotAlarms.data?.length ? <TableFrame><thead><tr><th>Robot</th><th>Severity</th><th>Code</th><th>Description</th><th>Occurrences</th><th>Time</th><th>Dispatchable</th></tr></thead><tbody>{robotAlarms.data.map((alarm, index) => <tr key={`${alarm.robotId}-${alarm.code}-${index}`}><td><strong>{alarm.robotId}</strong>{alarm.robotModel && <small className="table-subtitle">{alarm.robotModel}</small>}</td><td><StatusPill value={alarm.severity.toUpperCase()} tone={alarm.severity === 'fatal' || alarm.severity === 'error' ? 'danger' : alarm.severity === 'warning' ? 'warning' : 'neutral'} /></td><td><code>{alarm.code}</code></td><td>{alarm.description ?? '—'}</td><td>{alarm.occurrenceCount ?? '—'}</td><td>{alarm.occurredAt ?? '—'}</td><td>{alarm.dispatchable === null ? '—' : <StatusPill value={alarm.dispatchable ? 'YES' : `NO${alarm.undispatchableReason ? ` · ${alarm.undispatchableReason}` : ''}`} tone={alarm.dispatchable ? 'success' : 'warning'} />}</td></tr>)}</tbody></TableFrame> : <EmptyState title="Aktif robot alarmı yok" description="Şu anda RDS'ten okunan filo genelinde açık bir alarm bulunmuyor." />}</Panel>
-    <Panel><PanelHeader title="WorkSite Senkronizasyonu" description="RDS'te o anda yüklü sahneyi temsil eden TKG navigation profile'ını admin açıkça seçmelidir." action={<Button disabled={!profileId || busy || !status.data?.enabled} onClick={() => void sync()}><Database size={16} /> Senkronize et</Button>} /><div className="rds-sync-controls"><SelectInput aria-label="Navigation profile" value={profileId} onChange={(event) => setProfileId(event.target.value)}><option value="">Profil seçin</option>{profiles.data?.map((profile) => <option key={profile.id} value={profile.id}>{profile.machineCode} · {profile.code} v{profile.version} · {profile.status}</option>)}</SelectInput><span><Router size={16} /> Fiziksel alan, slot veya harita eşleşmesi için yetkili profil seçilmelidir.</span></div></Panel>
-    <Panel><PanelHeader title="RDS Task Templates" description="Task label ve açık input binding sözleşmesi. Doğrulama RDS'te görev oluşturmaz." action={<StatusPill value={`${taskTemplates.data?.length ?? 0} TEMPLATE`} tone="info" />} />{taskTemplates.data?.length ? <TableFrame><thead><tr><th>Varyant / Grup</th><th>Operasyon</th><th>RDS taskLabel</th><th>Input bindings</th><th>Canlı doğrulama</th></tr></thead><tbody>{taskTemplates.data.map((template) => { const bindings = Array.isArray(template.config.rdsInputBindings) ? template.config.rdsInputBindings : []; return <tr key={template.id}><td><strong>{template.variantCode}</strong><small className="table-subtitle">{template.productGroupCode ?? 'Varsayılan grup'}</small></td><td>{template.operation}</td><td><code>{template.rdsTaskLabel ?? 'Yapılandırılmadı'}</code></td><td><code>{bindings.map((item) => typeof item === 'object' && item !== null && 'param' in item ? String(item.param) : '?').join(', ') || 'Yapılandırılmadı'}</code></td><td><Button variant="secondary" disabled={!template.rdsTaskLabel || validatingTemplate === template.id || !status.data?.enabled} onClick={() => void validateTemplate(template.id)}><RefreshCw size={15} /> Doğrula</Button></td></tr>})}</tbody></TableFrame> : <EmptyState title="Task template bulunamadı" description="Dispatch için variant / product group / operation bağlamında açık bir template gereklidir." />}</Panel>
-    <Panel><PanelHeader title="Mirrored WorkSite Browser" description="filled / locked / disabled / syncFailed değerleri RDS'in son okunan kanıtıdır." action={<StatusPill value={`${filtered.length} WORKSITE`} tone="neutral" />} /><div className="table-toolbar table-toolbar--split"><SearchInput value={search} onChange={setSearch} placeholder="siteId, area veya grup ara…" /><SelectInput aria-label="WorkSite tipi" value={type} onChange={(event) => setType(event.target.value)}><option value="">Tüm tipler</option><option value="1">Physical (1)</option><option value="0">Logical (0)</option></SelectInput></div>{!profileId ? <EmptyState title="Navigation profile seçin" description="WorkSite aynası profile göre ayrılır." /> : workSites.isLoading ? <LoadingState label="WorkSite aynası okunuyor…" /> : workSites.error ? <ErrorState error={workSites.error} onRetry={() => void workSites.refetch()} /> : filtered.length ? <TableFrame><thead><tr><th>siteId</th><th>Alan / Grup</th><th>Tip</th><th>filled</th><th>locked</th><th>disabled</th><th>syncFailed</th><th>content</th><th>Readiness</th></tr></thead><tbody>{filtered.map((site) => <tr key={site.id}><td><strong>{site.siteId}</strong><small className="table-subtitle">{formatDate(site.lastSyncAt)}</small></td><td>{site.area ?? '—'}<small className="table-subtitle">{site.groupName ?? '—'}</small></td><td><StatusPill value={site.type === 1 ? 'PHYSICAL' : site.type === 0 ? 'LOGICAL' : 'UNKNOWN'} tone={site.type === 1 ? 'info' : 'neutral'} /></td><td>{site.filled ?? '—'}</td><td>{site.locked ?? '—'}</td><td>{site.disabled ?? '—'}</td><td>{site.syncFailed ?? '—'}</td><td><code>{site.content === null || site.content === '' ? '∅' : site.content}</code></td><td><StatusPill value={site.executionReady ? 'READY' : 'NOT READY'} tone={site.executionReady ? 'success' : 'warning'} /></td></tr>)}</tbody></TableFrame> : <EmptyState title="WorkSite bulunamadı" description="Seçilen profil ve filtreler için aynalanmış kayıt yok." />}</Panel>
+    <Panel>
+      <PanelHeader title="Aktif Robot Alarmları" description="RDS üzerinden okunan anlık robot alarmları. Bu alan alarm onaylama, temizleme veya robot komutu göndermez." action={<Button variant="secondary" onClick={() => void robotAlarms.refetch()}><RefreshCw size={16} /> Yenile</Button>} />
+      {robotAlarms.isLoading ? <LoadingState label="Robot alarmları okunuyor…" /> : robotAlarms.error ? <ErrorState error={robotAlarms.error} onRetry={() => void robotAlarms.refetch()} /> : robotAlarms.data?.length ? <TableFrame><thead><tr><th>Robot</th><th>Önem</th><th>Kod</th><th>Açıklama</th><th>Tekrar</th><th>Zaman</th><th>Sevke Uygunluk</th></tr></thead><tbody>{robotAlarms.data.map((alarm, index) => <tr key={`${alarm.robotId}-${alarm.code}-${index}`}><td><strong>{alarm.robotId}</strong>{alarm.robotModel && <small className="table-subtitle">{alarm.robotModel}</small>}</td><td><StatusPill value={alarm.severity.toUpperCase()} tone={alarm.severity === 'fatal' || alarm.severity === 'error' ? 'danger' : alarm.severity === 'warning' ? 'warning' : 'neutral'} /></td><td><code>{alarm.code}</code></td><td>{alarm.description ?? '—'}</td><td>{alarm.occurrenceCount ?? '—'}</td><td>{formatDate(alarm.occurredAt)}</td><td>{alarm.dispatchable === null ? '—' : <StatusPill value={alarm.dispatchable ? 'YES' : 'NO'} tone={alarm.dispatchable ? 'success' : 'warning'} />}{alarm.undispatchableReason && <small className="table-subtitle">Neden: {alarm.undispatchableReason}</small>}</td></tr>)}</tbody></TableFrame> : <EmptyState title="Aktif robot alarmı yok" description="Şu anda RDS'ten okunan filo genelinde açık bir alarm bulunmuyor." />}
+    </Panel>
+    <Panel>
+      <PanelHeader title="RDS Alan Senkronizasyonu" description="RDS'te o anda yüklü sahneyi temsil eden TKG navigasyon profilini yönetici açıkça seçmelidir." action={<Button disabled={!profileId || busy || !status.data?.enabled} onClick={() => void sync()}><Database size={16} /> Senkronize et</Button>} />
+      <div className="rds-sync-controls"><SelectInput aria-label="Navigasyon profili" value={profileId} onChange={(event) => setProfileId(event.target.value)}><option value="">Profil seçin</option>{profiles.data?.map((profile) => <option key={profile.id} value={profile.id}>{profile.machineCode} · {profile.code} v{profile.version} · {displayStatusLabel(profile.status)}</option>)}</SelectInput><span><Router size={16} /> Fiziksel alan veya harita eşleşmesi için yetkili profil seçilmelidir.</span></div>
+    </Panel>
+    <Panel>
+      <PanelHeader title="RDS Görev Şablonları" description="Görev etiketi ve açık girdi bağları. Doğrulama RDS'te görev oluşturmaz." action={<StatusPill value={`${taskTemplates.data?.length ?? 0} ŞABLON`} tone="info" />} />
+      {taskTemplates.data?.length ? <TableFrame><thead><tr><th>Varyant / Grup</th><th>İşlem</th><th>RDS Görev Etiketi</th><th>Girdi Bağları</th><th>Canlı Doğrulama</th></tr></thead><tbody>{taskTemplates.data.map((template) => { const bindings = Array.isArray(template.config.rdsInputBindings) ? template.config.rdsInputBindings : []; return <tr key={template.id}><td><strong>{template.variantCode}</strong><small className="table-subtitle">{template.productGroupCode ?? 'Varsayılan grup'}</small></td><td>{operationLabel(template.operation)}</td><td><code>{template.rdsTaskLabel ?? 'Yapılandırılmadı'}</code></td><td><code>{bindings.map((item) => typeof item === 'object' && item !== null && 'param' in item ? String(item.param) : '?').join(', ') || 'Yapılandırılmadı'}</code></td><td><Button variant="secondary" disabled={!template.rdsTaskLabel || validatingTemplate === template.id || !status.data?.enabled} onClick={() => void validateTemplate(template.id)}><RefreshCw size={15} /> Doğrula</Button></td></tr>})}</tbody></TableFrame> : <EmptyState title="Görev şablonu bulunamadı" description="Sevk için varyant, ürün grubu ve işlem bağlamında açık bir görev şablonu gereklidir." />}
+    </Panel>
+    <Panel>
+      <PanelHeader title="Aynalanan RDS Alanları" description="Doluluk, kilit, devre dışı ve senkronizasyon hatası değerleri RDS'in son okunan kanıtıdır." action={<StatusPill value={`${filtered.length} ALAN`} tone="neutral" />} />
+      <div className="table-toolbar table-toolbar--split"><SearchInput value={search} onChange={setSearch} placeholder="Alan kimliği, alan adı veya grup ara…" /><SelectInput aria-label="RDS alan tipi" value={type} onChange={(event) => setType(event.target.value)}><option value="">Tüm tipler</option><option value="1">Fiziksel (1)</option><option value="0">Mantıksal (0)</option></SelectInput></div>
+      {!profileId ? <EmptyState title="Navigasyon profili seçin" description="RDS alan aynası navigasyon profiline göre ayrılır." /> : workSites.isLoading ? <LoadingState label="RDS alan aynası okunuyor…" /> : workSites.error ? <ErrorState error={workSites.error} onRetry={() => void workSites.refetch()} /> : filtered.length ? <TableFrame><thead><tr><th>Alan Kimliği (siteId)</th><th>Alan / Grup</th><th>Tip</th><th>Dolu</th><th>Kilitli</th><th>Devre Dışı</th><th>Senkronizasyon Hatası</th><th>İçerik</th><th>Hazırlık</th></tr></thead><tbody>{filtered.map((site) => <tr key={site.id}><td><strong>{site.siteId}</strong><small className="table-subtitle">{formatDate(site.lastSyncAt)}</small></td><td>{site.area ?? '—'}<small className="table-subtitle">{site.groupName ?? '—'}</small></td><td><StatusPill value={site.type === 1 ? 'PHYSICAL' : site.type === 0 ? 'LOGICAL' : 'UNKNOWN'} tone={site.type === 1 ? 'info' : 'neutral'} /></td><td>{evidenceValue(site.filled)}</td><td>{evidenceValue(site.locked)}</td><td>{evidenceValue(site.disabled)}</td><td>{evidenceValue(site.syncFailed)}</td><td><code>{site.content === null || site.content === '' ? '∅' : site.content}</code></td><td><StatusPill value={site.executionReady ? 'READY' : 'NOT READY'} tone={site.executionReady ? 'success' : 'warning'} /></td></tr>)}</tbody></TableFrame> : <EmptyState title="RDS alanı bulunamadı" description="Seçilen profil ve filtreler için aynalanmış kayıt yok." />}
+    </Panel>
   </div>
 }

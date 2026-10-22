@@ -6,7 +6,6 @@ import {
   LogOut,
   Menu,
   RadioTower,
-  ListChecks,
   ListOrdered,
   ShieldCheck,
   Smartphone,
@@ -24,10 +23,9 @@ const links = [
   { to: '/devices', label: 'Cihazlar', icon: Smartphone },
   { to: '/machines', label: 'Makine & Varyantlar', icon: DatabaseZap },
   { to: '/reports', label: 'Operasyon Kayıtları & Raporlar', icon: FileText },
-  { to: '/audit', label: 'Audit Geçmişi', icon: ClipboardList },
+  { to: '/audit', label: 'Denetim Geçmişi', icon: ClipboardList },
   { to: '/production-end-priorities', label: 'Üretim Bitiş Önceliği', icon: ListOrdered },
   { to: '/rds', label: 'RDS Entegrasyonu', icon: RadioTower },
-  { to: '/commissioning', label: 'Devreye Alma Hazırlığı', icon: ListChecks },
 ]
 
 export function AppShell({ children }: PropsWithChildren) {
@@ -59,7 +57,7 @@ export function AppShell({ children }: PropsWithChildren) {
               <Menu />
             </button>
             <div>
-              <small>TKG PDA / Admin Web</small>
+              <small>TKG PDA / Yönetim Paneli</small>
               <strong>{current?.label ?? 'Yönetim'}</strong>
             </div>
           </div>

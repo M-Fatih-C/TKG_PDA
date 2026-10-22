@@ -72,4 +72,24 @@ describe('Dashboard navigation', () => {
     expect(screen.getByRole('link', { name: /Robot Filosu/ })).toHaveClass('stat-card--warning')
     expect(screen.getByRole('link', { name: /Kritik Robot Alarmı/ })).toHaveClass('stat-card--danger')
   })
+
+  it('keeps administration available when RDS telemetry is disabled', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/rds/status')) {
+        return Promise.resolve(jsonResponse({ enabled: false, reachable: false, stale: false, lastSuccessfulRead: null, baseAddressDisplaySafe: null, businessStatus: null, businessMessage: null, errorCode: 'RDS_DISABLED', errorMessage: 'RDS kapalı.' }))
+      }
+      if (url.endsWith('/rds/robots') || url.endsWith('/rds/alarms')) {
+        return Promise.resolve(jsonResponse({ title: 'Kullanılamıyor', detail: 'RDS kapalı.', code: 'RDS_DISABLED' }, { status: 503 }))
+      }
+      return Promise.resolve(jsonResponse([]))
+    }))
+
+    renderAuthenticated(<DashboardPage />)
+
+    expect(await screen.findByRole('heading', { name: 'Genel Bakış' })).toBeVisible()
+    expect(screen.getByText('Devre Dışı')).toBeVisible()
+    expect(screen.getByText('Robot durumu okunamadı')).toBeVisible()
+    expect(screen.getByText('Alarm bilgisi okunamadı')).toBeVisible()
+  })
 })

@@ -16,7 +16,7 @@ describe('AppShell navigation', () => {
     expect(screen.getByRole('link', { name: /Kullanıcılar & Yetkiler/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Cihazlar/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Makine & Varyantlar/i })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Audit Geçmişi/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Denetim Geçmişi/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Üretim Bitiş Önceliği/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /RDS Entegrasyonu/i })).toBeInTheDocument()
 
@@ -25,5 +25,6 @@ describe('AppShell navigation', () => {
     expect(screen.queryByRole('link', { name: /Parça & Gruplar/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /Kasalar/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /Veri Kalitesi/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Devreye Alma Hazırlığı/i })).not.toBeInTheDocument()
   })
 })
