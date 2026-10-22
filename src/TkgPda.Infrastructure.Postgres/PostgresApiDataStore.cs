@@ -719,6 +719,8 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
                            JOIN ops.transport_requests pred ON pred.id = d.predecessor_request_id
                            WHERE d.successor_request_id = r.id
                              AND pred.status <> 'COMPLETED') THEN 'WAITING_PREDECESSOR'
+                       WHEN NOT r.machine_slot_reservation_active
+                            AND r.readiness_state = 'READY' THEN 'WAITING_MACHINE_SLOT'
                        WHEN EXISTS (
                            SELECT 1
                            FROM ops.transport_request_dependencies d

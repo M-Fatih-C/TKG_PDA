@@ -103,6 +103,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
             FROM ops.transport_requests
             WHERE status = 'QUEUED'
               AND readiness_state <> 'WAITING_PREPARATION'
+              AND machine_slot_reservation_active
               AND NOT EXISTS (
                   SELECT 1
                   FROM ops.transport_request_dependencies d

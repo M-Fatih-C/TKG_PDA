@@ -487,11 +487,13 @@ public sealed partial class PostgresTransportWorkflowStore
              SELECT source_slot_id
              FROM ops.transport_requests
              WHERE status IN ({ActiveStatusesSql})
+               AND machine_slot_reservation_active
                AND source_slot_id = ANY(@slot_ids)
              UNION
              SELECT destination_slot_id
              FROM ops.transport_requests
              WHERE status IN ({ActiveStatusesSql})
+               AND machine_slot_reservation_active
                AND destination_slot_id = ANY(@slot_ids)
              """,
             connection,
@@ -612,6 +614,7 @@ public sealed partial class PostgresTransportWorkflowStore
                AND NOT EXISTS (
                    SELECT 1 FROM ops.transport_requests tr
                    WHERE tr.status IN ({ActiveStatusesSql})
+                     AND tr.machine_slot_reservation_active
                      AND (tr.source_slot_id = ls.id OR tr.destination_slot_id = ls.id))
              """,
             connection,

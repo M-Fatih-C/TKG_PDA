@@ -63,7 +63,11 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
         var repeated = await client.SendAsync(Demand(setup, setup.AltPart, "align-repeat"));
         Assert.Equal(HttpStatusCode.Created, repeated.StatusCode);
         var body = await repeated.Content.ReadFromJsonAsync<PartDemandHttpResponse>();
-        Assert.Equal("REMOVE_FULL", body!.PredecessorTaskType);
+        Assert.Null(body!.PredecessorTaskType);
+        var repeatedId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE request_no = @no",
+            ("no", body.RequestNo));
+        await ReadyAndActivateAsync(repeatedId);
         var predecessor = await fixture.ScalarAsync<string>("""
             SELECT destination_business_code FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
@@ -77,6 +81,21 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
         await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "EMPTY", setup.AltPart);
         var empty = await client.SendAsync(Demand(setup, setup.AltPart, "align-empty"));
         Assert.Equal(HttpStatusCode.Created, empty.StatusCode);
+        var emptyBody = await empty.Content.ReadFromJsonAsync<PartDemandHttpResponse>();
+        Assert.NotNull(emptyBody);
+        Assert.Null(emptyBody.PredecessorTaskType);
+        var emptyId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE request_no = @no",
+            ("no", emptyBody.RequestNo));
+        await fixture.ExecuteAsync(
+            """
+            UPDATE ops.slot_runtime_state s
+            SET current_container_type_id = r.container_type_id
+            FROM ops.transport_requests r
+            WHERE s.layout_slot_id = @slot AND r.id = @request
+            """,
+            ("slot", setup.Slot), ("request", emptyId));
+        await ReadyAndActivateAsync(emptyId);
         var emptyCode = await fixture.ScalarAsync<string>("""
             SELECT destination_business_code FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
@@ -319,6 +338,12 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", slot), ("part", alt));
         await fixture.SetSlotAsync(slot, occupancy, load, occupancy == "OCCUPIED" ? alt : null);
+        if (occupancy == "OCCUPIED")
+        {
+            await fixture.ExecuteAsync(
+                "UPDATE ops.slot_runtime_state SET current_container_type_id = @container WHERE layout_slot_id = @slot",
+                ("container", container), ("slot", slot));
+        }
         var oper = await fixture.SeedIdentityAsync();
         return new Scene(context.MachineId, context.VariantId, context.LayoutId, navigationId, group, main, alt, slot, position, oper);
     }
@@ -468,6 +493,15 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             Content = JsonContent.Create(new PalletVersionHttpRequest(pallet.RowVersion))
         };
         Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(ready)).StatusCode);
+    }
+
+    private async Task ReadyAndActivateAsync(Guid requestId)
+    {
+        await fixture.ExecuteAsync(
+            "UPDATE ops.transport_requests SET readiness_state = 'READY', ready_at = now() WHERE id = @id",
+            ("id", requestId));
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        Assert.Equal(1, await store.ActivatePreparedPartDemandsAsync(100, null));
     }
 
     private sealed record Scene(

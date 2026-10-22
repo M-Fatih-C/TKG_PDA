@@ -186,7 +186,7 @@ public sealed partial class PostgresTransportWorkflowStore
 
         var session = await LockActiveProductionAsync(connection, transaction, command.MachineId, cancellationToken);
         var containerTypeId = await RequireAltPartAsync(connection, transaction, session.ProductGroupId, command.PartId, cancellationToken);
-        var removeKey = command.IdempotencyKey.Trim() + ":remove";
+        var removeKey = command.IdempotencyKey.Trim() + ":slot-remove";
         var active = await LockOtherActiveDemandAsync(connection, transaction, command.MachineId, command.PartId, command.IdempotencyKey.Trim(), removeKey, cancellationToken);
         if (active is { } blocking)
         {
@@ -195,40 +195,12 @@ public sealed partial class PostgresTransportWorkflowStore
                 $"Bu alt parça için aktif talep zaten var. Talep #{blocking}.");
         }
 
-        var area = await LockPartAreaAsync(connection, transaction, session.LayoutId, command.PartId, cancellationToken);
-        var plan = area.Plan;
-        TransportRequestSnapshot? predecessor = null;
-        if (plan.Predecessor is { } removal)
-        {
-            var removalRequest = new CreateTransportRequest(
-                removeKey,
-                RequestOrigin.Api,
-                command.ActorUserId,
-                command.MachineId,
-                session.VariantId,
-                session.LayoutId,
-                null,
-                session.ProductGroupId,
-                command.PartId,
-                containerTypeId,
-                removal,
-                area.SlotId,
-                null,
-                100,
-                RequiresPreparation: false)
-            {
-                // Source is the occupied machine area. Destination stays unresolved
-                // for a full pallet: no customer return point is configured.
-            };
-            if (removal == TransportTaskType.RemoveEmpty)
-            {
-                removalRequest = removalRequest with { SourceSlotId = area.SlotId, DestinationSlotId = null };
-            }
-
-            var removed = await CreateAndQueueWithinTransactionAsync(
-                connection, transaction, removalRequest, batchId, command.EventContext, cancellationToken);
-            predecessor = removed.Request;
-        }
+        var destinationSlotId = await LockPartPreparationDestinationAsync(
+            connection,
+            transaction,
+            session.LayoutId,
+            command.PartId,
+            cancellationToken);
 
         var bring = new CreateTransportRequest(
             command.IdempotencyKey.Trim(),
@@ -243,36 +215,16 @@ public sealed partial class PostgresTransportWorkflowStore
             containerTypeId,
             TransportTaskType.BringFull,
             null,
-            predecessor is null ? null : area.SlotId,
+            destinationSlotId,
             100,
             RequiresPreparation: true)
         {
-            AllowsDependentMachineOccupancy = predecessor is not null
+            DefersMachineSlotReservation = true
         };
         var created = await CreateAndQueueWithinTransactionAsync(
-            connection,
-            transaction,
-            bring,
-            batchId,
-            command.EventContext,
-            cancellationToken,
-            predecessor?.Id);
-        if (predecessor is not null)
-        {
-            await using var link = new NpgsqlCommand(
-                """
-                INSERT INTO ops.transport_request_dependencies (predecessor_request_id, successor_request_id)
-                VALUES (@predecessor, @successor)
-                ON CONFLICT (predecessor_request_id) DO NOTHING
-                """,
-                connection,
-                transaction);
-            link.Parameters.AddWithValue("predecessor", predecessor.Id);
-            link.Parameters.AddWithValue("successor", created.Request.Id);
-            await link.ExecuteNonQueryAsync(cancellationToken);
-        }
+            connection, transaction, bring, batchId, command.EventContext, cancellationToken);
 
-        return new PartDemandResult(created.Request, predecessor, created.WasIdempotentReplay);
+        return new PartDemandResult(created.Request, Predecessor: null, created.WasIdempotentReplay);
     }
 
     private static async Task<TransportRequestSnapshot?> FindPredecessorSnapshotAsync(
@@ -293,6 +245,228 @@ public sealed partial class PostgresTransportWorkflowStore
         return await command.ExecuteScalarAsync(cancellationToken) is Guid predecessorId
             ? await LockRequestAsync(connection, transaction, predecessorId, cancellationToken)
             : null;
+    }
+
+    public async Task<int> ActivatePreparedPartDemandsAsync(
+        int limit,
+        OperationalEventContext? eventContext,
+        CancellationToken cancellationToken = default)
+    {
+        var activationLimit = Math.Clamp(limit, 1, 100);
+        var candidateIds = new List<Guid>();
+        await using (var connection = await _dataSource.OpenConnectionAsync(cancellationToken))
+        await using (var command = new NpgsqlCommand(
+            """
+            SELECT r.id
+            FROM ops.transport_requests r
+            JOIN master.task_types tt ON tt.id = r.task_type_id
+            WHERE r.status = 'QUEUED'
+              AND r.readiness_state = 'READY'
+              AND tt.code = 'BRING_FULL'
+              AND NOT r.machine_slot_reservation_active
+            ORDER BY r.ready_at, r.request_no
+            """,
+            connection))
+        {
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                candidateIds.Add(reader.GetGuid(0));
+            }
+        }
+
+        var activated = 0;
+        foreach (var requestId in candidateIds)
+        {
+            if (activated >= activationLimit)
+            {
+                break;
+            }
+
+            try
+            {
+                if (await TryActivatePreparedPartDemandAsync(requestId, eventContext, cancellationToken))
+                {
+                    activated++;
+                }
+            }
+            catch (WorkflowRuleException)
+            {
+                // A preparation demand is allowed to wait while its current
+                // physical route, return endpoint or destination is not yet
+                // usable.  Dispatch remains closed and a later worker cycle
+                // re-evaluates the current state.
+            }
+        }
+
+        return activated;
+    }
+
+    private async Task<bool> TryActivatePreparedPartDemandAsync(
+        Guid requestId,
+        OperationalEventContext? eventContext,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+        var lockedWorkflow = await LockWorkflowRequestAsync(connection, transaction, requestId, cancellationToken);
+        var request = lockedWorkflow.Request;
+
+        Guid? batchId;
+        bool reservationActive;
+        await using (var state = new NpgsqlCommand(
+            "SELECT batch_id, machine_slot_reservation_active FROM ops.transport_requests WHERE id = @id",
+            connection,
+            transaction))
+        {
+            state.Parameters.AddWithValue("id", requestId);
+            await using var reader = await state.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                throw new WorkflowRuleException("REQUEST_NOT_FOUND", "Hazırlık talebi bulunamadı.");
+            }
+
+            batchId = reader.IsDBNull(0) ? null : reader.GetGuid(0);
+            reservationActive = reader.GetBoolean(1);
+        }
+
+        if (reservationActive
+            || request.Status != TransportRequestStatus.Queued
+            || request.ReadinessState != TransportReadinessState.Ready
+            || request.TaskType != TransportTaskType.BringFull
+            || request.DestinationSlotId is not { } destinationSlotId)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return false;
+        }
+
+        await using (var competing = new NpgsqlCommand(
+            $"""
+             SELECT 1
+             FROM ops.transport_requests
+             WHERE id <> @id
+               AND status IN ({ActiveStatusesSql})
+               AND machine_slot_reservation_active
+               AND (source_slot_id = @slot OR destination_slot_id = @slot)
+             LIMIT 1
+             """,
+            connection,
+            transaction))
+        {
+            competing.Parameters.AddWithValue("id", requestId);
+            competing.Parameters.AddWithValue("slot", destinationSlotId);
+            if (await competing.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+        }
+
+        var destination = lockedWorkflow.Slots[destinationSlotId];
+        TransportRequestSnapshot? predecessor = null;
+        if (destination.State.Occupancy == OccupancyState.Vacant
+            && destination.State.Load == LoadState.Unknown)
+        {
+            // The slot is clear now.  Physical WorkSite consistency is still
+            // checked by the dispatch coordinator immediately before motion.
+        }
+        else if (destination.State.Occupancy == OccupancyState.Occupied
+                 && destination.State.Load is LoadState.Empty or LoadState.Full
+                 && destination.State.CurrentPartId is { } currentPartId
+                 && destination.State.CurrentContainerTypeId is { } currentContainerTypeId)
+        {
+            // A different FULL pallet is usable material.  Keep the new order
+            // waiting until the line reports it EMPTY; this prevents a queued
+            // batch from cycling freshly delivered pallets straight back out.
+            if (currentPartId != request.PartId && destination.State.Load == LoadState.Full)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+
+            var removal = destination.State.Load == LoadState.Empty
+                ? TransportTaskType.RemoveEmpty
+                : TransportTaskType.RemoveFull;
+            var removeRequest = new CreateTransportRequest(
+                request.IdempotencyKey + ":slot-remove",
+                request.Origin,
+                request.RequestedBy,
+                request.MachineId,
+                request.VariantId,
+                request.LayoutId,
+                request.NavigationProfileId,
+                request.ProductGroupId,
+                currentPartId,
+                currentContainerTypeId,
+                removal,
+                destinationSlotId,
+                null,
+                request.Priority,
+                RequiresPreparation: false);
+            var removed = await CreateAndQueueWithinTransactionAsync(
+                connection,
+                transaction,
+                removeRequest,
+                batchId,
+                eventContext,
+                cancellationToken);
+            predecessor = removed.Request;
+
+            await using var link = new NpgsqlCommand(
+                """
+                INSERT INTO ops.transport_request_dependencies (predecessor_request_id, successor_request_id)
+                VALUES (@predecessor, @successor)
+                ON CONFLICT DO NOTHING
+                """,
+                connection,
+                transaction);
+            link.Parameters.AddWithValue("predecessor", predecessor.Id);
+            link.Parameters.AddWithValue("successor", requestId);
+            await link.ExecuteNonQueryAsync(cancellationToken);
+        }
+        else
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return false;
+        }
+
+        await using (var activate = new NpgsqlCommand(
+            """
+            UPDATE ops.transport_requests
+            SET machine_slot_reservation_active = true, updated_at = now()
+            WHERE id = @id AND NOT machine_slot_reservation_active
+            """,
+            connection,
+            transaction))
+        {
+            activate.Parameters.AddWithValue("id", requestId);
+            if (await activate.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+        }
+
+        await InsertEventAsync(
+            connection,
+            transaction,
+            requestId,
+            eventContext?.ActorUserId,
+            TransportEventTypes.MachineSlotReservationActivated,
+            null,
+            null,
+            "Prepared alt-part pallet claimed its mapped machine position.",
+            new
+            {
+                destination_slot_id = destinationSlotId,
+                predecessor_request_id = predecessor?.Id,
+                predecessor_request_no = predecessor?.RequestNo
+            },
+            cancellationToken,
+            eventContext);
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     private sealed record ProductionDemandContext(Guid SessionId, Guid VariantId, Guid LayoutId, Guid ProductGroupId);
@@ -406,7 +580,7 @@ public sealed partial class PostgresTransportWorkflowStore
         return value is long number ? number : null;
     }
 
-    private static async Task<PartDemandSelection> LockPartAreaAsync(
+    private static async Task<Guid> LockPartPreparationDestinationAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid layoutId,
@@ -415,31 +589,31 @@ public sealed partial class PostgresTransportWorkflowStore
     {
         await using var command = new NpgsqlCommand(
             """
-            SELECT ls.id, rs.occupancy_state, rs.load_state, rs.current_part_id
+            SELECT ls.id
             FROM master.layout_slots ls
             JOIN master.layout_slot_parts lsp ON lsp.layout_slot_id = ls.id AND lsp.part_id = @part
             JOIN ops.slot_runtime_state rs ON rs.layout_slot_id = ls.id
             WHERE ls.layout_id = @layout
               AND ls.is_enabled
               AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-            ORDER BY ls.display_order, ls.code, ls.id
+            ORDER BY
+              CASE
+                WHEN rs.occupancy_state = 'OCCUPIED' AND rs.current_part_id = @part THEN 0
+                WHEN rs.occupancy_state = 'VACANT' THEN 1
+                ELSE 2
+              END,
+              ls.display_order, ls.code, ls.id
             FOR UPDATE OF rs
+            LIMIT 1
             """,
             connection,
             transaction);
         command.Parameters.AddWithValue("layout", layoutId);
         command.Parameters.AddWithValue("part", partId);
-        var rows = new List<PartAreaCandidate>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            rows.Add(new PartAreaCandidate(
-                reader.GetGuid(0),
-                WorkflowCode.ParseOccupancy(reader.GetString(1)),
-                WorkflowCode.ParseLoad(reader.GetString(2)),
-                reader.IsDBNull(3) ? null : reader.GetGuid(3)));
-        }
-
-        return PartDemandRules.Select(partId, rows);
+        return await command.ExecuteScalarAsync(cancellationToken) is Guid slotId
+            ? slotId
+            : throw new WorkflowRuleException(
+                "PART_SLOT_NOT_CONFIGURED",
+                "Bu alt parça için makine alanı tanımlı değil.");
     }
 }

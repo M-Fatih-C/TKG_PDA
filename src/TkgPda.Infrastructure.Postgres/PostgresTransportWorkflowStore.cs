@@ -164,8 +164,15 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             slots.Add(slotId, slot);
         }
 
-        await EnsureSlotsAreAvailableAsync(connection, transaction, suppliedSlotIds, reservationOwnedByRequestId, cancellationToken);
-        TransportRules.ValidateReservation(request, slots[request.ReservedSlotId]);
+        if (request.DefersMachineSlotReservation)
+        {
+            TransportRules.ValidateDeferredMachineDestination(request, slots[request.ReservedSlotId]);
+        }
+        else
+        {
+            await EnsureSlotsAreAvailableAsync(connection, transaction, suppliedSlotIds, reservationOwnedByRequestId, cancellationToken);
+            TransportRules.ValidateReservation(request, slots[request.ReservedSlotId]);
+        }
 
         var bufferSlotId = TransportRules.BufferSlotId(request.TaskType, request.SourceSlotId, request.DestinationSlotId);
         if (bufferSlotId.HasValue)
@@ -188,6 +195,11 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
 
         foreach (var slotId in new[] { request.SourceSlotId, request.DestinationSlotId }.OfType<Guid>().Distinct().Order())
         {
+            if (request.DefersMachineSlotReservation && slotId == request.DestinationSlotId)
+            {
+                continue;
+            }
+
             var slot = slots.TryGetValue(slotId, out var existingSlot) ? existingSlot
                 : await LockSlotAsync(connection, transaction, slotId, cancellationToken);
             await RequireSlotPhysicalConsistencyAsync(connection, transaction, slot, request.NavigationProfileId, cancellationToken);
@@ -241,14 +253,17 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             created,
             TransportRequestStatus.Queued,
             request.RequestedBy,
-            "SLOT_RESERVED_AND_QUEUED",
+            request.DefersMachineSlotReservation ? "PREPARATION_DEMAND_QUEUED" : "SLOT_RESERVED_AND_QUEUED",
             cancellationToken,
             new
             {
                 reserved_slot_id = request.ReservedSlotId,
-                reservation_kind = TransportRules.DeliversToMachine(request.TaskType) ? "DESTINATION" : "SOURCE",
+                reservation_kind = request.DefersMachineSlotReservation
+                    ? "DEFERRED_DESTINATION"
+                    : TransportRules.DeliversToMachine(request.TaskType) ? "DESTINATION" : "SOURCE",
                 machine_slot_id = request.ReservedSlotId,
-                empty_storage_slot_id = bufferSlotId
+                empty_storage_slot_id = bufferSlotId,
+                machine_slot_reservation_active = !request.DefersMachineSlotReservation
             },
             eventContext: eventContext);
 
@@ -287,11 +302,19 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
 
         TransportStateMachine.EnsureTransition(request.Status, TransportRequestStatus.Cancelled);
         var previousStatus = request.Status;
+        var resolvedActor = actorUserId ?? eventContext?.ActorUserId;
         var slotId = ReservedSlotId(request);
         var slot = lockedWorkflow.Slots[slotId];
-        var restored = TransportRules.CancellationState(request.TaskType, slot.State);
-        var resolvedActor = actorUserId ?? eventContext?.ActorUserId;
-        await UpdateSlotStateAsync(connection, transaction, slotId, restored, resolvedActor, cancellationToken);
+        var reservationActive = await IsMachineSlotReservationActiveAsync(connection, transaction, request.Id, cancellationToken);
+        var waitsForRemoval = request.TaskType == TransportTaskType.BringFull
+            && await HasPredecessorAsync(connection, transaction, request.Id, cancellationToken);
+        var restoresSlot = reservationActive && !waitsForRemoval;
+        var restored = slot.State;
+        if (restoresSlot)
+        {
+            restored = TransportRules.CancellationState(request.TaskType, slot.State);
+            await UpdateSlotStateAsync(connection, transaction, slotId, restored, resolvedActor, cancellationToken);
+        }
 
         request = await UpdateRequestStatusAsync(
             connection,
@@ -308,14 +331,18 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             TransportEventTypes.RequestCancelled,
             previousStatus,
             TransportRequestStatus.Cancelled,
-            "Pre-execution cancellation restored the deterministic slot state.",
+            restoresSlot
+                ? "Pre-execution cancellation restored the deterministic slot state."
+                : "Warehouse preparation demand was cancelled without changing the current machine slot state.",
             new
             {
                 cancellation_source = "PRE_EXECUTION",
                 evidence_type = "OPERATOR_COMMAND",
-                restored_slot_id = slotId,
+                restored_slot_id = restoresSlot ? slotId : (Guid?)null,
                 occupancy_state = restored.Occupancy.ToDatabase(),
-                load_state = restored.Load.ToDatabase()
+                load_state = restored.Load.ToDatabase(),
+                machine_slot_reservation_active = reservationActive,
+                waits_for_removal = waitsForRemoval
             },
             cancellationToken,
             eventContext);
@@ -659,6 +686,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                          SELECT 1
                          FROM ops.transport_requests
                          WHERE status IN ({ActiveStatusesSql})
+                           AND machine_slot_reservation_active
                            AND (source_slot_id = @slot_id OR destination_slot_id = @slot_id)
                          LIMIT 1
                          """,
@@ -1232,6 +1260,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                AND NOT EXISTS (
                    SELECT 1 FROM ops.transport_requests tr
                    WHERE tr.status IN ({ActiveStatusesSql})
+                     AND tr.machine_slot_reservation_active
                      AND (tr.source_slot_id = ls.id OR tr.destination_slot_id = ls.id)
                )
              ORDER BY ls.display_order, ls.code
@@ -1293,6 +1322,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                AND NOT EXISTS (
                    SELECT 1 FROM ops.transport_requests tr
                    WHERE tr.status IN ({ActiveStatusesSql})
+                     AND tr.machine_slot_reservation_active
                      AND (tr.source_slot_id = ls.id OR tr.destination_slot_id = ls.id)
                )
              ORDER BY ls.display_order, ls.code, ls.id
@@ -1321,6 +1351,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
              SELECT id
              FROM ops.transport_requests
              WHERE status IN ({ActiveStatusesSql})
+               AND machine_slot_reservation_active
                AND (source_slot_id = ANY(@slot_ids) OR destination_slot_id = ANY(@slot_ids))
                AND (@except::uuid IS NULL OR id <> @except)
              LIMIT 1
@@ -1351,14 +1382,15 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 machine_id, variant_id, layout_id, navigation_id,
                 product_group_id, part_id, container_type_id, task_type_id,
                 source_slot_id, destination_slot_id, destination_business_code, source_business_code, status, priority, batch_id,
-                readiness_state, production_session_id)
+                readiness_state, production_session_id, machine_slot_reservation_active)
             VALUES (
                 @id, @idempotency_key, @request_origin, @requested_by,
                 @machine_id, @variant_id, @layout_id, @navigation_id,
                 @product_group_id, @part_id, @container_type_id, @task_type_id,
                 @source_slot_id, @destination_slot_id, @destination_business_code, @source_business_code, 'CREATED', @priority, @batch_id,
                 @readiness_state,
-                (SELECT id FROM ops.production_sessions WHERE machine_id = @machine_id AND ended_at IS NULL))
+                (SELECT id FROM ops.production_sessions WHERE machine_id = @machine_id AND ended_at IS NULL),
+                @machine_slot_reservation_active)
             RETURNING request_no
             """,
             connection,
@@ -1382,6 +1414,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         command.Parameters.AddWithValue("priority", request.Priority);
         AddNullableUuid(command, "batch_id", batchId);
         command.Parameters.AddWithValue("readiness_state", request.InitialReadinessState.ToDatabase());
+        command.Parameters.AddWithValue("machine_slot_reservation_active", !request.DefersMachineSlotReservation);
         var requestNo = (long)(await command.ExecuteScalarAsync(cancellationToken)
             ?? throw new InvalidOperationException("Request insert did not return a request number."));
 
@@ -1819,6 +1852,34 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             .Distinct()
             .Order()
             .ToArray();
+
+    private static async Task<bool> IsMachineSlotReservationActiveAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE id = @id",
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("id", requestId);
+        return await command.ExecuteScalarAsync(cancellationToken) is true;
+    }
+
+    private static async Task<bool> HasPredecessorAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT EXISTS(SELECT 1 FROM ops.transport_request_dependencies WHERE successor_request_id = @id)",
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("id", requestId);
+        return await command.ExecuteScalarAsync(cancellationToken) is true;
+    }
 
     private sealed record LockedWorkflowRequest(
         TransportRequestSnapshot Request,

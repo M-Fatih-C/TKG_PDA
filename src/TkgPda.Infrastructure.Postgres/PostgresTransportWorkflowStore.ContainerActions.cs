@@ -614,6 +614,7 @@ public sealed partial class PostgresTransportWorkflowStore
                             ORDER BY r.created_at DESC NULLS LAST, r.request_no DESC NULLS LAST) AS request_rank
                  FROM positions p
                  LEFT JOIN ops.transport_requests r ON r.status IN ({ActiveStatusesSql})
+                    AND r.machine_slot_reservation_active
                     AND (r.source_slot_id = p.id OR r.destination_slot_id = p.id)
                  LEFT JOIN integration.rds_tasks rt ON rt.transport_request_id = r.id
              ), queue_rank AS (
@@ -751,6 +752,7 @@ public sealed partial class PostgresTransportWorkflowStore
                     EXISTS (
                         SELECT 1 FROM ops.transport_requests r
                         WHERE r.status IN ({ActiveStatusesSql})
+                          AND r.machine_slot_reservation_active
                           AND (r.source_slot_id = s.id OR r.destination_slot_id = s.id)) AS has_active_request
              FROM master.layout_slots s
              WHERE s.layout_id = @layout_id

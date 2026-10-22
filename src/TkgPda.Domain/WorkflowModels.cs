@@ -72,6 +72,15 @@ public sealed record CreateTransportRequest(
     public bool AllowsDependentMachineOccupancy { get; init; }
 
     /// <summary>
+    /// Alt-part orders first create one independent warehouse preparation
+    /// demand per selected part.  While this flag is set, the mapped machine
+    /// position is an intended destination rather than an active physical
+    /// reservation.  The reservation is activated only after that request's
+    /// pallet is ready and the position can be used safely.
+    /// </summary>
+    public bool DefersMachineSlotReservation { get; init; }
+
+    /// <summary>
     /// WP-05A: the BUSINESS readiness a new request starts at.
     /// RequiresPreparation=false (the default) preserves every existing
     /// workflow exactly: NotRequired is already execution-eligible under
@@ -119,6 +128,13 @@ public sealed record CreateTransportRequest(
         if (SourceSlotId.HasValue && SourceSlotId == DestinationSlotId)
         {
             throw new WorkflowRuleException("SAME_SOURCE_DESTINATION", "Source and destination slots must be different.");
+        }
+
+        if (DefersMachineSlotReservation && TaskType != TransportTaskType.BringFull)
+        {
+            throw new WorkflowRuleException(
+                "DEFERRED_SLOT_RESERVATION_NOT_SUPPORTED",
+                "Only warehouse-prepared BRING_FULL demands may defer their machine-slot reservation.");
         }
     }
 }

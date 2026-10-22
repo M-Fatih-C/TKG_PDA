@@ -32,6 +32,13 @@ public interface ITransportWorkflowStore
     /// </summary>
     Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Activates ready, deferred alt-part demands whose mapped machine
+    /// positions can be claimed safely.  This is system orchestration, so the
+    /// operational context must identify the worker correlation when present.
+    /// </summary>
+    Task<int> ActivatePreparedPartDemandsAsync(int limit, OperationalEventContext? eventContext, CancellationToken cancellationToken = default);
+
     Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(
         Guid requestId,
         TransportRequestStatus nextStatus,

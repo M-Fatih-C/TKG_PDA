@@ -70,6 +70,10 @@ public sealed class DemoSimulationWorker(
 
         // In demo simulation mode, keep empty storage buffers replenished so repeated demo flows succeed
         await ReplenishEmptyBuffersAsync(connection, cancellationToken);
+        await workflowStore.ActivatePreparedPartDemandsAsync(
+            100,
+            OperationalEventContext.System(Guid.NewGuid()),
+            cancellationToken);
 
         // Fetch candidate requests
         var candidates = new List<DemoCandidateRequest>();
@@ -81,8 +85,9 @@ public sealed class DemoSimulationWorker(
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
             LEFT JOIN integration.rds_tasks t ON t.transport_request_id = r.id
-            WHERE r.status IN ('WAITING_PREPARATION', 'QUEUED', 'SENT_TO_RDS', 'RUNNING')
-               OR (r.status = 'QUEUED' AND r.readiness_state = 'WAITING_PREPARATION')
+            WHERE (r.status = 'QUEUED' AND r.readiness_state = 'WAITING_PREPARATION')
+               OR (r.status = 'QUEUED' AND r.machine_slot_reservation_active)
+               OR r.status IN ('SENT_TO_RDS', 'RUNNING')
             ORDER BY r.created_at ASC
             LIMIT 20;
             """, connection))
@@ -144,7 +149,9 @@ public sealed class DemoSimulationWorker(
                     ready_at = @ready_at,
                     status = 'QUEUED',
                     updated_at = now()
-                WHERE id = @id AND readiness_state = 'WAITING_PREPARATION';
+                WHERE id = @id
+                  AND status = 'QUEUED'
+                  AND readiness_state = 'WAITING_PREPARATION';
                 """, connection);
             prepCmd.Parameters.AddWithValue("id", req.Id);
             prepCmd.Parameters.AddWithValue("ready_at", now);

@@ -1862,6 +1862,7 @@ public sealed class RdsExecutionCoordinatorNativeOrderTests
         public Task<CancelTransportResult> CancelAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
             Task.FromResult(new CancelTransportResult(initial with { Status = TransportRequestStatus.Cancelled }, initial.Status == TransportRequestStatus.Cancelled));
         public Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<int> ActivatePreparedPartDemandsAsync(int limit, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) => Task.FromResult(0);
         public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(Guid requestId, TransportRequestStatus nextStatus, OperationalEventContext? eventContext, CancellationToken cancellationToken = default)
         {
             Transitions.Add(nextStatus);

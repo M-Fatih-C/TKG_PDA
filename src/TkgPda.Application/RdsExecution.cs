@@ -376,6 +376,10 @@ public sealed class RdsExecutionCoordinator(
             return [];
         }
 
+        await workflow.ActivatePreparedPartDemandsAsync(
+            100,
+            OperationalEventContext.System(Guid.NewGuid()),
+            cancellationToken);
         var ids = await store.ListQueuedRequestIdsAsync(Math.Clamp(limit, 1, 100), cancellationToken);
         var results = new List<RdsDispatchAttemptResult>();
         foreach (var id in ids)

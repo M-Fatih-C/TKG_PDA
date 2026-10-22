@@ -164,6 +164,9 @@ public sealed class TransportWorkflowServiceTests
         public Task<TransportRequestSnapshot> MarkReadyAsync(Guid requestId, Guid? actorUserId, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
             Task.FromResult(CreateResult.Request with { Id = requestId, ReadinessState = TransportReadinessState.Ready, ReadyAt = DateTimeOffset.UtcNow });
 
+        public Task<int> ActivatePreparedPartDemandsAsync(int limit, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
+
         public Task<TransportBatchResult> CreateBatchAndQueueAsync(CreateTransportBatchRequest request, OperationalEventContext? eventContext, CancellationToken cancellationToken = default) =>
             Task.FromResult(new TransportBatchResult(
                 Guid.NewGuid(),
