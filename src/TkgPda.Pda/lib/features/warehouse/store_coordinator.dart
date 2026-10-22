@@ -44,12 +44,15 @@ class StoreCoordinator extends ChangeNotifier {
   int get totalUnits =>
       locations.fold(0, (sum, location) => sum + location.unitCount);
 
-  /// Locations at their stated capacity. Empty while no capacity is known.
-  List<StoreLocation> get fullLocations =>
-      locations.where((location) => location.isFull).toList(growable: false);
+  /// Locations whose stated capacity is occupied by finished product waiting
+  /// for warehouse pickup. EMPTY pallets are robot pickup sources, so they do
+  /// not produce a "clear this area" warning.
+  List<StoreLocation> get fullLocations => locations
+      .where((location) => location.isFullOfFinishedProducts)
+      .toList(growable: false);
 
   List<StoreLocation> get nearlyFullLocations => locations
-      .where((location) => location.isNearlyFull)
+      .where((location) => location.isNearlyFullOfFinishedProducts)
       .toList(growable: false);
 
   void start() {
@@ -98,8 +101,9 @@ class StoreCoordinator extends ChangeNotifier {
           if (notificationCoordinator != null) {
             for (final unitId in arrived) {
               for (final location in loaded) {
-                final unit =
-                    location.units.where((u) => u.id == unitId).firstOrNull;
+                final unit = location.units
+                    .where((u) => u.id == unitId)
+                    .firstOrNull;
                 if (unit != null) {
                   notificationCoordinator!.notifyDelivery(
                     unitId: unit.id,
@@ -171,7 +175,8 @@ class StoreCoordinator extends ChangeNotifier {
   Future<bool> recordEmptyContainer(StoreLocation location) {
     final key = _emptyContainerKeys.putIfAbsent(
       location.id,
-      () => 'empty-container:${location.id}:${DateTime.now().microsecondsSinceEpoch}',
+      () =>
+          'empty-container:${location.id}:${DateTime.now().microsecondsSinceEpoch}',
     );
     return _mutate(location.id, () async {
       await repository.recordEmptyContainer(

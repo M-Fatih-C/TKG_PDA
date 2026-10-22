@@ -135,6 +135,25 @@ void main() {
     expect(find.text('2 / 2'), findsOneWidget);
   });
 
+  testWidgets(
+    'an empty pallet in a single-pallet area stays available without a clear warning',
+    (tester) async {
+      repository.storeLocationsValue = [
+        fakeStoreLocation(
+          capacity: 1,
+          units: [fakeStoreUnit(id: 'empty-pallet', loadState: 'EMPTY')],
+        ),
+      ];
+      await pump(tester);
+
+      expect(find.text('BOŞ KASA VAR'), findsOneWidget);
+      expect(find.byKey(const Key('store-full-warning')), findsNothing);
+      expect(find.byKey(const Key('store-nearly-full-warning')), findsNothing);
+      expect(coordinator.fullLocations, isEmpty);
+      expect(coordinator.nearlyFullLocations, isEmpty);
+    },
+  );
+
   testWidgets('one short of capacity warns before the store stops', (
     tester,
   ) async {
