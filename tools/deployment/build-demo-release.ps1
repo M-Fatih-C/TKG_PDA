@@ -56,6 +56,7 @@ $apiProj = Join-Path $repoRoot 'src\TkgPda.Api\TkgPda.Api.csproj'
     -p:IncludeNativeLibrariesForSelfExtract=true `
     "-p:Version=$AppVersion" `
     "-p:InformationalVersion=$AppVersion+$fullCommit" `
+    -p:IncludeSourceRevisionInInformationalVersion=false `
     "-p:TkgBuildTimestamp=$now" `
     -o $serverStaging
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }

@@ -122,6 +122,7 @@ $apiProj = Join-Path $projectRoot 'src\TkgPda.Api\TkgPda.Api.csproj'
     -p:IncludeNativeLibrariesForSelfExtract=true `
     "-p:Version=$Version" `
     "-p:InformationalVersion=$Version+$fullCommit" `
+    -p:IncludeSourceRevisionInInformationalVersion=false `
     -p:TkgBuildTimestamp=$buildTimeUtc `
     -o $serverStaging
 
