@@ -26,17 +26,15 @@ public sealed class WarehousePreparationApiTests(ApiTestFixture fixture) : IClas
         var warehouseOperator = await fixture.SeedIdentityAsync(role: RoleCodes.WarehouseOperator);
         using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);
         var response = await warehouseClient.GetAsync("/api/v1/warehouse/preparation-requests");
-        response.EnsureSuccessStatusCode();
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
         var requests = await ReadAsync(response);
 
         var match = Assert.Single(requests, r => r.RequestId == created.Id);
-        Assert.Equal("BRING_EMPTY", match.Operation);
+        Assert.Equal("BRING_FULL", match.Operation);
         Assert.Equal(context.MachineId, match.MachineId);
         Assert.Equal("SH-01-A", match.MachineCode);
         Assert.Equal(slot, match.DestinationSlotId);
-        // Customer Workflow — Empty Container Buffer: BRING_EMPTY's omitted
-        // source is now auto-allocated from a configured EMPTY_STORAGE slot.
-        Assert.NotNull(match.SourceSlotId);
+        Assert.Null(match.SourceSlotId);
     }
 
     [Fact]
@@ -94,8 +92,9 @@ public sealed class WarehousePreparationApiTests(ApiTestFixture fixture) : IClas
 
         var warehouseOperator = await fixture.SeedIdentityAsync(role: RoleCodes.WarehouseOperator);
         using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);
-        var readyResponse = await warehouseClient.PostAsync($"/api/v1/transport-requests/{toBeReady.Id}/ready", null);
-        Assert.Equal(HttpStatusCode.OK, readyResponse.StatusCode);
+        await fixture.ExecuteAsync(
+            "UPDATE ops.transport_requests SET readiness_state = 'READY' WHERE id = @id",
+            ("id", toBeReady.Id));
 
         var response = await warehouseClient.GetAsync("/api/v1/warehouse/preparation-requests");
         response.EnsureSuccessStatusCode();
@@ -181,10 +180,10 @@ public sealed class WarehousePreparationApiTests(ApiTestFixture fixture) : IClas
         var response = await client.SendAsync(
             new HttpRequestMessage(HttpMethod.Post, "/api/v1/transport-requests")
             {
-                Content = JsonContent.Create(Bring(context, await fixture.PartForSlotAsync(destination, "P05-WAREHO2"), requiresPreparation: true)),
+                Content = JsonContent.Create(BringFull(context, await fixture.PartForSlotAsync(destination, "P05-WAREHO2"))),
                 Headers = { { ApiHeaders.IdempotencyKey, idempotencyKey } },
             });
-        response.EnsureSuccessStatusCode();
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
         return await response.Content.ReadFromJsonAsync<TransportHttpResponse>()
             ?? throw new InvalidOperationException("Transport response was empty.");
     }
@@ -202,6 +201,19 @@ public sealed class WarehousePreparationApiTests(ApiTestFixture fixture) : IClas
         null,
         "BRING_EMPTY",
         RequiresPreparation: requiresPreparation);
+
+    private static CreateTransportHttpRequest BringFull(
+        LayoutContext context,
+        Guid partId) => new(
+        context.MachineId,
+        context.VariantId,
+        context.LayoutId,
+        null,
+        null,
+        partId,
+        null,
+        "BRING_FULL",
+        RequiresPreparation: true);
 
     private static async Task<List<WarehousePreparationRequestRecord>> ReadAsync(HttpResponseMessage response) =>
         await response.Content.ReadFromJsonAsync<List<WarehousePreparationRequestRecord>>()

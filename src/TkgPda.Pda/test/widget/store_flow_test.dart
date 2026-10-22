@@ -96,7 +96,9 @@ void main() {
     expect(repository.removedUnits.single['expectedRowVersion'], 4);
   });
 
-  testWidgets('clearing a location names it once', (tester) async {
+  testWidgets('multiple pallets require physical reconciliation', (
+    tester,
+  ) async {
     repository.storeLocationsValue = [
       fakeStoreLocation(
         capacity: 3,
@@ -108,13 +110,12 @@ void main() {
     ];
     await pump(tester);
 
-    expect(find.text('Tümünü Aldım (2)'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('clear-location-STORE-1')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('confirm-clear-location')));
-    await tester.pumpAndSettle();
-
-    expect(repository.clearedLocations, ['location-STORE-1']);
+    expect(find.text('Fiziksel sayım gerekli'), findsOneWidget);
+    final button = tester.widget<OutlinedButton>(
+      find.byKey(const Key('clear-location-STORE-1')),
+    );
+    expect(button.onPressed, isNull);
+    expect(repository.clearedLocations, isEmpty);
   });
 
   testWidgets('a full location warns the operator to empty it', (tester) async {

@@ -150,8 +150,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             var failedResp = responses.Single(r => !r.IsSuccessStatusCode);
             var failedBody = await failedResp.Content.ReadAsStringAsync();
 
-            Assert.Contains("FINISHED_GOODS_CAPACITY_UNAVAILABLE", failedBody, StringComparison.Ordinal);
-            Assert.Contains("Uygun boş bitmiş ürün alanı bulunamadı", failedBody, StringComparison.Ordinal);
+            Assert.Contains("FINISHED_GOODS_STORE_FULL", failedBody, StringComparison.Ordinal);
 
             // Exactly 1 active transport request was created with FG-01
             var totalActive = await fixture.ScalarAsync<long>(
@@ -343,7 +342,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             // Request B fails because FG-01 is occupied
             var resB = await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "cancel-test-b"));
             Assert.False(resB.IsSuccessStatusCode);
-            Assert.Contains("FINISHED_GOODS_CAPACITY_UNAVAILABLE", await resB.Content.ReadAsStringAsync());
+            Assert.Contains("FINISHED_GOODS_STORE_FULL", await resB.Content.ReadAsStringAsync());
 
             // Transition Request A to CANCELLED
             var reqAId = await fixture.ScalarAsync<Guid>(
@@ -392,7 +391,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             // Request B fails because FG-01 is occupied
             var resB = await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "fail-test-b"));
             Assert.False(resB.IsSuccessStatusCode);
-            Assert.Contains("FINISHED_GOODS_CAPACITY_UNAVAILABLE", await resB.Content.ReadAsStringAsync());
+            Assert.Contains("FINISHED_GOODS_STORE_FULL", await resB.Content.ReadAsStringAsync());
 
             // Transition Request A to FAILED
             var reqAId = await fixture.ScalarAsync<Guid>(
@@ -447,15 +446,19 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             await store.RecordExecutionTransitionAsync(reqAId, TransportRequestStatus.Running);
             await store.RecordExecutionTransitionAsync(reqAId, TransportRequestStatus.Completed);
 
-            // Now Request B from Machine B should succeed and reuse FG-01
+            // Completion releases the transport reservation, but the delivered
+            // pallet keeps the single physical position occupied.
             var resB = await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "comp-test-b"));
             var bodyB = await resB.Content.ReadAsStringAsync();
-            Assert.True(resB.IsSuccessStatusCode, bodyB);
-
-            var destB = await fixture.ScalarAsync<string>(
-                "SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @m AND status IN ('CREATED','QUEUED','SENT_TO_RDS','RUNNING')",
-                ("m", setup.SceneB.MachineId));
-            Assert.Equal("FG-01", destB);
+            Assert.False(resB.IsSuccessStatusCode);
+            Assert.Contains("FINISHED_GOODS_STORE_FULL", bodyB);
+            Assert.Equal(0L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.store_reservations WHERE released_at IS NULL"));
+            Assert.Equal(1L, await fixture.ScalarAsync<long>("""
+                SELECT count(*) FROM ops.store_units u
+                JOIN ops.store_locations sl ON sl.id = u.store_location_id
+                WHERE sl.code = 'FG-01' AND u.removed_at IS NULL AND u.load_state = 'FULL'
+                """));
         }
         finally
         {
@@ -1005,7 +1008,8 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         Assert.Equal(code, positions![0].FullAction.DisabledCode);
         var response = await client.SendAsync(CreateFullContainerActionRequest(scene, "physical-fg"));
         Assert.False(response.IsSuccessStatusCode);
-        Assert.Contains(code, await response.Content.ReadAsStringAsync());
+        var errorBody = await response.Content.ReadAsStringAsync();
+        Assert.True(errorBody.Contains(code, StringComparison.Ordinal), errorBody);
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         }
         finally
@@ -1180,10 +1184,11 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(null)]
-    public async Task Empty_source_keeps_pool_presence_semantics_without_destination_occupancy_rule(int? filled)
+    [InlineData(0, false, "RDS_WORKSITE_OCCUPANCY_CONFLICT")]
+    [InlineData(1, true, null)]
+    [InlineData(null, false, "RDS_WORKSITE_STATE_UNKNOWN")]
+    public async Task Empty_source_requires_the_selected_physical_pallet_to_be_present(
+        int? filled, bool succeeds, string? expectedError)
     {
         var setup=await PrepareTwoMachineScenesAsync(includeFg02:false);
         var scene=setup.SceneA;
@@ -1196,9 +1201,61 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         { Content=JsonContent.Create(new CreateContainerActionHttpRequest(scene.VariantId,scene.LayoutId,null,scene.Group,scene.MainPart,scene.Position,"EMPTY")) };
         action.Headers.Add(ApiHeaders.IdempotencyKey,"pool-source");
         var response=await client.SendAsync(action);
-        Assert.True(response.IsSuccessStatusCode,await response.Content.ReadAsStringAsync());
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(succeeds, response.IsSuccessStatusCode);
+        if (!succeeds)
+        {
+            Assert.Contains(expectedError!, body);
+            Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+            return;
+        }
+
         Assert.Equal("BRING_EMPTY",await fixture.ScalarAsync<string>("SELECT tt.code FROM ops.transport_requests r JOIN master.task_types tt ON tt.id=r.task_type_id"));
-        Assert.Equal(0L,await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests WHERE destination_business_code IS NOT NULL"));
+        Assert.Equal("EMPTY-01", await fixture.ScalarAsync<string>("SELECT source_business_code FROM ops.transport_requests"));
+        Assert.Equal("TEST-FG-EMPTY", await fixture.ScalarAsync<string>("""
+            SELECT sl.code FROM ops.store_reservations sr
+            JOIN ops.store_locations sl ON sl.id = sr.store_location_id
+            WHERE sr.released_at IS NULL AND sr.reservation_type = 'PICKUP'
+            """));
+    }
+
+    [Fact]
+    public async Task Empty_request_is_rejected_when_the_selected_physical_source_has_no_registered_pallet()
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
+        var scene = setup.SceneA;
+        await fixture.SetSlotAsync(scene.Slot, "VACANT", "UNKNOWN");
+        await fixture.ExecuteAsync("""
+            UPDATE integration.rds_worksites
+            SET last_filled = 1
+            WHERE navigation_profile_id = @nav AND rds_site_id LIKE '%WS_EMPTY%';
+            DELETE FROM ops.store_units
+            WHERE store_location_id = (SELECT id FROM ops.store_locations WHERE code = 'TEST-FG-EMPTY');
+            """, ("nav", scene.NavigationId));
+        using var client = await fixture.LoginClientAsync(scene.Operator);
+        await StartAsync(client, scene);
+        var action = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/machines/{scene.MachineId}/container-actions")
+        {
+            Content = JsonContent.Create(new CreateContainerActionHttpRequest(
+                scene.VariantId, scene.LayoutId, null, scene.Group, scene.MainPart, scene.Position, "EMPTY"))
+        };
+        action.Headers.Add(ApiHeaders.IdempotencyKey, "missing-selected-empty-pallet");
+
+        var response = await client.SendAsync(action);
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Contains("FINISHED_GOODS_NO_EMPTY_CONTAINER", body);
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_reservations WHERE released_at IS NULL"));
+        Assert.True(await fixture.ScalarAsync<long>("""
+            SELECT count(*) FROM ops.store_units u
+            JOIN ops.store_locations sl ON sl.id = u.store_location_id
+            WHERE sl.code LIKE 'TEST-FG-EMPTY-%' AND u.removed_at IS NULL
+            """) > 0);
     }
 
     [Fact]
@@ -1327,7 +1384,9 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         await fixture.ExecuteAsync("""
             INSERT INTO integration.rds_worksites
                 (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, last_filled, last_locked, raw_state_json)
-            SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0, 0, 0, '{"filled":0,"locked":0}'::jsonb
+            SELECT p.navigation_profile_id, p.planned_rds_site_id, 1, now(), 0, 0,
+                   CASE WHEN p.object_family = 'EMPTY' AND p.ordinal = 1 THEN 1 ELSE 0 END,
+                   0, '{"locked":0}'::jsonb
             FROM integration.rds_worksite_plans p
             JOIN master.navigation_profiles n ON n.id = p.navigation_profile_id
             WHERE n.code = @code
@@ -1350,10 +1409,11 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
 
             INSERT INTO integration.profile_shared_endpoint_bindings
                 (navigation_profile_id, endpoint_class, business_code, store_location_id, rds_worksite_id)
-            SELECT n.id, 'EMPTY_SOURCE', 'EMPTY-01', NULL, w.id
+            SELECT n.id, 'EMPTY_SOURCE', 'EMPTY-01', loc.id, w.id
             FROM master.navigation_profiles n
             JOIN integration.rds_worksite_plans p ON p.navigation_profile_id = n.id AND p.object_family = 'EMPTY' AND p.ordinal = 1
             JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = p.planned_rds_site_id
+            JOIN ops.store_locations loc ON loc.code = 'TEST-FG-EMPTY'
             WHERE n.code = @code
             ON CONFLICT DO NOTHING;
 

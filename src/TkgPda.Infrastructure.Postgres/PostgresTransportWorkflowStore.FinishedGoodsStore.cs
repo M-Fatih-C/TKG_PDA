@@ -38,19 +38,33 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         if (request.TaskType != TransportTaskType.RemoveFull) return;
 
         Guid? preferredLocationId = null;
-        if (request.DestinationBusinessCode is { } businessCode && businessCode.StartsWith("FG-", StringComparison.Ordinal))
+        if (request.DestinationBusinessCode is { } businessCode)
         {
             await using var byCode = new NpgsqlCommand(
-                "SELECT id FROM ops.store_locations WHERE code = @code AND is_enabled",
+                """
+                SELECT sl.id
+                FROM ops.store_locations sl
+                LEFT JOIN integration.profile_shared_endpoint_bindings b
+                  ON b.navigation_profile_id = @profile
+                 AND b.endpoint_class = 'FINISHED_GOODS'
+                 AND b.business_code = @code
+                WHERE sl.is_enabled
+                  AND (
+                      (b.id IS NOT NULL AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND sl.code = @code)))
+                      OR (@profile IS NULL AND sl.code = @code)
+                  )
+                LIMIT 1
+                """,
                 connection,
                 transaction);
             byCode.Parameters.AddWithValue("code", businessCode);
+            AddNullableUuid(byCode, "profile", request.NavigationProfileId);
             if (await byCode.ExecuteScalarAsync(cancellationToken) is Guid found)
             {
                 preferredLocationId = found;
             }
         }
-        else if (request.DestinationSlotId is { } destinationSlotId)
+        if (preferredLocationId is null && request.DestinationSlotId is { } destinationSlotId)
         {
             await using var lookup = new NpgsqlCommand("""
                 SELECT store_location_id FROM ops.store_location_delivery_slots
@@ -78,44 +92,29 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             }
         }
 
-        // Each Finished Goods location represents exactly one pallet position (capacity = 1).
-        // If reservedLocationId is present, we must land strictly on that location.
-        // Otherwise (legacy / unreserved fallback), find a vacant enabled location.
-        Guid locationId;
-        if (reservedLocationId is { } resLocId)
+        // A request may only land on the exact area selected when it was created.
+        // Never redirect a completed robot task to another vacant pallet position.
+        if (preferredLocationId is null) return;
+        if (reservedLocationId is { } reserved && reserved != preferredLocationId)
+            throw new WorkflowRuleException("STORE_RESERVATION_MISMATCH", "Mamul alanı rezervasyonu görev hedefiyle eşleşmiyor.");
+
+        var locationId = reservedLocationId ?? preferredLocationId.Value;
+        await using (var lockLocation = new NpgsqlCommand("""
+            SELECT 1
+            FROM ops.store_locations sl
+            WHERE sl.id = @location
+              AND sl.is_enabled
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_units u
+                  WHERE u.store_location_id = sl.id AND u.removed_at IS NULL)
+            FOR UPDATE OF sl
+            """, connection, transaction))
         {
-            locationId = resLocId;
-        }
-        else
-        {
-            await using (var findVacant = new NpgsqlCommand("""
-                SELECT sl.id
-                FROM ops.store_locations sl
-                WHERE sl.is_enabled
-                  AND NOT EXISTS (
-                      SELECT 1 FROM ops.store_units u
-                      WHERE u.store_location_id = sl.id
-                        AND u.removed_at IS NULL
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM ops.store_reservations sr
-                      WHERE sr.store_location_id = sl.id
-                        AND sr.released_at IS NULL
-                  )
-                ORDER BY CASE WHEN sl.id = @preferred THEN 0 ELSE 1 END, sl.code ASC
-                LIMIT 1
-                FOR UPDATE OF sl SKIP LOCKED
-                """, connection, transaction))
-            {
-                AddNullableUuid(findVacant, "preferred", preferredLocationId);
-                if (await findVacant.ExecuteScalarAsync(cancellationToken) is not Guid vacant)
-                {
-                    throw new WorkflowRuleException(
-                        "FINISHED_GOODS_STORE_FULL",
-                        "Bitmiş ürün deposunda boş alan kalmadı. Teslimat yazılamadı.");
-                }
-                locationId = vacant;
-            }
+            lockLocation.Parameters.AddWithValue("location", locationId);
+            if (await lockLocation.ExecuteScalarAsync(cancellationToken) is null)
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_STORE_FULL",
+                    "Görev için seçilen mamul alanı artık boş değil. Teslimat başka alana yönlendirilmedi.");
         }
 
         Guid unitId;
@@ -238,8 +237,8 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     /// <summary>
     /// When a BRING_EMPTY transport completes, an empty container has been picked
     /// from the finished-goods store / empty pool and delivered to the machine slot.
-    /// If there is an active EMPTY unit standing in ops.store_units in any enabled
-    /// store location, mark it as removed so the store location vacates (ALAN BOŞ).
+    /// The exact pallet captured by the request's PICKUP reservation is removed;
+    /// another empty pallet is never substituted during completion.
     /// </summary>
     private static async Task RecordStoreEmptyCollectionAsync(
         NpgsqlConnection connection,
@@ -269,28 +268,23 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         }
 
         if (unitId is null || locationId is null)
+            throw new WorkflowRuleException(
+                "STORE_PICKUP_RESERVATION_MISSING",
+                "Boş kasa görevinin fiziksel palet rezervasyonu bulunamadı.");
+
+        await using (var lockUnit = new NpgsqlCommand("""
+            SELECT 1 FROM ops.store_units
+            WHERE id = @id AND store_location_id = @location
+              AND load_state = 'EMPTY' AND removed_at IS NULL
+            FOR UPDATE
+            """, connection, transaction))
         {
-            await using var find = new NpgsqlCommand(
-                """
-                SELECT u.id, u.store_location_id
-                FROM ops.store_units u
-                JOIN ops.store_locations sl ON sl.id = u.store_location_id
-                WHERE u.load_state = 'EMPTY'
-                  AND u.removed_at IS NULL
-                  AND sl.is_enabled
-                ORDER BY sl.code ASC, u.delivered_at ASC, u.id ASC
-                FOR UPDATE OF u SKIP LOCKED
-                LIMIT 1
-                """,
-                connection,
-                transaction);
-            await using var reader = await find.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken))
-            {
-                return;
-            }
-            unitId = reader.GetGuid(0);
-            locationId = reader.GetGuid(1);
+            lockUnit.Parameters.AddWithValue("id", unitId.Value);
+            lockUnit.Parameters.AddWithValue("location", locationId.Value);
+            if (await lockUnit.ExecuteScalarAsync(cancellationToken) is null)
+                throw new WorkflowRuleException(
+                    "STORE_PICKUP_UNIT_MISSING",
+                    "Rezerve edilen boş kasa artık kaynak alanda bulunmuyor.");
         }
 
         await using var removeCmd = new NpgsqlCommand(
@@ -306,7 +300,8 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             transaction);
         removeCmd.Parameters.AddWithValue("id", unitId.Value);
         AddNullableUuid(removeCmd, "actor", request.RequestedBy);
-        await removeCmd.ExecuteNonQueryAsync(cancellationToken);
+        if (await removeCmd.ExecuteNonQueryAsync(cancellationToken) != 1)
+            throw new WorkflowRuleException("STORE_PICKUP_UNIT_MISSING", "Rezerve edilen boş kasa kaldırılamadı.");
 
         // Release PICKUP reservation
         await using (var release = new NpgsqlCommand("""
@@ -343,10 +338,9 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     /// finished-goods store location — so a completed delivery can never leave
     /// the warehouse unaware of it.
     ///
-    /// Resolution mirrors the dispatch resolver exactly (PostgresRdsExecutionStore
-    /// destination lookup) so the stored destination is the one dispatch would
-    /// have chosen anyway: the configured task template's destination slot
-    /// group by priority, otherwise the layout's enabled DROP position. No
+    /// Resolution follows the configured task template's destination slot group
+    /// by priority, otherwise the layout's enabled DROP positions, and selects
+    /// the first enabled store location with no active pallet or reservation. No
     /// slot, WorkSite or location is invented; a missing or disabled link
     /// fails closed with FINISHED_GOODS_DESTINATION_NOT_CONFIGURED. The mapping
     /// and location rows are locked FOR SHARE so a concurrent disable or unlink
@@ -360,7 +354,20 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
     {
         var destinationSlotId = request.DestinationSlotId
             ?? await ResolveFinishedGoodsDestinationSlotAsync(
-                connection, transaction, request.LayoutId, request.VariantId, request.ProductGroupId, cancellationToken);
+                connection, transaction, request.LayoutId, request.VariantId, request.ProductGroupId,
+                requireAvailableCapacity: true, cancellationToken);
+        if (destinationSlotId is null && request.DestinationSlotId is null)
+        {
+            var configuredSlotId = await ResolveFinishedGoodsDestinationSlotAsync(
+                connection, transaction, request.LayoutId, request.VariantId, request.ProductGroupId,
+                requireAvailableCapacity: false, cancellationToken);
+            if (configuredSlotId is not null)
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_STORE_FULL",
+                    "Bitmiş ürün alanında boş veya rezerve edilmemiş palet yeri yok.");
+            }
+        }
         if (destinationSlotId is not { } slotId
             || !await IsFinishedGoodsDeliverySlotMappedAsync(connection, transaction, slotId, lockRows: transaction is not null, cancellationToken))
         {
@@ -376,6 +383,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         Guid layoutId,
         Guid variantId,
         Guid? productGroupId,
+        bool requireAvailableCapacity,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
@@ -394,20 +402,30 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             FROM master.layout_slots ls
             LEFT JOIN master.slot_group_members sgm ON sgm.layout_slot_id = ls.id
             LEFT JOIN template ON true
+            JOIN ops.store_location_delivery_slots d ON d.layout_slot_id = ls.id
+            JOIN ops.store_locations sl ON sl.id = d.store_location_id AND sl.is_enabled
             WHERE ls.layout_id = @layout_id
               AND ls.is_enabled
               AND ls.slot_role <> 'MACHINE'
               AND ((template.destination_slot_group_id IS NOT NULL
                     AND sgm.slot_group_id = template.destination_slot_group_id)
                    OR (template.destination_slot_group_id IS NULL AND ls.slot_role = 'DROP'))
+              AND (NOT @require_available OR (
+                    NOT EXISTS (
+                        SELECT 1 FROM ops.store_units u
+                        WHERE u.store_location_id = sl.id AND u.removed_at IS NULL)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM ops.store_reservations sr
+                        WHERE sr.store_location_id = sl.id AND sr.released_at IS NULL)))
             ORDER BY sgm.priority, ls.display_order, ls.id
             LIMIT 1
-            """,
+            """ + (transaction is not null && requireAvailableCapacity ? " FOR UPDATE OF sl SKIP LOCKED" : string.Empty),
             connection,
             transaction);
         command.Parameters.AddWithValue("layout_id", layoutId);
         command.Parameters.AddWithValue("variant_id", variantId);
         AddNullableUuid(command, "product_group_id", productGroupId);
+        command.Parameters.AddWithValue("require_available", requireAvailableCapacity);
         return await command.ExecuteScalarAsync(cancellationToken) is Guid id ? id : null;
     }
 
@@ -462,9 +480,14 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                     && !await IsSharedEndpointOccupiedGloballyAsync(connection, null, candidate.BusinessCode, cancellationToken)) return null;
             return SharedUnavailable("FINISHED_GOODS", candidates).Code;
         }
-        var slotId = await ResolveFinishedGoodsDestinationSlotAsync(connection, null, layoutId, variantId, productGroupId, cancellationToken);
-        return slotId is { } slot && await IsFinishedGoodsDeliverySlotMappedAsync(connection, null, slot, false, cancellationToken)
-            ? null : "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED";
+        var slotId = await ResolveFinishedGoodsDestinationSlotAsync(
+            connection, null, layoutId, variantId, productGroupId, requireAvailableCapacity: true, cancellationToken);
+        if (slotId is not null) return null;
+        var configuredSlotId = await ResolveFinishedGoodsDestinationSlotAsync(
+            connection, null, layoutId, variantId, productGroupId, requireAvailableCapacity: false, cancellationToken);
+        return configuredSlotId is null
+            ? "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED"
+            : "FINISHED_GOODS_STORE_FULL";
     }
 
     public async Task<IReadOnlyList<StoreLocationRecord>> ListLocationsAsync(
@@ -569,7 +592,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         await ValidateFinishedGoodsActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
 
         await using (var exists = new NpgsqlCommand(
-            "SELECT 1 FROM ops.store_locations WHERE id = @id", connection, transaction))
+            "SELECT 1 FROM ops.store_locations WHERE id = @id FOR UPDATE", connection, transaction))
         {
             exists.Parameters.AddWithValue("id", command.LocationId);
             if (await exists.ExecuteScalarAsync(cancellationToken) is null)
@@ -608,6 +631,11 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             await using var reader = await locking.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken)) cleared.Add(reader.GetGuid(0));
         }
+
+        if (cleared.Count > 1)
+            throw new WorkflowRuleException(
+                "STORE_LOCATION_INTEGRITY_CONFLICT",
+                "Bu alanda birden fazla palet kaydı var. Fiziksel sayım yapıp kayıtları tek tek uzlaştırın.");
 
         if (cleared.Count > 0)
         {
@@ -658,6 +686,16 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                 await transaction.CommitAsync(cancellationToken);
                 return existing.Single();
             }
+        }
+
+        await using (var lockLocation = new NpgsqlCommand(
+            "SELECT is_enabled FROM ops.store_locations WHERE id = @loc FOR UPDATE",
+            connection,
+            transaction))
+        {
+            lockLocation.Parameters.AddWithValue("loc", command.LocationId);
+            if (await lockLocation.ExecuteScalarAsync(cancellationToken) is not bool isEnabled || !isEnabled)
+                throw new WorkflowRuleException("STORE_LOCATION_NOT_FOUND", "Depo konumu bulunamadı veya kapalı.");
         }
 
         await using (var checkOccupancy = new NpgsqlCommand("""

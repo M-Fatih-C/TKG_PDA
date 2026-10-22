@@ -48,6 +48,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("026_canonical_shared_endpoint_identities.sql"));
         await ExecuteScriptAsync(MigrationFile("027_store_location_unit_capacity_constraint.sql"));
         await ExecuteScriptAsync(MigrationFile("028_store_reservations_and_source_endpoint.sql"));
+        await ExecuteScriptAsync(MigrationFile("029_store_reservation_integrity.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -347,11 +348,15 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             VALUES (@location_code, 'Test Finished Goods Location', 1)
             ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1;
             INSERT INTO ops.store_locations (code, display_name, capacity)
-            VALUES ('TEST-FG-EMPTY', 'Test Empty Pallet Location', 1)
+            SELECT CASE WHEN i = 1 THEN 'TEST-FG-EMPTY' ELSE 'TEST-FG-EMPTY-' || lpad(i::text, 2, '0') END,
+                   'Test Empty Pallet Location ' || i,
+                   1
+            FROM generate_series(1, 6) i
             ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1;
             INSERT INTO ops.store_units (store_location_id, load_state, delivered_at)
-            SELECT id, 'EMPTY', now() FROM ops.store_locations WHERE code = 'TEST-FG-EMPTY'
-            AND NOT EXISTS (SELECT 1 FROM ops.store_units u WHERE u.store_location_id = ops.store_locations.id AND u.removed_at IS NULL);
+            SELECT id, 'EMPTY', now() FROM ops.store_locations
+            WHERE (code = 'TEST-FG-EMPTY' OR code ~ '^TEST-FG-EMPTY-[0-9]{2}$')
+              AND NOT EXISTS (SELECT 1 FROM ops.store_units u WHERE u.store_location_id = ops.store_locations.id AND u.removed_at IS NULL);
             INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
             SELECT drop_slot.id, sl.id
             FROM (
@@ -367,6 +372,37 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             ("layout_id", layoutId),
             ("code", FinishedGoodsTestDropCode),
             ("location_code", FinishedGoodsTestLocationCode));
+
+        for (var i = 2; i <= 6; i++)
+        {
+            var slotCode = $"{FinishedGoodsTestDropCode}-{i:00}";
+            var locationCode = $"{FinishedGoodsTestLocationCode}-{i:00}";
+            await ExecuteAsync(
+                """
+                INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
+                VALUES (@layout_id, @slot_code, @display_name, 'DROP', @display_order)
+                ON CONFLICT (layout_id, code) DO UPDATE SET is_enabled = true;
+                INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+                SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
+                WHERE layout_id = @layout_id AND code = @slot_code
+                ON CONFLICT (layout_slot_id) DO NOTHING;
+                INSERT INTO ops.store_locations (code, display_name, capacity)
+                VALUES (@location_code, @display_name, 1)
+                ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1;
+                INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
+                SELECT ls.id, sl.id
+                FROM master.layout_slots ls
+                CROSS JOIN ops.store_locations sl
+                WHERE ls.layout_id = @layout_id AND ls.code = @slot_code
+                  AND sl.code = @location_code
+                ON CONFLICT (layout_slot_id) DO UPDATE SET store_location_id = EXCLUDED.store_location_id;
+                """,
+                ("layout_id", layoutId),
+                ("slot_code", slotCode),
+                ("location_code", locationCode),
+                ("display_name", $"Test Finished Goods Location {i}"),
+                ("display_order", 9100 + i));
+        }
     }
 
     public Task<Guid> FinishedGoodsDropSlotAsync(Guid layoutId) => ScalarAsync<Guid>(

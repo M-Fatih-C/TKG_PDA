@@ -139,25 +139,6 @@ public sealed partial class PostgresTransportWorkflowStore
 
         await EnsureSlotsAreAvailableAsync(connection, transaction, [slot.Id], exceptRequestId: null, cancellationToken);
         var resolution = ContainerActionResolutionPolicy.ResolveSingle(command.Action, slot.State.Occupancy, slot.State.Load);
-        if (resolution.Operation == TransportTaskType.BringEmpty && !resolution.RequiresPreparation)
-        {
-            if (!await HasAvailableEmptyStoreUnitAsync(connection, transaction, cancellationToken))
-            {
-                throw new WorkflowRuleException(
-                    "FINISHED_GOODS_NO_EMPTY_CONTAINER",
-                    "Bitmiş ürün deposunda hazır boş kasa bulunmuyor. Lütfen depoya boş kasa yerleştirin.");
-            }
-        }
-        else if (resolution.Operation == TransportTaskType.RemoveFull)
-        {
-            if (!await HasVacantStoreLocationAsync(connection, transaction, cancellationToken))
-            {
-                throw new WorkflowRuleException(
-                    "FINISHED_GOODS_STORE_FULL",
-                    "Bitmiş ürün deposunda boş alan bulunmuyor. Lütfen depodan mamul sevkiyatı yapın.");
-            }
-        }
-
         if (resolution.MarkFullBeforeCreate)
         {
             await UpdateSlotStateAsync(

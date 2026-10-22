@@ -117,9 +117,10 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
         Assert.Equal("FG-01", await fixture.ScalarAsync<string>("""
             SELECT l.code FROM ops.store_units u
             JOIN ops.store_locations l ON l.id = u.store_location_id
+            WHERE u.load_state = 'FULL' AND u.removed_at IS NULL
             """));
         await store.RecordExecutionTransitionAsync(mamulId, TransportRequestStatus.Completed);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events WHERE event_type = 'UNIT_DELIVERED'"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
         }
@@ -203,8 +204,9 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             Assert.Equal("FG-01", await fixture.ScalarAsync<string>("""
                 SELECT l.code FROM ops.store_units u
                 JOIN ops.store_locations l ON l.id = u.store_location_id
+                WHERE u.load_state = 'FULL' AND u.removed_at IS NULL
                 """));
-            Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+            Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
             Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events WHERE event_type = 'UNIT_DELIVERED'"));
             Assert.Equal("ENDED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_sessions WHERE id = @id", ("id", sessionId)));
             Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));

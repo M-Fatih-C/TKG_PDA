@@ -142,14 +142,16 @@ public sealed class RdsCommissioningActivationApiTests(ApiTestFixture fixture) :
         var part = await fixture.PartForSlotAsync(slot, "P-ACT-NAV", context.VariantId);
         await fixture.ExecuteAsync("""
             INSERT INTO integration.rds_worksites
-                (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed, raw_state_json)
-            SELECT id, 'TEST-NAV-ACT-EMPTY', 1, now(), 0, 0, '{}'::jsonb
+                (navigation_profile_id, rds_site_id, rds_type, last_sync_at, last_disabled, last_sync_failed,
+                 last_filled, last_locked, raw_state_json)
+            SELECT id, 'TEST-NAV-ACT-EMPTY', 1, now(), 0, 0, 1, 0, '{}'::jsonb
             FROM master.navigation_profiles WHERE code = 'TKG_SH01A_V01_NAV';
             INSERT INTO integration.profile_shared_endpoint_bindings
-                (navigation_profile_id, endpoint_class, business_code, rds_worksite_id)
-            SELECT n.id, 'EMPTY_SOURCE', 'TEST-NAV-ACT-EMPTY', w.id
+                (navigation_profile_id, endpoint_class, business_code, rds_worksite_id, store_location_id)
+            SELECT n.id, 'EMPTY_SOURCE', 'TEST-NAV-ACT-EMPTY', w.id, sl.id
             FROM master.navigation_profiles n
             JOIN integration.rds_worksites w ON w.navigation_profile_id = n.id AND w.rds_site_id = 'TEST-NAV-ACT-EMPTY'
+            JOIN ops.store_locations sl ON sl.code = 'TEST-FG-EMPTY'
             WHERE n.code = 'TKG_SH01A_V01_NAV';
             """);
 

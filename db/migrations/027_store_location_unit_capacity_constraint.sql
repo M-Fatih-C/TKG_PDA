@@ -11,30 +11,29 @@ SET capacity = 1,
 WHERE (code ~ '^FG-[0-9]{2}$' OR code ~ '^FG_AREA_[0-9]{2}$')
   AND (capacity IS NULL OR capacity != 1);
 
--- 2. Clean up any invalid legacy duplicate active units per location (keep the newest, remove older)
-WITH duplicates AS (
-    SELECT id,
-           ROW_NUMBER() OVER (
-               PARTITION BY store_location_id
-               ORDER BY delivered_at DESC, id DESC
-           ) AS rn
-    FROM ops.store_units
-    WHERE removed_at IS NULL
-)
-UPDATE ops.store_units
-SET removed_at = clock_timestamp(),
-    removed_by = COALESCE(
-        (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1),
-        (SELECT id FROM auth.users LIMIT 1)
-    ),
-    removed_device_id = COALESCE(
-        (SELECT id FROM audit.client_devices WHERE device_code = 'TAB-BITMIS-URUN' LIMIT 1),
-        (SELECT id FROM audit.client_devices LIMIT 1)
-    ),
-    row_version = row_version + 1
-WHERE id IN (
-    SELECT id FROM duplicates WHERE rn > 1
-);
+-- 2. Never discard warehouse records automatically. Duplicate active units mean
+-- physical stock and software disagree, so deployment must stop for reconciliation.
+DO $$
+DECLARE
+    conflicts text;
+BEGIN
+    SELECT string_agg(format('%s (%s)', sl.code, grouped.unit_count), ', ' ORDER BY sl.code)
+    INTO conflicts
+    FROM (
+        SELECT store_location_id, count(*) AS unit_count
+        FROM ops.store_units
+        WHERE removed_at IS NULL
+        GROUP BY store_location_id
+        HAVING count(*) > 1
+    ) grouped
+    JOIN ops.store_locations sl ON sl.id = grouped.store_location_id;
+
+    IF conflicts IS NOT NULL THEN
+        RAISE EXCEPTION 'STORE_LOCATION_INTEGRITY_CONFLICT: %', conflicts
+            USING ERRCODE = '23514';
+    END IF;
+END;
+$$;
 
 -- 3. Enforce that each store location holds at most one active (unremoved) unit at any time
 CREATE UNIQUE INDEX IF NOT EXISTS uq_store_active_unit_per_location

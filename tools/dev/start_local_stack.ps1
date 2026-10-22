@@ -276,7 +276,8 @@ foreach ($migration in @(
     '025_profile_scoped_shared_endpoints.sql',
     '026_canonical_shared_endpoint_identities.sql',
     '027_store_location_unit_capacity_constraint.sql',
-    '028_store_reservations_and_source_endpoint.sql'
+    '028_store_reservations_and_source_endpoint.sql',
+    '029_store_reservation_integrity.sql'
 )) {
     Write-Host "Applying migration $migration..." -ForegroundColor Cyan
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot "db\migrations\$migration") | Out-Null

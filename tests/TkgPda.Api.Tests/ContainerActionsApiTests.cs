@@ -173,7 +173,7 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
             JOIN master.task_types tt ON tt.id = r.task_type_id
             WHERE r.idempotency_key = 'wp33-empty-vacant'
             """));
-        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
+        Assert.Equal("NOT_REQUIRED", await fixture.ScalarAsync<string>(
             """
             SELECT readiness_state FROM ops.transport_requests
             WHERE idempotency_key = 'wp33-empty-vacant'

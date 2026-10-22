@@ -149,7 +149,8 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
         Assert.Equal("EMPTY", await LoadAsync(mapped.SlotId));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL' OR transport_request_id IS NOT NULL"));
     }
 
     [Fact]
@@ -198,7 +199,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
     }
 
     [Fact]
-    public async Task Kasa_bos_waits_for_preparation_needs_no_finished_goods_mapping_and_is_not_dispatched()
+    public async Task Kasa_bos_reserves_a_real_empty_pallet_needs_no_finished_goods_mapping_and_is_not_dispatched()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -210,7 +211,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
         var response = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-bos");
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
+        Assert.Equal("NOT_REQUIRED", await fixture.ScalarAsync<string>(
             "SELECT readiness_state FROM ops.transport_requests WHERE idempotency_key = 'wp08-bos'"));
         Assert.Equal("BRING_EMPTY", await fixture.ScalarAsync<string>(
             """
@@ -225,7 +226,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
     }
 
     [Fact]
-    public async Task Warehouse_mark_ready_lets_kasa_bos_progress_without_a_second_machine_confirmation()
+    public async Task Kasa_bos_is_immediately_ready_and_rejects_a_warehouse_ready_transition()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -240,8 +241,9 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
         using var warehouseClient = await fixture.LoginClientAsync(warehouse);
         var ready = await warehouseClient.PostAsync($"/api/v1/transport-requests/{requestId}/ready", null);
 
-        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
-        Assert.Equal("READY", await fixture.ScalarAsync<string>(
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, ready.StatusCode);
+        Assert.Equal("READINESS_NOT_APPLICABLE", await ApiTestFixture.ErrorCodeAsync(ready));
+        Assert.Equal("NOT_REQUIRED", await fixture.ScalarAsync<string>(
             "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
         Assert.Equal("VACANT", await fixture.ScalarAsync<string>(
@@ -320,8 +322,15 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
             """,
             ("layout", layoutId)),
         "disabled-location" => fixture.ExecuteAsync(
-            "UPDATE ops.store_locations SET is_enabled = false WHERE code = @code",
-            ("code", ApiTestFixture.FinishedGoodsTestLocationCode)),
+            """
+            UPDATE ops.store_locations SET is_enabled = false
+            WHERE id IN (
+                SELECT d.store_location_id
+                FROM ops.store_location_delivery_slots d
+                JOIN master.layout_slots ls ON ls.id = d.layout_slot_id
+                WHERE ls.layout_id = @layout)
+            """,
+            ("layout", layoutId)),
         "no-drop-slot" => fixture.ExecuteAsync(
             "UPDATE master.layout_slots SET is_enabled = false WHERE layout_id = @layout AND slot_role = 'DROP'",
             ("layout", layoutId)),

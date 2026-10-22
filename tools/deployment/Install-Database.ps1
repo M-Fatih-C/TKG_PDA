@@ -2,7 +2,7 @@
 .SYNOPSIS
     Installs, configures, and migrates the PostgreSQL database for TKG PDA.
 .DESCRIPTION
-    Executes all required schema migrations (001-027) and canonical customer seeds
+    Executes all required schema migrations (001-029) and canonical customer seeds
     idempotently without destroying or fabricating persistent data.
     Supports existing PostgreSQL instances as well as dedicated local instances.
     Enforces SCRAM authentication, dedicated application user (tkg_app),
@@ -392,7 +392,7 @@ try {
     # Grant privileges on Database to AppUser
     & $psql @commonAdminPsql -d 'postgres' -c "GRANT ALL PRIVILEGES ON DATABASE $Database TO $AppUser;" | Out-Null
 
-    # 6. Apply Schema Migrations in numerical order (001 to 028)
+    # 6. Apply Schema Migrations in numerical order (001 to 029)
     $baseSchemaExists = Invoke-AdminPsqlScalar $Database "SELECT to_regclass('auth.roles');"
     Write-SecureLog "Executing migrations from: $MigrationsDir (BaseSchemaExists=$baseSchemaExists)"
     $migrationFiles = Get-ChildItem -Path $MigrationsDir -Filter "*.sql" | Sort-Object Name

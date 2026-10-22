@@ -6,8 +6,8 @@ public static class TkgVersionInfo
     public const string ServiceName = "TKG PDA Server";
     public const string DisplayName = "TKG PDA Server";
 
-    public static string CommitHash { get; set; } = "10cf9de7";
-    public static string BuildTimestamp { get; set; } = "2026-10-12T09:00:00Z";
+    public static string CommitHash { get; set; } = "unknown";
+    public static string BuildTimestamp { get; set; } = "unknown";
 
     static TkgVersionInfo()
     {
@@ -27,6 +27,14 @@ public static class TkgVersionInfo
             {
                 CommitHash = parts[0];
             }
+        }
+
+        var embeddedBuildTime = asm.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+            .OfType<System.Reflection.AssemblyMetadataAttribute>()
+            .FirstOrDefault(attribute => attribute.Key == "TkgBuildTimestamp")?.Value;
+        if (!string.IsNullOrWhiteSpace(embeddedBuildTime))
+        {
+            BuildTimestamp = embeddedBuildTime;
         }
 
         var envCommit = Environment.GetEnvironmentVariable("TKG_BUILD_COMMIT");

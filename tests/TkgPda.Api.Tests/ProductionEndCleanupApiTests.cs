@@ -42,7 +42,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         Assert.NotNull(ended.Session.EndedAt);
         Assert.Equal("COMPLETED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
-        Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
     }
 
     [Theory]
@@ -238,11 +238,11 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         Assert.Equal("ENDING", await StatusAsync(session.Id));
         await store.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running);
         Assert.Equal("ENDING", await StatusAsync(session.Id));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
         await store.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Completed);
 
         Assert.Equal("ENDED", await StatusAsync(session.Id));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events WHERE event_type = 'UNIT_DELIVERED'"));
         Assert.Equal("COMPLETED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
@@ -609,7 +609,8 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
         await CompleteAsync(store, requestId);
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL' OR transport_request_id IS NOT NULL"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.notification_outbox"));
         Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", setup.Slots[0])));
@@ -761,7 +762,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
         Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
         Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
         Assert.Equal("ENDING", await StatusAsync(session.Id));
     }
 

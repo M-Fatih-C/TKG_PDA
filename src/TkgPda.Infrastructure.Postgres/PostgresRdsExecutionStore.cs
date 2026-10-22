@@ -12,22 +12,62 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
-            SELECT r.navigation_id,r.destination_business_code,tt.code
+            SELECT r.navigation_id,r.destination_business_code,r.source_business_code,tt.code
             FROM ops.transport_requests r JOIN master.task_types tt ON tt.id=r.task_type_id WHERE r.id=@id
             """,connection);
         command.Parameters.AddWithValue("id",requestId);
-        Guid? nav = null; string? businessCode = null; string? operation = null;
+        Guid? nav = null; string? destinationBusinessCode = null; string? sourceBusinessCode = null; string? operation = null;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             if (await reader.ReadAsync(cancellationToken))
-            { nav=reader.IsDBNull(0) ? null : reader.GetGuid(0); businessCode=Text(reader,1); operation=Text(reader,2); }
-        if (nav is not { } profileId || businessCode is null) return null;
-        var endpointClass=operation=="REMOVE_EMPTY" ? "EMPTY_RETURN"
+            { nav=reader.IsDBNull(0) ? null : reader.GetGuid(0); destinationBusinessCode=Text(reader,1); sourceBusinessCode=Text(reader,2); operation=Text(reader,3); }
+        if (nav is not { } profileId) return null;
+        var businessCode = operation == "BRING_EMPTY" ? sourceBusinessCode : destinationBusinessCode;
+        if (businessCode is null) return null;
+        var endpointClass=operation=="BRING_EMPTY" ? "EMPTY_SOURCE"
+            : operation=="REMOVE_EMPTY" ? "EMPTY_RETURN"
             : businessCode.StartsWith("FG-",StringComparison.Ordinal) ? "FINISHED_GOODS" : "NON_FINISHED_RETURN";
         var observations=await PostgresTransportWorkflowStore.ReadSharedCandidatesAsync(connection,null,profileId,endpointClass,cancellationToken);
         var candidate=observations.SingleOrDefault(c=>c.ProfileId==profileId && c.BusinessCode==businessCode);
         if (candidate is null) return "RDS_WORKSITE_NOT_MAPPED";
-        if (!candidate.StoreEnabled) return "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED";
+        if (!candidate.StoreEnabled) return endpointClass == "EMPTY_SOURCE"
+            ? "FINISHED_GOODS_NO_EMPTY_CONTAINER"
+            : "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED";
         var policy=physicalPolicy ?? new RdsPhysicalAvailabilityPolicy();
+        if (endpointClass == "EMPTY_SOURCE")
+        {
+            var state = policy.State(candidate.Evidence);
+            var sourceAvailable = policy.IsSimulationMode ? state == "AVAILABLE" : state == "OCCUPIED";
+            if (!sourceAvailable)
+                return !policy.IsSimulationMode && state == "AVAILABLE"
+                    ? "RDS_WORKSITE_OCCUPANCY_CONFLICT"
+                    : RdsPhysicalAvailabilityPolicy.ErrorCode(state) ?? "RDS_WORKSITE_STATE_UNKNOWN";
+            if (!policy.IsSimulationMode && observations.Any(other => other.BusinessCode == businessCode
+                && other.ProfileId != profileId && policy.State(other.Evidence) == "AVAILABLE"))
+                return "RDS_WORKSITE_OCCUPANCY_CONFLICT";
+
+            await using var reservation = new NpgsqlCommand("""
+                SELECT 1
+                FROM ops.store_reservations sr
+                JOIN ops.store_units u ON u.id = sr.store_unit_id
+                JOIN ops.store_locations sl ON sl.id = sr.store_location_id AND sl.id = u.store_location_id
+                JOIN integration.profile_shared_endpoint_bindings b
+                  ON b.navigation_profile_id = @profile
+                 AND b.endpoint_class = 'EMPTY_SOURCE'
+                 AND b.business_code = @code
+                 AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND b.business_code = sl.code))
+                WHERE sr.transport_request_id = @request
+                  AND sr.reservation_type = 'PICKUP'
+                  AND sr.released_at IS NULL
+                  AND u.load_state = 'EMPTY'
+                  AND u.removed_at IS NULL
+                """, connection);
+            reservation.Parameters.AddWithValue("profile", profileId);
+            reservation.Parameters.AddWithValue("code", businessCode);
+            reservation.Parameters.AddWithValue("request", requestId);
+            return await reservation.ExecuteScalarAsync(cancellationToken) is null
+                ? "STORE_PICKUP_RESERVATION_MISSING"
+                : null;
+        }
         return PostgresTransportWorkflowStore.SharedPhysicalAvailability(candidate,observations,policy) ? null
             : RdsPhysicalAvailabilityPolicy.ErrorCode(policy.State(candidate.Evidence)) ?? "RDS_WORKSITE_OCCUPANCY_CONFLICT";
     }
@@ -380,7 +420,8 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
                    COALESCE((n.config_json ->> 'geometryVerified')::boolean, false),
                    n.config_json ->> 'layoutBindingState',
                    tt.code,
-                   r.destination_business_code,
+                    r.destination_business_code,
+                    r.source_business_code,
                    r.source_slot_id IS NOT NULL,
                    r.destination_slot_id IS NOT NULL,
                    EXISTS (
@@ -406,6 +447,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
         string? layout;
         string operation;
         string? businessCode;
+        string? sourceBusinessCode;
         bool hasSourceSlot;
         bool hasDestinationSlot;
         bool hasTemplate;
@@ -418,10 +460,11 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
             layout = reader.IsDBNull(2) ? null : reader.GetString(2);
             operation = reader.GetString(3);
             businessCode = reader.IsDBNull(4) ? null : reader.GetString(4);
-            hasSourceSlot = reader.GetBoolean(5);
-            hasDestinationSlot = reader.GetBoolean(6);
-            hasTemplate = reader.GetBoolean(7);
-            finishedGoods = reader.GetBoolean(8);
+            sourceBusinessCode = reader.IsDBNull(5) ? null : reader.GetString(5);
+            hasSourceSlot = reader.GetBoolean(6);
+            hasDestinationSlot = reader.GetBoolean(7);
+            hasTemplate = reader.GetBoolean(8);
+            finishedGoods = reader.GetBoolean(9);
         }
 
         if (layout == "PENDING_SOURCE_LAYOUT") return "PENDING_SOURCE_LAYOUT";
@@ -436,7 +479,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
 
         if (operation == "BRING_EMPTY" && !hasSourceSlot)
         {
-            return await ReadWorkSiteHealthAsync(connection, requestId, "EMPTY_SOURCE", null, "EMPTY_SOURCE_MAPPING_MISSING", cancellationToken);
+            return await ReadWorkSiteHealthAsync(connection, requestId, "EMPTY_SOURCE", sourceBusinessCode, "EMPTY_SOURCE_MAPPING_MISSING", cancellationToken);
         }
 
         if (operation == "REMOVE_EMPTY" && (businessCode is not null || !hasDestinationSlot))

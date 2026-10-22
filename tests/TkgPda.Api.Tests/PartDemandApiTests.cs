@@ -375,7 +375,8 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             ("id", predecessorId)));
         await CompleteAsync(predecessorId);
 
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL' OR transport_request_id IS NOT NULL"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.notification_outbox"));
     }
 

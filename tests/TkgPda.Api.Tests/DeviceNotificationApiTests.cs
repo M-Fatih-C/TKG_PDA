@@ -61,7 +61,7 @@ public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassF
         Assert.All(production, location =>
         {
             Assert.True(location.IsEnabled);
-            Assert.Null(location.Capacity);
+            Assert.Equal(1, location.Capacity);
             Assert.Empty(location.Units);
         });
 
@@ -110,7 +110,7 @@ public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassF
         {
             var code = $"FG-{index:00}";
             Assert.True(await fixture.ScalarAsync<bool>(
-                "SELECT capacity IS NULL FROM ops.store_locations WHERE code = @code",
+                "SELECT capacity = 1 FROM ops.store_locations WHERE code = @code",
                 ("code", code)));
             Assert.True(await fixture.ScalarAsync<bool>(
                 "SELECT is_enabled FROM ops.store_locations WHERE code = @code",

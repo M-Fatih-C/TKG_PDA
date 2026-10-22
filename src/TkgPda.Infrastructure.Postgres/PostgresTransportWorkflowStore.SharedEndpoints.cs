@@ -93,8 +93,10 @@ public sealed partial class PostgresTransportWorkflowStore
         await using var command = new NpgsqlCommand($"""
             SELECT b.business_code, b.navigation_profile_id, w.rds_type, w.last_filled,
                    w.last_locked, w.last_disabled, w.last_sync_failed, w.last_sync_at,
-                   b.endpoint_class <> 'FINISHED_GOODS' OR EXISTS (
-                       SELECT 1 FROM ops.store_locations sl WHERE sl.code = b.business_code AND sl.is_enabled)
+                    b.endpoint_class NOT IN ('FINISHED_GOODS', 'EMPTY_SOURCE') OR EXISTS (
+                       SELECT 1 FROM ops.store_locations sl
+                       WHERE sl.is_enabled
+                         AND (sl.id = b.store_location_id OR (b.store_location_id IS NULL AND sl.code = b.business_code)))
             FROM integration.profile_shared_endpoint_bindings b
             JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
                 AND w.navigation_profile_id = b.navigation_profile_id
@@ -235,7 +237,15 @@ public sealed partial class PostgresTransportWorkflowStore
 
         foreach (var candidate in candidates)
         {
-            if (!candidate.SourceHealthy) continue;
+            if (!candidate.StoreEnabled) continue;
+            var sourceState = _physicalPolicy.State(candidate.Evidence);
+            if (_physicalPolicy.IsSimulationMode
+                ? sourceState != "AVAILABLE"
+                : sourceState != "OCCUPIED") continue;
+            if (!_physicalPolicy.IsSimulationMode
+                && observations.Any(other => other.BusinessCode == candidate.BusinessCode
+                    && other.ProfileId != candidate.ProfileId
+                    && _physicalPolicy.State(other.Evidence) == "AVAILABLE")) continue;
             if (!await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
 
             await using var checkEmpty = new NpgsqlCommand(
@@ -271,12 +281,17 @@ public sealed partial class PostgresTransportWorkflowStore
             }
         }
 
-        // Fallback: check if ANY enabled store location has an unreserved empty unit
-        await using (var checkAny = new NpgsqlCommand(
+        // Distinguish a missing pallet from unsafe physical evidence, but never
+        // substitute a different store location or EMPTY_SOURCE binding.
+        await using (var checkBoundEmpty = new NpgsqlCommand(
             """
-            SELECT sl.code
+            SELECT 1
             FROM ops.store_units u
             JOIN ops.store_locations sl ON sl.id = u.store_location_id
+            JOIN integration.profile_shared_endpoint_bindings b
+              ON b.navigation_profile_id = @profile
+             AND b.endpoint_class = 'EMPTY_SOURCE'
+             AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND b.business_code = sl.code))
             WHERE u.load_state = 'EMPTY'
               AND u.removed_at IS NULL
               AND sl.is_enabled
@@ -284,26 +299,29 @@ public sealed partial class PostgresTransportWorkflowStore
                   SELECT 1 FROM ops.store_reservations sr
                   WHERE sr.store_location_id = sl.id AND sr.released_at IS NULL
               )
-            ORDER BY sl.code ASC, u.delivered_at ASC
             LIMIT 1
-            FOR UPDATE OF u, sl SKIP LOCKED
             """,
             connection,
             transaction))
         {
-            if (await checkAny.ExecuteScalarAsync(cancellationToken) is string)
+            checkBoundEmpty.Parameters.AddWithValue("profile", profileId);
+            if (await checkBoundEmpty.ExecuteScalarAsync(cancellationToken) is null)
             {
-                var matched = candidates.FirstOrDefault(c => c.SourceHealthy);
-                if (matched is not null)
-                {
-                    return matched.BusinessCode;
-                }
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_NO_EMPTY_CONTAINER",
+                    "Bitmiş ürün alanında bu NAV profiline bağlı hazır boş kasa yok.");
             }
         }
 
+        var states = candidates.Select(candidate => _physicalPolicy.State(candidate.Evidence)).ToArray();
+        if (!_physicalPolicy.IsSimulationMode && states.Contains("AVAILABLE"))
+            throw new WorkflowRuleException(
+                "RDS_WORKSITE_OCCUPANCY_CONFLICT",
+                "Boş kasa kaydı ile fiziksel WorkSite doluluğu çelişiyor.");
+        var state = states.FirstOrDefault() ?? "UNKNOWN";
         throw new WorkflowRuleException(
-            "FINISHED_GOODS_NO_EMPTY_CONTAINER",
-            "Bitmiş ürün alanında hazır boş kasa yok.");
+            RdsPhysicalAvailabilityPolicy.ErrorCode(state) ?? "RDS_WORKSITE_STATE_UNKNOWN",
+            "Boş kasa kaynağının fiziksel durumu kullanıma uygun değil.");
     }
 
     private static async Task<bool> IsMainPartAsync(
@@ -353,9 +371,11 @@ public sealed partial class PostgresTransportWorkflowStore
 
         if (endpointClass == "FINISHED_GOODS")
         {
+            var hasPhysicalCandidate = false;
             foreach (var candidate in candidates)
             {
                 if (!IsPhysicallyAvailable(candidate, observations)) continue;
+                hasPhysicalCandidate = true;
                 if (!await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
                 if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
 
@@ -364,13 +384,13 @@ public sealed partial class PostgresTransportWorkflowStore
                     SELECT sl.id
                     FROM ops.store_locations sl
                     WHERE sl.is_enabled
-                      AND (
-                          sl.code = @code
-                          OR sl.id = (
-                              SELECT store_location_id FROM integration.profile_shared_endpoint_bindings
-                              WHERE navigation_profile_id = @profile AND endpoint_class = 'FINISHED_GOODS' AND business_code = @code
-                              LIMIT 1
-                          )
+                      AND EXISTS (
+                          SELECT 1
+                          FROM integration.profile_shared_endpoint_bindings b
+                          WHERE b.navigation_profile_id = @profile
+                            AND b.endpoint_class = 'FINISHED_GOODS'
+                            AND b.business_code = @code
+                            AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND b.business_code = sl.code))
                       )
                       AND NOT EXISTS (
                           SELECT 1 FROM ops.store_units u
@@ -393,6 +413,7 @@ public sealed partial class PostgresTransportWorkflowStore
                 }
             }
 
+            if (!hasPhysicalCandidate) throw SharedUnavailable(endpointClass, candidates);
             throw new WorkflowRuleException(
                 "FINISHED_GOODS_STORE_FULL",
                 "Bitmiş ürün alanında boş yer yok.");

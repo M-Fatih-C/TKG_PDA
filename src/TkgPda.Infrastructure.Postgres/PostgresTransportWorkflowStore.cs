@@ -194,7 +194,16 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         }
 
         var created = await InsertRequestAsync(connection, transaction, request, taskTypeId, batchId, cancellationToken);
-        await TryReserveStoreEndpointAsync(connection, transaction, created.Id, created.TaskType, request.NavigationProfileId, request.SourceBusinessCode, request.DestinationBusinessCode, cancellationToken);
+        await ReserveStoreEndpointAsync(
+            connection,
+            transaction,
+            created.Id,
+            created.TaskType,
+            request.NavigationProfileId,
+            request.DestinationSlotId,
+            request.SourceBusinessCode,
+            request.DestinationBusinessCode,
+            cancellationToken);
         await InsertEventAsync(
             connection,
             transaction,
@@ -1848,12 +1857,13 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         JOIN master.task_types tt ON tt.id = r.task_type_id
         """;
 
-    private static async Task TryReserveStoreEndpointAsync(
+    private static async Task ReserveStoreEndpointAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid requestId,
         TransportTaskType taskType,
         Guid? navigationProfileId,
+        Guid? destinationSlotId,
         string? sourceBusinessCode,
         string? destinationBusinessCode,
         CancellationToken cancellationToken)
@@ -1868,15 +1878,14 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 WHERE u.load_state = 'EMPTY'
                   AND u.removed_at IS NULL
                   AND sl.is_enabled
-                  AND (
-                      @sourceCode IS NULL
-                      OR sl.code = @sourceCode
-                      OR sl.id = (
-                          SELECT store_location_id FROM integration.profile_shared_endpoint_bindings
-                          WHERE navigation_profile_id = @navProfile AND endpoint_class = 'EMPTY_SOURCE' AND business_code = @sourceCode
-                          LIMIT 1
-                      )
-                  )
+                  AND (@sourceCode IS NULL OR EXISTS (
+                      SELECT 1
+                      FROM integration.profile_shared_endpoint_bindings b
+                      WHERE b.navigation_profile_id = @navProfile
+                        AND b.endpoint_class = 'EMPTY_SOURCE'
+                        AND b.business_code = @sourceCode
+                        AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND b.business_code = sl.code))
+                  ))
                   AND NOT EXISTS (
                       SELECT 1 FROM ops.store_reservations sr
                       WHERE sr.store_location_id = sl.id AND sr.released_at IS NULL
@@ -1894,36 +1903,82 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             {
                 var unitId = reader.GetGuid(0);
                 var locId = reader.GetGuid(1);
-                reader.Close();
+                await reader.CloseAsync();
 
                 await using var res = new NpgsqlCommand(
                     """
                     INSERT INTO ops.store_reservations (store_location_id, store_unit_id, transport_request_id, reservation_type)
                     VALUES (@loc, @unit, @req, 'PICKUP')
-                    ON CONFLICT (transport_request_id) WHERE released_at IS NULL DO NOTHING
                     """,
                     connection,
                     transaction);
                 res.Parameters.AddWithValue("loc", locId);
                 res.Parameters.AddWithValue("unit", unitId);
                 res.Parameters.AddWithValue("req", requestId);
-                await res.ExecuteNonQueryAsync(cancellationToken);
+                if (await res.ExecuteNonQueryAsync(cancellationToken) != 1)
+                    throw new WorkflowRuleException("FINISHED_GOODS_NO_EMPTY_CONTAINER", "Seçilen boş kasa kaynağı rezerve edilemedi.");
+            }
+            else
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_NO_EMPTY_CONTAINER",
+                    sourceBusinessCode is null
+                        ? "Bitmiş ürün alanında hazır boş kasa yok."
+                        : "Seçilen fiziksel boş kasa kaynağında hazır kasa yok.");
             }
         }
-        else if (taskType == TransportTaskType.RemoveFull && destinationBusinessCode is not null)
+        else if (taskType == TransportTaskType.RemoveFull)
         {
+            var hasSharedBinding = false;
+            if (destinationBusinessCode is not null && navigationProfileId is Guid profileId)
+            {
+                await using var bound = new NpgsqlCommand(
+                    """
+                    SELECT 1
+                    FROM integration.profile_shared_endpoint_bindings
+                    WHERE navigation_profile_id = @profile
+                      AND endpoint_class = 'FINISHED_GOODS'
+                      AND business_code = @code
+                    LIMIT 1
+                    """,
+                    connection,
+                    transaction);
+                bound.Parameters.AddWithValue("profile", profileId);
+                bound.Parameters.AddWithValue("code", destinationBusinessCode);
+                hasSharedBinding = await bound.ExecuteScalarAsync(cancellationToken) is not null;
+            }
+
+            var hasMappedSlot = false;
+            if (destinationSlotId is Guid mappedSlot)
+            {
+                await using var mapped = new NpgsqlCommand(
+                    "SELECT 1 FROM ops.store_location_delivery_slots WHERE layout_slot_id = @slot LIMIT 1",
+                    connection,
+                    transaction);
+                mapped.Parameters.AddWithValue("slot", mappedSlot);
+                hasMappedSlot = await mapped.ExecuteScalarAsync(cancellationToken) is not null;
+            }
+
+            if (!hasSharedBinding && !hasMappedSlot) return;
+
             await using var cmd = new NpgsqlCommand(
                 """
                 SELECT sl.id
                 FROM ops.store_locations sl
                 WHERE sl.is_enabled
                   AND (
-                      sl.code = @destCode
-                      OR sl.id = (
-                          SELECT store_location_id FROM integration.profile_shared_endpoint_bindings
-                          WHERE navigation_profile_id = @navProfile AND endpoint_class = 'FINISHED_GOODS' AND business_code = @destCode
-                          LIMIT 1
-                      )
+                      (@useSharedBinding AND EXISTS (
+                          SELECT 1
+                          FROM integration.profile_shared_endpoint_bindings b
+                          WHERE b.navigation_profile_id = @navProfile
+                            AND b.endpoint_class = 'FINISHED_GOODS'
+                            AND b.business_code = @destCode
+                            AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND b.business_code = sl.code))
+                      ))
+                      OR (NOT @useSharedBinding AND EXISTS (
+                          SELECT 1 FROM ops.store_location_delivery_slots d
+                          WHERE d.layout_slot_id = @destinationSlot AND d.store_location_id = sl.id
+                      ))
                   )
                   AND NOT EXISTS (
                       SELECT 1 FROM ops.store_units u WHERE u.store_location_id = sl.id AND u.removed_at IS NULL
@@ -1936,21 +1991,29 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 """,
                 connection,
                 transaction);
-            cmd.Parameters.AddWithValue("destCode", destinationBusinessCode);
+            AddNullableText(cmd, "destCode", destinationBusinessCode);
             AddNullableUuid(cmd, "navProfile", navigationProfileId);
+            AddNullableUuid(cmd, "destinationSlot", destinationSlotId);
+            cmd.Parameters.AddWithValue("useSharedBinding", hasSharedBinding);
             if (await cmd.ExecuteScalarAsync(cancellationToken) is Guid locId)
             {
                 await using var res = new NpgsqlCommand(
                     """
                     INSERT INTO ops.store_reservations (store_location_id, transport_request_id, reservation_type)
                     VALUES (@loc, @req, 'DROP')
-                    ON CONFLICT (transport_request_id) WHERE released_at IS NULL DO NOTHING
                     """,
                     connection,
                     transaction);
                 res.Parameters.AddWithValue("loc", locId);
                 res.Parameters.AddWithValue("req", requestId);
-                await res.ExecuteNonQueryAsync(cancellationToken);
+                if (await res.ExecuteNonQueryAsync(cancellationToken) != 1)
+                    throw new WorkflowRuleException("FINISHED_GOODS_STORE_FULL", "Seçilen mamul alanı rezerve edilemedi.");
+            }
+            else
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_STORE_FULL",
+                    "Seçilen mamul alanı dolu veya başka bir taşıma için rezerve edilmiş.");
             }
         }
     }

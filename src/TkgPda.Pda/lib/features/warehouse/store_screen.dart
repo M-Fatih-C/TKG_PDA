@@ -330,10 +330,8 @@ class _LocationCard extends StatelessWidget {
                   width: double.infinity,
                   child: OutlinedButton(
                     key: Key('clear-location-${location.code}'),
-                    onPressed: coordinator.inFlight
-                        ? null
-                        : () => _confirmClear(context, coordinator, location),
-                    child: Text('Tümünü Aldım (${location.unitCount})'),
+                    onPressed: null,
+                    child: const Text('Fiziksel sayım gerekli'),
                   ),
                 )
               else if (location.isEnabled)
@@ -354,34 +352,6 @@ class _LocationCard extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  Future<void> _confirmClear(
-    BuildContext context,
-    StoreCoordinator coordinator,
-    StoreLocation location,
-  ) async {
-    final accepted = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Tümünü al'),
-        content: Text(
-          '${location.unitCount} kayıt bu alandan alınmış sayılsın mı?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Vazgeç'),
-          ),
-          FilledButton(
-            key: const Key('confirm-clear-location'),
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Tümünü Aldım'),
-          ),
-        ],
-      ),
-    );
-    if (accepted == true) await coordinator.clearLocation(location);
   }
 
   void _showUnits(
