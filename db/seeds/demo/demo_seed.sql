@@ -66,7 +66,7 @@ BEGIN
       ('DEV-LINE', 'Demo Operatör Terminali (Tüm Makineler)', 'PDA', NULL, true),
       ('DEV-WAREHOUSE', 'Demo Depo Terminali (Genel)', 'PDA', NULL, true),
       ('TAB-YARI-MAMUL', 'Tablet 1 — Yarı Mamul Hazırlık Deposu', 'PDA', NULL, true),
-      ('TAB-BITMIS-URUN', 'Tablet 2 — Bitmiş Ürün Deposu (19 Kasa)', 'PDA', NULL, true)
+      ('TAB-BITMIS-URUN', 'Tablet 2 — Bitmiş Ürün Deposu', 'PDA', NULL, true)
     ON CONFLICT (device_code) DO UPDATE SET name = EXCLUDED.name, machine_id = NULL, is_active = true;
 
     -- Machine-bound terminals for each of the 9 machines
@@ -521,7 +521,9 @@ BEGIN
     SET container_type_id = (SELECT id FROM master.container_types WHERE code = 'EURO_PALET' LIMIT 1)
     WHERE relation_type = 'ALT_PART' AND container_type_id IS NULL;
 
-    -- 13. Clean any unremoved store units so all 19 FG locations start clean as ALAN BOŞ
+    -- 13. Clean any unremoved store units so the two finished-goods delivery
+    -- positions start empty. Empty-container demand is now prepared against
+    -- the six request-bound FINISHED_GOODS preparation areas.
     -- Respect store_events ON DELETE RESTRICT by updating instead of deleting.
     -- Respect ck_store_unit_removed by providing valid non-null removed_by, removed_device_id and removed_at >= delivered_at.
     UPDATE ops.store_units
@@ -537,26 +539,40 @@ BEGIN
         removal_source = 'OPERATOR'
     WHERE removed_at IS NULL;
 
-    -- 14. Clean up any legacy unrenamed FG_AREA locations so exactly 19 FG-01..FG-19 locations exist
+    -- 14. Keep only the two approved operator-visible delivery positions.
+    -- Historical or commissioned legacy rows remain hidden and are never
+    -- deleted while another table still references them.
+    UPDATE ops.store_locations
+    SET area_purpose = CASE WHEN code IN ('FG-01', 'FG-02') THEN 'DELIVERY' ELSE 'LEGACY' END,
+        is_operator_visible = code IN ('FG-01', 'FG-02'),
+        display_name = CASE code
+            WHEN 'FG-01' THEN 'Mamul Teslim Alanı 1'
+            WHEN 'FG-02' THEN 'Mamul Teslim Alanı 2'
+            ELSE display_name
+        END,
+        capacity = CASE WHEN code IN ('FG-01', 'FG-02') THEN 1 ELSE capacity END,
+        updated_at = now()
+    WHERE code ~ '^FG-[0-9]{2}$';
+
     DELETE FROM ops.store_locations AS legacy
     WHERE legacy.code ~ '^FG_AREA_[0-9]{2}$'
       AND NOT EXISTS (SELECT 1 FROM ops.store_units u WHERE u.store_location_id = legacy.id)
       AND NOT EXISTS (SELECT 1 FROM ops.store_events e WHERE e.store_location_id = legacy.id)
-      AND NOT EXISTS (SELECT 1 FROM ops.store_location_delivery_slots d WHERE d.store_location_id = legacy.id);
-
-    -- Ensure all FG-01..FG-19 have strictly capacity = 1 (1 pallet spot per location)
-    UPDATE ops.store_locations
-    SET capacity = 1
-    WHERE code ~ '^FG-[0-9]{2}$';
-
-    -- Seed initial empty containers in FG-01 and FG-02 so Bitmiş Ürün Deposu starts with ready empty pallets
-    INSERT INTO ops.store_units (store_location_id, load_state, delivered_at)
-    SELECT id, 'EMPTY', clock_timestamp()
-    FROM ops.store_locations
-    WHERE code IN ('FG-01', 'FG-02')
+      AND NOT EXISTS (SELECT 1 FROM ops.store_location_delivery_slots d WHERE d.store_location_id = legacy.id)
+      AND NOT EXISTS (SELECT 1 FROM ops.store_reservations r WHERE r.store_location_id = legacy.id)
       AND NOT EXISTS (
-          SELECT 1 FROM ops.store_units u 
-          WHERE u.store_location_id = ops.store_locations.id AND u.removed_at IS NULL
-      );
+          SELECT 1 FROM integration.profile_shared_endpoint_bindings b
+          WHERE b.store_location_id = legacy.id);
+
+    DELETE FROM ops.store_locations AS legacy
+    WHERE legacy.area_purpose = 'LEGACY'
+      AND legacy.code ~ '^FG-[0-9]{2}$'
+      AND NOT EXISTS (SELECT 1 FROM ops.store_units u WHERE u.store_location_id = legacy.id)
+      AND NOT EXISTS (SELECT 1 FROM ops.store_events e WHERE e.store_location_id = legacy.id)
+      AND NOT EXISTS (SELECT 1 FROM ops.store_location_delivery_slots d WHERE d.store_location_id = legacy.id)
+      AND NOT EXISTS (SELECT 1 FROM ops.store_reservations r WHERE r.store_location_id = legacy.id)
+      AND NOT EXISTS (
+          SELECT 1 FROM integration.profile_shared_endpoint_bindings b
+          WHERE b.store_location_id = legacy.id);
 END $$;
 

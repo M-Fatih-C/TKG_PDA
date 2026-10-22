@@ -4,8 +4,8 @@ using TkgPda.Domain;
 namespace TkgPda.Api;
 
 /// <summary>
-/// Load is EMPTY or FULL. TransportRequestId is sent only for filled material;
-/// staged empty stock carries none, and is matched to a demand at the ready step.
+/// Load is EMPTY or FULL. Finished-goods empty-container preparation binds the
+/// exact BRING_EMPTY request; semi-finished filled material binds BRING_FULL.
 /// </summary>
 public sealed record PlacePalletHttpRequest(
     string Load, Guid ContainerTypeId, Guid? PartId, Guid? TransportRequestId);
@@ -26,24 +26,42 @@ public static class WarehousePreparationEndpoints
             .RequireAuthorization(PolicyNames.SemiFinishedWarehouse);
 
         // Both reads are polled by the tablet every few seconds.
-        group.MapGet("/areas", AreasAsync);
-        group.MapGet("/demands", DemandsAsync);
-        group.MapPost("/areas/{areaId:guid}/pallet", PlaceAsync);
+        group.MapGet("/areas", (WarehousePreparationService service, CancellationToken token) =>
+            AreasAsync(WarehousePreparationScopes.SemiFinished, service, token));
+        group.MapGet("/demands", (WarehousePreparationService service, CancellationToken token) =>
+            DemandsAsync(WarehousePreparationScopes.SemiFinished, service, token));
+        group.MapPost("/areas/{areaId:guid}/pallet", (
+            Guid areaId, PlacePalletHttpRequest request, HttpContext context,
+            WarehousePreparationService service, CancellationToken token) =>
+            PlaceAsync(WarehousePreparationScopes.SemiFinished, areaId, request, context, service, token));
         group.MapPost("/pallets/{palletId:guid}/ready", ReadyAsync);
         group.MapPost("/pallets/{palletId:guid}/release", ReleaseAsync);
+
+        var finished = endpoints.MapGroup("/api/v1/warehouse/finished-goods-preparation")
+            .RequireAuthorization(PolicyNames.FinishedGoodsWarehouse);
+        finished.MapGet("/areas", (WarehousePreparationService service, CancellationToken token) =>
+            AreasAsync(WarehousePreparationScopes.FinishedGoods, service, token));
+        finished.MapGet("/demands", (WarehousePreparationService service, CancellationToken token) =>
+            DemandsAsync(WarehousePreparationScopes.FinishedGoods, service, token));
+        finished.MapPost("/areas/{areaId:guid}/pallet", (
+            Guid areaId, PlacePalletHttpRequest request, HttpContext context,
+            WarehousePreparationService service, CancellationToken token) =>
+            PlaceAsync(WarehousePreparationScopes.FinishedGoods, areaId, request, context, service, token));
+        finished.MapPost("/pallets/{palletId:guid}/ready", ReadyAsync);
+        finished.MapPost("/pallets/{palletId:guid}/release", ReleaseAsync);
         return endpoints;
     }
 
     private static async Task<IResult> AreasAsync(
-        WarehousePreparationService service, CancellationToken cancellationToken) =>
-        Results.Ok(await service.ListAreasAsync(cancellationToken));
+        string scope, WarehousePreparationService service, CancellationToken cancellationToken) =>
+        Results.Ok(await service.ListAreasAsync(scope, cancellationToken));
 
     private static async Task<IResult> DemandsAsync(
-        WarehousePreparationService service, CancellationToken cancellationToken) =>
-        Results.Ok(await service.ListDemandsAsync(cancellationToken));
+        string scope, WarehousePreparationService service, CancellationToken cancellationToken) =>
+        Results.Ok(await service.ListDemandsAsync(scope, cancellationToken));
 
     private static async Task<IResult> PlaceAsync(
-        Guid areaId, PlacePalletHttpRequest request, HttpContext context,
+        string scope, Guid areaId, PlacePalletHttpRequest request, HttpContext context,
         WarehousePreparationService service, CancellationToken cancellationToken)
     {
         var result = await service.PlacePalletAsync(
@@ -56,7 +74,8 @@ public static class WarehousePreparationEndpoints
                 context.User.UserId(),
                 DeviceId(context),
                 context.Request.Headers[ApiHeaders.IdempotencyKey].ToString().Trim(),
-                CorrelationId(context)),
+                CorrelationId(context),
+                scope),
             cancellationToken);
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = result.WasIdempotentReplay ? "true" : "false";
         return Results.Json(result.Pallet,

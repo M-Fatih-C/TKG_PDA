@@ -244,10 +244,10 @@ export const createAdminApi = (token: string) => ({
   reportSummary: async (filters: ReportWindow, signal?: AbortSignal) =>
     (await request<OperationsSummary>(`/api/v1/admin/reports/summary?${reportSearch(filters)}`, { token, signal })).data,
   downloadReport: async (kind: 'tasks' | 'sessions', filters: ReportWindow, fileName: string) => {
-    const response = await fetch(`/api/v1/admin/reports/${kind}/export.csv?${reportSearch(filters)}`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'text/csv' },
+    const response = await fetch(`/api/v1/admin/reports/${kind}/export.xlsx?${reportSearch(filters)}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
     })
-    if (!response.ok) throw new ApiProblem({ status: response.status, title: 'Rapor indirilemedi', detail: 'CSV raporu oluşturulamadı.', code: 'REPORT_EXPORT_FAILED' })
+    if (!response.ok) throw new ApiProblem({ status: response.status, title: 'Rapor indirilemedi', detail: 'Excel raporu oluşturulamadı.', code: 'REPORT_EXPORT_FAILED' })
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')

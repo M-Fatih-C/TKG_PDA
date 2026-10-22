@@ -8,7 +8,8 @@ using TkgPda.Domain;
 namespace TkgPda.Infrastructure.Postgres;
 
 /// <summary>
-/// The four shared preparation areas.
+/// Warehouse preparation areas: four semi-finished positions and six
+/// request-bound finished-goods empty-container positions.
 ///
 /// LOCK ORDER: transport request, then preparation pallet. MarkReadyAsync
 /// therefore reads the pallet's request id without a lock, takes the request
@@ -39,50 +40,73 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         LEFT JOIN master.machines m ON m.id = r.machine_id
         """;
 
-    public async Task<IReadOnlyList<PreparationAreaRecord>> ListAreasAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<PreparationAreaRecord>> ListAreasAsync(
+        string warehouseScope = WarehousePreparationScopes.SemiFinished,
+        CancellationToken cancellationToken = default)
     {
+        warehouseScope = WarehousePreparationScopes.Normalize(warehouseScope);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var command = new NpgsqlCommand($"""
-            SELECT a.id, a.area_number, a.display_name, a.is_enabled, {PalletColumns}
+            SELECT a.id, a.area_number, a.display_name, a.is_enabled, a.warehouse_scope, {PalletColumns}
             FROM ops.preparation_areas a
             LEFT JOIN ops.preparation_pallets p
                    ON p.preparation_area_id = a.id AND p.released_at IS NULL
             {PalletJoins}
+            WHERE a.warehouse_scope = @scope
             ORDER BY a.area_number
             """, connection);
+        command.Parameters.AddWithValue("scope", warehouseScope);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var areas = new List<PreparationAreaRecord>();
         while (await reader.ReadAsync(cancellationToken))
         {
             areas.Add(new PreparationAreaRecord(
                 reader.GetGuid(0), reader.GetInt32(1), reader.GetString(2), reader.GetBoolean(3),
-                reader.IsDBNull(4) ? null : ReadPallet(reader, 4)));
+                reader.IsDBNull(5) ? null : ReadPallet(reader, 5), reader.GetString(4)));
         }
 
         return areas;
     }
 
-    public async Task<IReadOnlyList<WarehouseDemandRecord>> ListDemandsAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<WarehouseDemandRecord>> ListDemandsAsync(
+        string warehouseScope = WarehousePreparationScopes.SemiFinished,
+        CancellationToken cancellationToken = default)
     {
+        warehouseScope = WarehousePreparationScopes.Normalize(warehouseScope);
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         // Oldest first: the tablet's side list is a queue, and the operator
         // needs to see what has waited longest, not what arrived last.
         await using var command = new NpgsqlCommand($"""
             SELECT r.id, r.request_no, r.machine_id, m.code, r.part_id, part.part_code,
-                   r.container_type_id, ct.code, tt.code, r.created_at,
-                   claimed.preparation_area_id, claimed_area.area_number, part.description
+                   COALESCE(r.container_type_id, machine_slot.default_container_type_id), ct.code,
+                   tt.code, r.created_at,
+                   claimed.preparation_area_id, claimed_area.area_number, part.description,
+                   v.code, v.name, pg.name
             FROM ops.transport_requests r
             JOIN master.machines m ON m.id = r.machine_id
+            JOIN master.variants v ON v.id = r.variant_id
             JOIN master.task_types tt ON tt.id = r.task_type_id
             LEFT JOIN master.parts part ON part.id = r.part_id
-            LEFT JOIN master.container_types ct ON ct.id = r.container_type_id
+            LEFT JOIN master.product_groups pg ON pg.id = r.product_group_id
+            LEFT JOIN master.layout_slots machine_slot
+                   ON machine_slot.id = CASE WHEN tt.code = 'BRING_EMPTY' THEN r.destination_slot_id ELSE r.source_slot_id END
+            LEFT JOIN master.container_types ct
+                   ON ct.id = COALESCE(r.container_type_id, machine_slot.default_container_type_id)
             LEFT JOIN ops.preparation_pallets claimed
                    ON claimed.transport_request_id = r.id AND claimed.released_at IS NULL
             LEFT JOIN ops.preparation_areas claimed_area ON claimed_area.id = claimed.preparation_area_id
-            WHERE r.readiness_state = 'WAITING_PREPARATION'
-              AND r.status IN ({ActiveStatusesSql})
+            WHERE r.status IN ({ActiveStatusesSql})
+              AND (
+                    (@scope = 'FINISHED_GOODS'
+                     AND tt.code = 'BRING_EMPTY'
+                     AND (r.readiness_state = 'WAITING_PREPARATION' OR claimed.id IS NOT NULL))
+                 OR (@scope = 'SEMI_FINISHED'
+                     AND tt.code = 'BRING_FULL'
+                     AND r.readiness_state = 'WAITING_PREPARATION')
+              )
             ORDER BY r.created_at, r.request_no
             """, connection);
+        command.Parameters.AddWithValue("scope", warehouseScope);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var demands = new List<WarehouseDemandRecord>();
         while (await reader.ReadAsync(cancellationToken))
@@ -105,7 +129,11 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                 RequestedAt: reader.GetFieldValue<DateTimeOffset>(9),
                 ClaimedByAreaId: reader.IsDBNull(10) ? null : reader.GetGuid(10),
                 ClaimedByAreaNumber: reader.IsDBNull(11) ? null : reader.GetInt32(11),
-                PartDescription: reader.IsDBNull(12) ? null : reader.GetString(12)));
+                PartDescription: reader.IsDBNull(12) ? null : reader.GetString(12),
+                VariantCode: reader.IsDBNull(13) ? null : reader.GetString(13),
+                VariantName: reader.IsDBNull(14) ? null : reader.GetString(14),
+                ProductGroupName: reader.IsDBNull(15) ? null : reader.GetString(15),
+                WarehouseScope: warehouseScope));
         }
 
         return demands;
@@ -116,7 +144,8 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
+        var scope = WarehousePreparationScopes.Normalize(command.WarehouseScope);
+        await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, scope, cancellationToken);
 
         var replay = await FindPalletAsync(connection, transaction,
             "p.preparation_area_id = @area AND p.placement_key = @key",
@@ -136,7 +165,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             return new PreparationPalletResult(replay, WasIdempotentReplay: true);
         }
 
-        await EnsureAreaEnabledAsync(connection, transaction, command.AreaId, cancellationToken);
+        await EnsureAreaEnabledAsync(connection, transaction, command.AreaId, scope, cancellationToken);
         if (command.TransportRequestId is { } requestId)
         {
             // WP-06: the request row lock is what serialises the first-only
@@ -145,7 +174,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             // is touched, so concurrent placements for one request cannot both
             // observe "no STARTED event yet".
             await LockRequestAsync(connection, transaction, requestId, cancellationToken);
-            await ValidateDemandAsync(connection, transaction, requestId, command, cancellationToken);
+            await ValidateDemandAsync(connection, transaction, requestId, command, scope, cancellationToken);
         }
 
         PreparationPalletRecord pallet;
@@ -221,7 +250,8 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
+        var scope = await ReadPalletAreaScopeAsync(connection, transaction, command.PalletId, cancellationToken);
+        await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, scope, cancellationToken);
 
         // Unlocked peek only to learn which request to lock first; the binding
         // is re-verified below once both rows are held.
@@ -323,7 +353,8 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-        await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
+        var scope = await ReadPalletAreaScopeAsync(connection, transaction, command.PalletId, cancellationToken);
+        await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, scope, cancellationToken);
 
         // Keep the workflow-wide lock order: request first, then pallet. The
         // unlocked binding read is verified after both rows are locked.
@@ -394,12 +425,14 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                 await using var reset = new NpgsqlCommand("""
                     UPDATE ops.transport_requests
                     SET readiness_state = 'WAITING_PREPARATION', ready_at = NULL,
-                        machine_slot_reservation_active = false, updated_at = now()
+                        machine_slot_reservation_active = CASE WHEN @keep_reservation THEN machine_slot_reservation_active ELSE false END,
+                        updated_at = now()
                     WHERE id = @id
                       AND status IN ('CREATED','VALIDATING','QUEUED')
                     RETURNING id
                     """, connection, transaction);
                 reset.Parameters.AddWithValue("id", boundRequest.Id);
+                reset.Parameters.AddWithValue("keep_reservation", boundRequest.TaskType == TransportTaskType.BringEmpty);
                 if (await reset.ExecuteScalarAsync(cancellationToken) is null)
                 {
                     throw new WorkflowRuleException(
@@ -533,11 +566,13 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
     }
 
     private static async Task EnsureAreaEnabledAsync(
-        NpgsqlConnection connection, NpgsqlTransaction transaction, Guid areaId, CancellationToken cancellationToken)
+        NpgsqlConnection connection, NpgsqlTransaction transaction, Guid areaId,
+        string warehouseScope, CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
-            "SELECT 1 FROM ops.preparation_areas WHERE id = @id AND is_enabled", connection, transaction);
+            "SELECT 1 FROM ops.preparation_areas WHERE id = @id AND is_enabled AND warehouse_scope = @scope", connection, transaction);
         command.Parameters.AddWithValue("id", areaId);
+        command.Parameters.AddWithValue("scope", warehouseScope);
         if (await command.ExecuteScalarAsync(cancellationToken) is null)
         {
             throw new WorkflowRuleException("PREPARATION_AREA_INVALID", "Geçerli bir hazırlık alanı seçilmelidir.");
@@ -550,12 +585,16 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
     /// </summary>
     private static async Task ValidateDemandAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction, Guid requestId,
-        PlacePalletCommand command, CancellationToken cancellationToken)
+        PlacePalletCommand command, string warehouseScope, CancellationToken cancellationToken)
     {
         await using var query = new NpgsqlCommand($"""
-            SELECT r.machine_id, r.part_id, r.container_type_id, tt.code, r.status, r.readiness_state
+            SELECT r.machine_id, r.part_id,
+                   COALESCE(r.container_type_id, machine_slot.default_container_type_id),
+                   tt.code, r.status, r.readiness_state
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
+            LEFT JOIN master.layout_slots machine_slot
+                   ON machine_slot.id = CASE WHEN tt.code = 'BRING_EMPTY' THEN r.destination_slot_id ELSE r.source_slot_id END
             WHERE r.id = @id
             """, connection, transaction);
         query.Parameters.AddWithValue("id", requestId);
@@ -572,6 +611,14 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         }
 
         var operation = WorkflowCode.ParseTaskType(reader.GetString(3));
+        var expectedOperation = warehouseScope == WarehousePreparationScopes.FinishedGoods
+            ? TransportTaskType.BringEmpty
+            : TransportTaskType.BringFull;
+        if (operation != expectedOperation)
+        {
+            throw new WorkflowRuleException(
+                "PREPARATION_SCOPE_MISMATCH", "Talep seçilen depo hazırlık alanına ait değil.");
+        }
         var demand = new WarehousePreparationDemand(
             RequestId: requestId,
             MachineId: reader.GetGuid(0),
@@ -600,7 +647,9 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         var readyAt = DateTimeOffset.UtcNow;
         await using (var update = new NpgsqlCommand("""
             UPDATE ops.transport_requests
-            SET readiness_state = 'READY', ready_at = @ready_at, updated_at = now()
+            SET readiness_state = 'READY', ready_at = @ready_at,
+                container_type_id = COALESCE(container_type_id, @container_type_id),
+                updated_at = now()
             WHERE id = @id
               AND status IN ('CREATED','VALIDATING','QUEUED')
               AND readiness_state = 'WAITING_PREPARATION'
@@ -609,6 +658,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         {
             update.Parameters.AddWithValue("id", requestId);
             update.Parameters.AddWithValue("ready_at", readyAt);
+            AddNullableUuid(update, "container_type_id", containerTypeId);
             if (await update.ExecuteScalarAsync(cancellationToken) is null)
             {
                 throw new WorkflowRuleException(
@@ -639,22 +689,42 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
 
     private static async Task ValidateWarehouseActorAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction,
-        Guid actorId, Guid deviceId, CancellationToken cancellationToken)
+        Guid actorId, Guid deviceId, string warehouseScope, CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand("""
             SELECT 1 FROM auth.users u
             WHERE u.id = @actor AND u.is_active
               AND EXISTS (SELECT 1 FROM audit.client_devices d WHERE d.id = @device AND d.is_active)
               AND EXISTS (SELECT 1 FROM auth.user_roles ur JOIN auth.roles r ON r.id = ur.role_id
-                          WHERE ur.user_id = u.id AND r.code IN ('ADMIN','SUPERVISOR','WAREHOUSE_OPERATOR','SEMI_FINISHED_WAREHOUSE_OPERATOR'))
+                          WHERE ur.user_id = u.id AND (
+                              r.code IN ('ADMIN','SUPERVISOR','WAREHOUSE_OPERATOR')
+                              OR (@scope = 'SEMI_FINISHED' AND r.code = 'SEMI_FINISHED_WAREHOUSE_OPERATOR')
+                              OR (@scope = 'FINISHED_GOODS' AND r.code = 'FINISHED_GOODS_WAREHOUSE_OPERATOR')
+                          ))
             """, connection, transaction);
         command.Parameters.AddWithValue("actor", actorId);
         command.Parameters.AddWithValue("device", deviceId);
+        command.Parameters.AddWithValue("scope", warehouseScope);
         if (await command.ExecuteScalarAsync(cancellationToken) is null)
         {
             throw new WorkflowRuleException(
                 "PREPARATION_ACCESS_DENIED", "Kullanıcı veya cihaz depo hazırlığı yapmaya yetkili değil.");
         }
+    }
+
+    private static async Task<string> ReadPalletAreaScopeAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        Guid palletId, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT a.warehouse_scope
+            FROM ops.preparation_pallets p
+            JOIN ops.preparation_areas a ON a.id = p.preparation_area_id
+            WHERE p.id = @id
+            """, connection, transaction);
+        command.Parameters.AddWithValue("id", palletId);
+        return await command.ExecuteScalarAsync(cancellationToken) as string
+            ?? throw new WorkflowRuleException("PREPARATION_PALLET_NOT_FOUND", "Hazırlık kaydı bulunamadı.");
     }
 
     private static async Task<bool> HasTransportEventAsync(

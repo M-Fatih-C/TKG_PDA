@@ -108,7 +108,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
                 context,
                 StatusCodes.Status503ServiceUnavailable,
                 "DATABASE_UNAVAILABLE",
-                "The database is temporarily unavailable.");
+                "Veritabanı bağlantısı geçici olarak kullanılamıyor. Sunucu hazır olduğunda Yenile ile tekrar deneyin.");
         }
         catch (Exception error)
         {

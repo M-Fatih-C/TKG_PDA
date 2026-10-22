@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using TkgPda.Api;
 using Xunit;
 
@@ -14,6 +15,7 @@ public sealed class WarehouseRoleAuthorizationApiTests(ApiTestFixture fixture) :
 {
     private const string PreparationAreasUrl = "/api/v1/warehouse/preparation/areas";
     private const string FinishedGoodsLocationsUrl = "/api/v1/warehouse/store/locations";
+    private const string FinishedGoodsPreparationUrl = "/api/v1/warehouse/finished-goods-preparation/areas";
 
     [Fact]
     public async Task Semi_finished_warehouse_operator_allowed_on_preparation_and_forbidden_on_finished_goods()
@@ -30,6 +32,7 @@ public sealed class WarehouseRoleAuthorizationApiTests(ApiTestFixture fixture) :
         var storeResponse = await client.GetAsync(FinishedGoodsLocationsUrl);
         Assert.Equal(HttpStatusCode.Forbidden, storeResponse.StatusCode);
         Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(storeResponse));
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(FinishedGoodsPreparationUrl)).StatusCode);
     }
 
     [Fact]
@@ -42,6 +45,10 @@ public sealed class WarehouseRoleAuthorizationApiTests(ApiTestFixture fixture) :
         // Finished goods store -> Allowed (200 OK)
         var storeResponse = await client.GetAsync(FinishedGoodsLocationsUrl);
         Assert.Equal(HttpStatusCode.OK, storeResponse.StatusCode);
+        var finishedPreparation = await client.GetAsync(FinishedGoodsPreparationUrl);
+        Assert.Equal(HttpStatusCode.OK, finishedPreparation.StatusCode);
+        Assert.Equal(6, JsonDocument.Parse(await finishedPreparation.Content.ReadAsStringAsync()).RootElement.GetArrayLength());
+        Assert.Equal(2, JsonDocument.Parse(await storeResponse.Content.ReadAsStringAsync()).RootElement.GetArrayLength());
 
         // Preparation areas -> Forbidden (403)
         var prepResponse = await client.GetAsync(PreparationAreasUrl);
@@ -65,6 +72,7 @@ public sealed class WarehouseRoleAuthorizationApiTests(ApiTestFixture fixture) :
         var storeResponse = await client.GetAsync(FinishedGoodsLocationsUrl);
         Assert.Equal(HttpStatusCode.Forbidden, storeResponse.StatusCode);
         Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(storeResponse));
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(FinishedGoodsPreparationUrl)).StatusCode);
     }
 
     [Fact]

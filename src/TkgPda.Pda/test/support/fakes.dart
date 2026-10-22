@@ -925,6 +925,8 @@ class FakePdaRepository implements PdaDataSource {
   final List<Map<String, Object?>> placedPallets = [];
   final List<Map<String, Object?>> readiedPallets = [];
   final List<Map<String, Object?>> releasedPallets = [];
+  List<PreparationArea> finishedGoodsPreparationAreasValue = const [];
+  List<WarehouseDemand> finishedGoodsPreparationDemandsValue = const [];
 
   @override
   Future<List<PreparationArea>> preparationAreas() async {
@@ -992,6 +994,48 @@ class FakePdaRepository implements PdaDataSource {
     if (releaseAreaError case final error?) throw error;
     return fakePallet(id: palletId);
   }
+
+  @override
+  Future<List<PreparationArea>> finishedGoodsPreparationAreas() async =>
+      finishedGoodsPreparationAreasValue;
+
+  @override
+  Future<List<WarehouseDemand>> finishedGoodsPreparationDemands() async =>
+      finishedGoodsPreparationDemandsValue;
+
+  @override
+  Future<PreparationPallet> placeFinishedGoodsPreparation({
+    required String areaId,
+    required String containerTypeId,
+    required String transportRequestId,
+    required String idempotencyKey,
+  }) => placePallet(
+    areaId: areaId,
+    load: 'EMPTY',
+    containerTypeId: containerTypeId,
+    transportRequestId: transportRequestId,
+    idempotencyKey: idempotencyKey,
+  );
+
+  @override
+  Future<PreparationPallet> markFinishedGoodsPreparationReady({
+    required String palletId,
+    required int expectedRowVersion,
+  }) => markPalletReady(
+    palletId: palletId,
+    expectedRowVersion: expectedRowVersion,
+  );
+
+  @override
+  Future<PreparationPallet> releaseFinishedGoodsPreparation({
+    required String palletId,
+    required int expectedRowVersion,
+    required String reason,
+  }) => releasePreparationArea(
+    palletId: palletId,
+    expectedRowVersion: expectedRowVersion,
+    reason: reason,
+  );
 
   // ---- Warehouse tablet: the finished-goods store ----
   List<StoreLocation> storeLocationsValue = const [];

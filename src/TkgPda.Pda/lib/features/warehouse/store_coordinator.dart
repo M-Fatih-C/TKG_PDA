@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../core/errors/api_problem.dart';
+import '../../data/models/preparation_area.dart';
 import '../../data/models/store_location.dart';
 import '../../data/repositories/pda_repository.dart';
 import 'warehouse_notification_coordinator.dart';
@@ -14,15 +16,19 @@ import 'warehouse_notification_coordinator.dart';
 /// that carried it completes. This only reports what the operator physically
 /// took away, and always with the row version the screen was showing.
 class StoreCoordinator extends ChangeNotifier {
-  StoreCoordinator(this.repository, {this.notificationCoordinator});
+  StoreCoordinator(this.repository, {this.notificationCoordinator, Uuid? uuid})
+    : _uuid = uuid ?? const Uuid();
 
   final PdaDataSource repository;
   final WarehouseNotificationCoordinator? notificationCoordinator;
+  final Uuid _uuid;
 
   /// The customer asked for a 5-10 second refresh.
   static const pollInterval = Duration(seconds: 6);
 
   List<StoreLocation> locations = const [];
+  List<PreparationArea> preparationAreas = const [];
+  List<WarehouseDemand> emptyContainerDemands = const [];
   bool loading = false;
   bool inFlight = false;
   String? error;
@@ -67,6 +73,8 @@ class StoreCoordinator extends ChangeNotifier {
     _stopTimer();
     _generation++;
     locations = const [];
+    preparationAreas = const [];
+    emptyContainerDemands = const [];
     unseenUnitIds = const {};
     _primed = false;
     error = null;
@@ -82,6 +90,9 @@ class StoreCoordinator extends ChangeNotifier {
 
     try {
       final loaded = await repository.storeLocations();
+      final loadedPreparationAreas = await repository
+          .finishedGoodsPreparationAreas();
+      final loadedDemands = await repository.finishedGoodsPreparationDemands();
       if (generation != _generation || _disposed) return;
 
       final live = {
@@ -123,6 +134,8 @@ class StoreCoordinator extends ChangeNotifier {
       }
 
       locations = loaded;
+      preparationAreas = loadedPreparationAreas;
+      emptyContainerDemands = loadedDemands;
       lastSuccessfulRefresh = DateTime.now();
 
       // Check capacity warning for store locations with defined capacity
@@ -167,6 +180,49 @@ class StoreCoordinator extends ChangeNotifier {
       expectedRowVersion: unit.rowVersion,
     );
   });
+
+  List<WarehouseDemand> get unclaimedEmptyContainerDemands =>
+      emptyContainerDemands
+          .where((demand) => !demand.isClaimed)
+          .toList(growable: false);
+
+  Future<bool> prepareEmptyContainer({
+    required PreparationArea area,
+    required WarehouseDemand demand,
+  }) {
+    final containerTypeId = demand.containerTypeId;
+    if (containerTypeId == null || containerTypeId.isEmpty) {
+      error =
+          'Talebin palet/kasa tipi tanımlı değil. Yönetim panelinden makine konumu taşıma kabını kontrol edin.';
+      _notify();
+      return Future.value(false);
+    }
+    return _mutate(area.id, () async {
+      await repository.placeFinishedGoodsPreparation(
+        areaId: area.id,
+        containerTypeId: containerTypeId,
+        transportRequestId: demand.requestId,
+        idempotencyKey: _uuid.v4(),
+      );
+    });
+  }
+
+  Future<bool> markPreparationReady(PreparationPallet pallet) =>
+      _mutate(pallet.id, () async {
+        await repository.markFinishedGoodsPreparationReady(
+          palletId: pallet.id,
+          expectedRowVersion: pallet.rowVersion,
+        );
+      });
+
+  Future<bool> releasePreparation(PreparationPallet pallet, String reason) =>
+      _mutate(pallet.id, () async {
+        await repository.releaseFinishedGoodsPreparation(
+          palletId: pallet.id,
+          expectedRowVersion: pallet.rowVersion,
+          reason: reason,
+        );
+      });
 
   final Map<String, String> _emptyContainerKeys = {};
 

@@ -21,6 +21,20 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
             if (await reader.ReadAsync(cancellationToken))
             { nav=reader.IsDBNull(0) ? null : reader.GetGuid(0); destinationBusinessCode=Text(reader,1); sourceBusinessCode=Text(reader,2); operation=Text(reader,3); }
         if (nav is not { } profileId) return null;
+        var hasPreparedSource = false;
+        if (operation == "BRING_EMPTY")
+        {
+            await using var prepared = new NpgsqlCommand("""
+                SELECT 1 FROM ops.preparation_pallets
+                WHERE transport_request_id = @id AND released_at IS NULL AND ready_at IS NOT NULL
+                LIMIT 1
+                """, connection);
+            prepared.Parameters.AddWithValue("id", requestId);
+            hasPreparedSource = await prepared.ExecuteScalarAsync(cancellationToken) is not null;
+        }
+        if (hasPreparedSource)
+            return await ReadPreparationPhysicalBlockAsync(connection, requestId, cancellationToken);
+
         var businessCode = operation == "BRING_EMPTY" ? sourceBusinessCode : destinationBusinessCode;
         if (businessCode is null) return null;
         var endpointClass=operation=="BRING_EMPTY" ? "EMPTY_SOURCE"
@@ -283,13 +297,18 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
                 LEFT JOIN master.slot_groups sg ON sg.id = sgm.slot_group_id
                 LEFT JOIN integration.rds_worksites rw
                     ON rw.id = integration.resolve_slot_worksite(ls.id, r.navigation_id)
-                WHERE (r.source_slot_id IS NOT NULL AND ls.id = r.source_slot_id)
-                   OR (r.source_slot_id IS NULL AND template.source_slot_group_id IS NOT NULL
-                       AND sgm.slot_group_id = template.source_slot_group_id AND ls.layout_id = r.layout_id)
-                   OR (r.source_slot_id IS NULL AND template.source_slot_group_id IS NULL
-                       AND ls.layout_id = r.layout_id AND ls.is_enabled AND (
-                           (tt.code = 'BRING_EMPTY' AND ls.slot_role = 'EMPTY_STORAGE')
-                       ))
+                WHERE NOT (tt.code = 'BRING_EMPTY' AND EXISTS (
+                          SELECT 1 FROM ops.preparation_pallets prepared
+                          WHERE prepared.transport_request_id = r.id
+                            AND prepared.released_at IS NULL AND prepared.ready_at IS NOT NULL))
+                  AND (
+                       (r.source_slot_id IS NOT NULL AND ls.id = r.source_slot_id)
+                    OR (r.source_slot_id IS NULL AND template.source_slot_group_id IS NOT NULL
+                        AND sgm.slot_group_id = template.source_slot_group_id AND ls.layout_id = r.layout_id)
+                    OR (r.source_slot_id IS NULL AND template.source_slot_group_id IS NULL
+                        AND ls.layout_id = r.layout_id AND ls.is_enabled
+                        AND tt.code = 'BRING_EMPTY' AND ls.slot_role = 'EMPTY_STORAGE')
+                  )
                 ORDER BY CASE WHEN ls.id = r.source_slot_id THEN 0 ELSE 1 END,
                          sgm.priority, ls.display_order, ls.id
                 LIMIT 1
@@ -307,7 +326,7 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
                     JOIN integration.preparation_area_rds_mapping pm ON pm.preparation_area_id = pa.id
                     JOIN integration.rds_worksites rw ON rw.id = pm.rds_worksite_id
                                                      AND rw.navigation_profile_id = r.navigation_id
-                    WHERE tt.code = 'BRING_FULL'
+                    WHERE tt.code IN ('BRING_FULL', 'BRING_EMPTY')
                       AND pp.transport_request_id = r.id
                       AND pp.released_at IS NULL
                       AND pp.ready_at IS NOT NULL
@@ -480,6 +499,14 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
 
         if (operation == "BRING_EMPTY" && !hasSourceSlot)
         {
+            await using var prepared = new NpgsqlCommand("""
+                SELECT 1 FROM ops.preparation_pallets
+                WHERE transport_request_id = @id AND released_at IS NULL AND ready_at IS NOT NULL
+                LIMIT 1
+                """, connection);
+            prepared.Parameters.AddWithValue("id", requestId);
+            if (await prepared.ExecuteScalarAsync(cancellationToken) is not null)
+                return await ReadWorkSiteHealthAsync(connection, requestId, "PREPARATION", null, "PREPARATION_WORKSITE_MAPPING_MISSING", cancellationToken);
             return await ReadWorkSiteHealthAsync(connection, requestId, "EMPTY_SOURCE", sourceBusinessCode, "EMPTY_SOURCE_MAPPING_MISSING", cancellationToken);
         }
 
@@ -551,6 +578,41 @@ public sealed class PostgresRdsExecutionStore(NpgsqlDataSource dataSource, RdsPh
         if (reader.GetInt32(0) == 1) return "RDS_WORKSITE_DISABLED";
         if (reader.GetInt32(1) == 1) return "RDS_WORKSITE_SYNC_FAILED";
         return null;
+    }
+
+    private async Task<string?> ReadPreparationPhysicalBlockAsync(
+        NpgsqlConnection connection, Guid requestId, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT w.rds_type, w.last_filled, w.last_locked, w.last_disabled,
+                   w.last_sync_failed, w.last_sync_at
+            FROM ops.transport_requests r
+            JOIN ops.preparation_pallets p
+              ON p.transport_request_id = r.id AND p.released_at IS NULL AND p.ready_at IS NOT NULL
+            JOIN integration.preparation_area_rds_mapping map
+              ON map.preparation_area_id = p.preparation_area_id
+            JOIN integration.rds_worksites w
+              ON w.id = map.rds_worksite_id AND w.navigation_profile_id = r.navigation_id
+            WHERE r.id = @id
+            LIMIT 1
+            """, connection);
+        command.Parameters.AddWithValue("id", requestId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return "PREPARATION_WORKSITE_MAPPING_MISSING";
+        var evidence = new RdsPhysicalEvidence(
+            reader.IsDBNull(0) ? null : reader.GetInt32(0),
+            reader.IsDBNull(1) ? null : reader.GetInt32(1),
+            reader.IsDBNull(2) ? null : reader.GetInt32(2),
+            reader.IsDBNull(3) ? null : reader.GetInt32(3),
+            reader.IsDBNull(4) ? null : reader.GetInt32(4),
+            reader.IsDBNull(5) ? null : reader.GetFieldValue<DateTimeOffset>(5));
+        var policy = physicalPolicy ?? new RdsPhysicalAvailabilityPolicy();
+        var state = policy.State(evidence);
+        var sourceAvailable = policy.IsSimulationMode ? state == "AVAILABLE" : state == "OCCUPIED";
+        if (sourceAvailable) return null;
+        return !policy.IsSimulationMode && state == "AVAILABLE"
+            ? "RDS_WORKSITE_OCCUPANCY_CONFLICT"
+            : RdsPhysicalAvailabilityPolicy.ErrorCode(state) ?? "RDS_WORKSITE_STATE_UNKNOWN";
     }
 
     public async Task<TransportRequestSnapshot?> FindRequestAsync(Guid requestId, CancellationToken cancellationToken = default)

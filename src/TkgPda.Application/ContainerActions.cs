@@ -44,7 +44,7 @@ public static class ContainerActionResolutionPolicy
         OperatorContainerAction.Full when occupancy == OccupancyState.Occupied && load == LoadState.Full =>
             new(TransportTaskType.RemoveFull, MarkFullBeforeCreate: false, RequiresPreparation: false),
         OperatorContainerAction.Empty when occupancy == OccupancyState.Vacant && load == LoadState.Unknown =>
-            new(TransportTaskType.BringEmpty, MarkFullBeforeCreate: false, RequiresPreparation: false),
+            new(TransportTaskType.BringEmpty, MarkFullBeforeCreate: false, RequiresPreparation: true),
         OperatorContainerAction.Empty when occupancy == OccupancyState.Occupied =>
             throw new WorkflowRuleException("CONTAINER_POSITION_OCCUPIED", "Bu konumda zaten bir kasa bulunuyor."),
         // A VACANT position is only ever stored with LoadState.Unknown (enforced by

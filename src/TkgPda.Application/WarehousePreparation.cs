@@ -2,16 +2,30 @@ using TkgPda.Domain;
 
 namespace TkgPda.Application;
 
+public static class WarehousePreparationScopes
+{
+    public const string SemiFinished = "SEMI_FINISHED";
+    public const string FinishedGoods = "FINISHED_GOODS";
+
+    public static string Normalize(string? value) => value?.Trim().ToUpperInvariant() switch
+    {
+        FinishedGoods => FinishedGoods,
+        SemiFinished or null or "" => SemiFinished,
+        _ => throw new WorkflowRuleException("PREPARATION_SCOPE_INVALID", "Depo hazırlık türü geçerli değil.")
+    };
+}
+
 /// <summary>
-/// One of the four shared areas as the warehouse tablet sees it: the area, and
-/// whatever pallet currently stands on it. Pallet is null when the area is free.
+/// A warehouse preparation area as the tablet sees it: the area and whatever
+/// pallet currently stands on it. Pallet is null when the area is free.
 /// </summary>
 public sealed record PreparationAreaRecord(
     Guid Id,
     int AreaNumber,
     string DisplayName,
     bool IsEnabled,
-    PreparationPalletRecord? Pallet)
+    PreparationPalletRecord? Pallet,
+    string WarehouseScope = WarehousePreparationScopes.SemiFinished)
 {
     public bool IsFree => Pallet is null;
 }
@@ -55,11 +69,16 @@ public sealed record WarehouseDemandRecord(
     DateTimeOffset RequestedAt,
     Guid? ClaimedByAreaId,
     int? ClaimedByAreaNumber,
-    string? PartDescription = null);
+    string? PartDescription = null,
+    string? VariantCode = null,
+    string? VariantName = null,
+    string? ProductGroupName = null,
+    string WarehouseScope = WarehousePreparationScopes.SemiFinished);
 
 /// <summary>
-/// TransportRequestId is null only for empty stock staged ahead of demand.
-/// Filled material names the request it serves from the moment it is placed.
+/// TransportRequestId may be null only for semi-finished empty stock staged
+/// ahead of demand. Finished-goods empty-container preparation and filled
+/// material name the exact request they serve from the moment they are placed.
 /// </summary>
 public sealed record PlacePalletCommand(
     Guid AreaId,
@@ -70,7 +89,8 @@ public sealed record PlacePalletCommand(
     Guid ActorUserId,
     Guid DeviceId,
     string IdempotencyKey,
-    Guid? CorrelationId = null);
+    Guid? CorrelationId = null,
+    string WarehouseScope = WarehousePreparationScopes.SemiFinished);
 
 /// <summary>
 /// ExpectedRowVersion is the version the tablet was showing. A screen left open
@@ -112,10 +132,14 @@ public sealed record PreparationPalletResult(PreparationPalletRecord Pallet, boo
 /// </summary>
 public interface IWarehousePreparationStore
 {
-    Task<IReadOnlyList<PreparationAreaRecord>> ListAreasAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<PreparationAreaRecord>> ListAreasAsync(
+        string warehouseScope = WarehousePreparationScopes.SemiFinished,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Requests still waiting for warehouse preparation, oldest first.</summary>
-    Task<IReadOnlyList<WarehouseDemandRecord>> ListDemandsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<WarehouseDemandRecord>> ListDemandsAsync(
+        string warehouseScope = WarehousePreparationScopes.SemiFinished,
+        CancellationToken cancellationToken = default);
 
     Task<PreparationPalletResult> PlacePalletAsync(PlacePalletCommand command, CancellationToken cancellationToken = default);
 
@@ -142,11 +166,15 @@ public sealed class WarehousePreparationService(IWarehousePreparationStore store
 {
     public static readonly string[] ReleaseReasons = ["COLLECTED", "WITHDRAWN"];
 
-    public Task<IReadOnlyList<PreparationAreaRecord>> ListAreasAsync(CancellationToken cancellationToken = default) =>
-        store.ListAreasAsync(cancellationToken);
+    public Task<IReadOnlyList<PreparationAreaRecord>> ListAreasAsync(
+        string warehouseScope = WarehousePreparationScopes.SemiFinished,
+        CancellationToken cancellationToken = default) =>
+        store.ListAreasAsync(WarehousePreparationScopes.Normalize(warehouseScope), cancellationToken);
 
-    public Task<IReadOnlyList<WarehouseDemandRecord>> ListDemandsAsync(CancellationToken cancellationToken = default) =>
-        store.ListDemandsAsync(cancellationToken);
+    public Task<IReadOnlyList<WarehouseDemandRecord>> ListDemandsAsync(
+        string warehouseScope = WarehousePreparationScopes.SemiFinished,
+        CancellationToken cancellationToken = default) =>
+        store.ListDemandsAsync(WarehousePreparationScopes.Normalize(warehouseScope), cancellationToken);
 
     public Task<PreparationPalletResult> PlacePalletAsync(
         PlacePalletCommand command, CancellationToken cancellationToken = default)
@@ -156,6 +184,7 @@ public sealed class WarehousePreparationService(IWarehousePreparationStore store
         RequireIdempotencyKey(command.IdempotencyKey);
 
         var content = new WarehousePalletContent(command.ContainerTypeId, command.Load, command.PartId);
+        var scope = WarehousePreparationScopes.Normalize(command.WarehouseScope);
         switch (command.Load)
         {
             case LoadState.Empty:
@@ -163,7 +192,7 @@ public sealed class WarehousePreparationService(IWarehousePreparationStore store
                 // against yet. The helper checks the rest of the shape: an
                 // empty container may not carry material.
                 WarehousePreparationRules.EnsurePalletMatchesDemand(content, demand: null);
-                if (command.TransportRequestId is not null)
+                if (command.TransportRequestId is not null && scope != WarehousePreparationScopes.FinishedGoods)
                 {
                     // Matching empty stock to a request is the ready step's job,
                     // against evidence loaded server-side. Accepting a binding
@@ -171,6 +200,14 @@ public sealed class WarehousePreparationService(IWarehousePreparationStore store
                     throw new WorkflowRuleException(
                         "EMPTY_PREPARATION_NOT_REQUEST_BOUND",
                         "Boş kap talebe bağlı olarak yerleştirilemez; talep eşleşmesi hazır onayında yapılır.");
+                }
+
+                if (scope == WarehousePreparationScopes.FinishedGoods
+                    && (command.TransportRequestId is not { } emptyRequestId || emptyRequestId == Guid.Empty))
+                {
+                    throw new WorkflowRuleException(
+                        "PREPARATION_DEMAND_REQUIRED",
+                        "Boş kasa yalnız gelen talep için hazırlanabilir.");
                 }
 
                 break;
@@ -202,7 +239,7 @@ public sealed class WarehousePreparationService(IWarehousePreparationStore store
                     "Hazırlanan paletin boş veya dolu olduğu bilinmelidir.");
         }
 
-        return store.PlacePalletAsync(command, cancellationToken);
+        return store.PlacePalletAsync(command with { WarehouseScope = scope }, cancellationToken);
     }
 
     public Task<PreparationPalletRecord> MarkReadyAsync(

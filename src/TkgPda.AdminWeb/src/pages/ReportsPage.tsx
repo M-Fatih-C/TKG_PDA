@@ -49,7 +49,7 @@ export function ReportsPage() {
         eyebrow="Operasyon"
         title="Operasyon Kayıtları & Raporlar"
         description="Taşıma görevleri, operatör oturumları ve operasyonel dönem analizleri."
-        actions={<div className="no-print"><Button variant="secondary" onClick={() => void api.downloadReport(tab === 'sessions' ? 'sessions' : 'tasks', range, tab === 'sessions' ? 'TKG_Oturum_Raporu.csv' : 'TKG_Gorev_Raporu.csv')}>CSV indir</Button><Button variant="ghost" onClick={() => window.print()}>Yazdır</Button></div>}
+        actions={<div className="no-print"><Button variant="secondary" onClick={() => void api.downloadReport(tab === 'sessions' ? 'sessions' : 'tasks', range, tab === 'sessions' ? 'TKG_Oturum_Raporu.xlsx' : 'TKG_Gorev_Raporu.xlsx')}>Excel indir</Button><Button variant="ghost" onClick={() => window.print()}>Yazdır</Button></div>}
       />
       <div className="no-print report-toolbar">
         {presets.map((item) => <Button key={item.id} size="sm" variant={preset === item.id ? 'primary' : 'secondary'} onClick={() => applyPreset(item.id)}>{item.label}</Button>)}
@@ -168,15 +168,10 @@ function machineText(state: string, code: string | null) {
 
 function duration(seconds: number | null) {
   if (seconds === null || seconds === undefined) return 'Bilgi yok'
-  if (seconds < 60) return `${seconds} sn`
-  if (seconds < 3600) {
-    const minutes = Math.floor(seconds / 60)
-    const rest = seconds % 60
-    return rest === 0 ? `${minutes} dk` : `${minutes} dk ${rest} sn`
-  }
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
-  return `${hours} sa ${String(minutes).padStart(2, '0')} dk`
+  const rest = seconds % 60
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`
 }
 
 function stamp(value: string | null) {

@@ -78,7 +78,7 @@ const summary: OperationsSummary = {
 const stub = (tasks: TaskReportPage = page()) => {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
-    if (url.includes('/reports/tasks/export.csv') || url.includes('/reports/sessions/export.csv')) return new Response('csv', { status: 200, headers: { 'Content-Type': 'text/csv' } })
+    if (url.includes('/reports/tasks/export.xlsx') || url.includes('/reports/sessions/export.xlsx')) return new Response('xlsx', { status: 200, headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } })
     if (url.includes('/reports/tasks/')) return jsonResponse(detail)
     if (url.includes('/reports/tasks')) return jsonResponse(tasks)
     if (url.includes('/reports/sessions')) return jsonResponse(sessions)
@@ -163,8 +163,8 @@ describe('operations history', () => {
     expect(screen.getByText('Toplam görev')).toBeVisible()
     await user.click(screen.getByRole('tab', { name: 'Hata / İptal Analizi' }))
     expect(await screen.findByText(/MOTOR_CHECK_TIMEOUT/)).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'CSV indir' }))
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('export.csv'))).toBe(true))
+    await user.click(screen.getByRole('button', { name: 'Excel indir' }))
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('export.xlsx'))).toBe(true))
   })
 
   it('keeps the report table available at a desktop width', async () => {

@@ -108,7 +108,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         var taskTypeId = await ResolveAndValidateMasterDataAsync(connection, transaction, request, cancellationToken);
 
         var registryProfile = await IsCommissioningRegistryProfileAsync(connection, transaction, request.NavigationProfileId, cancellationToken);
-        if (registryProfile)
+        if (registryProfile && !request.DefersStoreSourceReservation)
         {
             request = await AssignRegistrySharedEndpointAsync(connection, transaction, request, cancellationToken);
         }
@@ -117,6 +117,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         // on a commissioning navigation profile. Registry requests resolve
         // EMPTY_SOURCE / EMPTY_RETURN through profile_shared_endpoint_bindings.
         if (!registryProfile
+            && !request.DefersStoreSourceReservation
             && TransportRules.RequiresBufferSlot(request.TaskType)
             && TransportRules.BufferSlotId(request.TaskType, request.SourceSlotId, request.DestinationSlotId) is null)
         {
@@ -206,16 +207,19 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         }
 
         var created = await InsertRequestAsync(connection, transaction, request, taskTypeId, batchId, cancellationToken);
-        await ReserveStoreEndpointAsync(
-            connection,
-            transaction,
-            created.Id,
-            created.TaskType,
-            request.NavigationProfileId,
-            request.DestinationSlotId,
-            request.SourceBusinessCode,
-            request.DestinationBusinessCode,
-            cancellationToken);
+        if (!request.DefersStoreSourceReservation)
+        {
+            await ReserveStoreEndpointAsync(
+                connection,
+                transaction,
+                created.Id,
+                created.TaskType,
+                request.NavigationProfileId,
+                request.DestinationSlotId,
+                request.SourceBusinessCode,
+                request.DestinationBusinessCode,
+                cancellationToken);
+        }
         await InsertEventAsync(
             connection,
             transaction,
@@ -381,7 +385,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         // for it and confirmed in a preparation area. Without this the legacy
         // endpoint would open dispatch for a BRING_FULL with nothing standing
         // anywhere, and the robot would be sent to collect air.
-        if (request.TaskType == TransportTaskType.BringFull)
+        if (request.TaskType is TransportTaskType.BringFull or TransportTaskType.BringEmpty)
         {
             await using var prepared = new NpgsqlCommand("""
                 SELECT 1 FROM ops.preparation_pallets
@@ -392,7 +396,9 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             {
                 throw new WorkflowRuleException(
                     "PREPARATION_PALLET_REQUIRED",
-                    "Dolu malzeme talebi ancak hazırlık alanında onaylanmış bir paletle hazır sayılabilir.");
+                    request.TaskType == TransportTaskType.BringEmpty
+                        ? "Boş kasa talebi ancak bitmiş ürün hazırlık alanında onaylanmış bir paletle hazır sayılabilir."
+                        : "Dolu malzeme talebi ancak hazırlık alanında onaylanmış bir paletle hazır sayılabilir.");
             }
         }
 
@@ -2048,6 +2054,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 SELECT sl.id
                 FROM ops.store_locations sl
                 WHERE sl.is_enabled
+                  AND sl.area_purpose = 'DELIVERY'
                   AND (
                       (@useSharedBinding AND EXISTS (
                           SELECT 1

@@ -73,6 +73,15 @@ public sealed partial class PostgresTransportWorkflowStore
         var observed = ApplyLockedPositionState(positions, locked);
         var removals = ClassifyProductionEnd(before, observed);
         await ValidateProductionEndPlanAsync(connection, transaction, before, layoutId, removals, locked, returnSlots, cancellationToken);
+        removals.Sort(static (left, right) =>
+        {
+            var priority = left.Priority.CompareTo(right.Priority);
+            if (priority != 0) return priority;
+            var display = left.DisplayOrder.CompareTo(right.DisplayOrder);
+            if (display != 0) return display;
+            var code = string.Compare(left.Code, right.Code, StringComparison.Ordinal);
+            return code != 0 ? code : left.SlotId.CompareTo(right.SlotId);
+        });
 
         var runId = Guid.NewGuid();
         if (removals.Count == 0)
@@ -179,6 +188,7 @@ public sealed partial class PostgresTransportWorkflowStore
             removals.Add(new CleanupRemoval(
                 position.SlotId,
                 position.Code,
+                position.DisplayOrder,
                 position.Occupancy,
                 position.Load,
                 partId,
@@ -1206,6 +1216,7 @@ public sealed partial class PostgresTransportWorkflowStore
     private sealed record CleanupRemoval(
         Guid SlotId,
         string Code,
+        int DisplayOrder,
         OccupancyState Occupancy,
         LoadState Load,
         Guid PartId,

@@ -25,10 +25,14 @@ public sealed class WarehousePreparationServiceTests
         public MarkPalletReadyCommand? Readied { get; private set; }
         public ReleaseAreaCommand? Released { get; private set; }
 
-        public Task<IReadOnlyList<PreparationAreaRecord>> ListAreasAsync(CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<PreparationAreaRecord>> ListAreasAsync(
+            string warehouseScope = WarehousePreparationScopes.SemiFinished,
+            CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<PreparationAreaRecord>>([]);
 
-        public Task<IReadOnlyList<WarehouseDemandRecord>> ListDemandsAsync(CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<WarehouseDemandRecord>> ListDemandsAsync(
+            string warehouseScope = WarehousePreparationScopes.SemiFinished,
+            CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<WarehouseDemandRecord>>([]);
 
         public Task<PreparationPalletResult> PlacePalletAsync(PlacePalletCommand command, CancellationToken cancellationToken = default)
@@ -69,8 +73,9 @@ public sealed class WarehousePreparationServiceTests
         LoadState load,
         Guid? partId = null,
         Guid? requestId = null,
-        string key = "key-1") =>
-        new(Area, Container, load, partId, requestId, Actor, Device, key);
+        string key = "key-1",
+        string scope = WarehousePreparationScopes.SemiFinished) =>
+        new(Area, Container, load, partId, requestId, Actor, Device, key, WarehouseScope: scope);
 
     private static (WarehousePreparationService Service, RecordingStore Store) Build()
     {
@@ -112,6 +117,20 @@ public sealed class WarehousePreparationServiceTests
             () => service.PlacePalletAsync(Place(LoadState.Empty, requestId: Request)));
 
         Assert.Equal("EMPTY_PREPARATION_NOT_REQUEST_BOUND", error.Code);
+    }
+
+    [Fact]
+    public async Task Finished_goods_empty_pallet_is_bound_to_the_exact_request()
+    {
+        var (service, store) = Build();
+
+        await service.PlacePalletAsync(Place(
+            LoadState.Empty,
+            requestId: Request,
+            scope: WarehousePreparationScopes.FinishedGoods));
+
+        Assert.Equal(Request, store.Placed!.TransportRequestId);
+        Assert.Equal(WarehousePreparationScopes.FinishedGoods, store.Placed.WarehouseScope);
     }
 
     [Fact]

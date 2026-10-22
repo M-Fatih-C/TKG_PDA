@@ -81,6 +81,15 @@ public sealed record CreateTransportRequest(
     public bool DefersMachineSlotReservation { get; init; }
 
     /// <summary>
+    /// A requested empty container is prepared against the demand in one of
+    /// the finished-goods warehouse's six preparation areas. No source pallet
+    /// exists when the request is created, so source allocation is deferred
+    /// until that exact pallet is placed and confirmed ready.
+    /// </summary>
+    public bool DefersStoreSourceReservation =>
+        TaskType == TransportTaskType.BringEmpty && RequiresPreparation;
+
+    /// <summary>
     /// WP-05A: the BUSINESS readiness a new request starts at.
     /// RequiresPreparation=false (the default) preserves every existing
     /// workflow exactly: NotRequired is already execution-eligible under

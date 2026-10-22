@@ -1009,6 +1009,7 @@ public sealed partial class PostgresTransportWorkflowStore
             SELECT 1
             FROM ops.store_locations sl
             WHERE sl.is_enabled
+              AND sl.area_purpose = 'DELIVERY'
               AND NOT EXISTS (
                   SELECT 1 FROM ops.store_units u
                   WHERE u.store_location_id = sl.id

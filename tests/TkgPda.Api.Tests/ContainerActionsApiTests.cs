@@ -1,7 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Npgsql;
 using TkgPda.Api;
+using TkgPda.Application;
+using TkgPda.Infrastructure.Postgres;
 using Xunit;
 
 namespace TkgPda.Api.Tests;
@@ -39,7 +42,9 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
 
         var response = await SendActionAsync(client, context, mapped, "FULL", "wp33-full-event");
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.True(
+            response.StatusCode == HttpStatusCode.Created,
+            $"Expected Created, received {response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
         Assert.Equal("FULL", await fixture.ScalarAsync<string>(
             "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot_id",
             ("slot_id", mapped.SlotId)));
@@ -173,11 +178,130 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
             JOIN master.task_types tt ON tt.id = r.task_type_id
             WHERE r.idempotency_key = 'wp33-empty-vacant'
             """));
-        Assert.Equal("NOT_REQUIRED", await fixture.ScalarAsync<string>(
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
             """
             SELECT readiness_state FROM ops.transport_requests
             WHERE idempotency_key = 'wp33-empty-vacant'
             """));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_reservations WHERE released_at IS NULL"));
+    }
+
+    [Fact]
+    public async Task Empty_container_request_stays_the_same_request_until_finished_goods_marks_it_ready()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var vacant = await SeedMappedPositionAsync(context, "EMPTY-PREPARED");
+        var containerTypeId = await fixture.ScalarAsync<Guid>(
+            """
+            INSERT INTO master.container_types (code, name, category)
+            VALUES (@code, 'Test boş kasa', 'CONTAINER')
+            RETURNING id
+            """,
+            ("code", "WP33-CONTAINER-" + Guid.NewGuid().ToString("N")));
+        await fixture.ExecuteAsync(
+            "UPDATE master.layout_slots SET default_container_type_id = @container WHERE id = @slot",
+            ("container", containerTypeId),
+            ("slot", vacant.SlotId));
+        await SetPositionAsync(vacant.SlotId, vacant.PartId, "VACANT", "UNKNOWN");
+        var lineIdentity = await fixture.SeedIdentityAsync(machineCode: "SH-01-A");
+        using var lineClient = await fixture.LoginClientAsync(lineIdentity);
+
+        var created = await SendActionAsync(lineClient, context, vacant, "EMPTY", "wp33-empty-prepared");
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var requestId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp33-empty-prepared'");
+
+        using var warehouseClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(
+                role: RoleCodes.FinishedGoodsWarehouseOperator,
+                machineCode: "SH-01-A"));
+        var demands = await warehouseClient.GetFromJsonAsync<List<WarehouseDemandRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/demands");
+        var demand = Assert.Single(demands!, item => item.RequestId == requestId);
+        Assert.Equal("BRING_EMPTY", demand.Operation);
+        Assert.Equal("SH-01-A", demand.MachineCode);
+        Assert.NotNull(demand.VariantCode);
+        Assert.NotNull(demand.PartCode);
+        Assert.NotNull(demand.ContainerTypeId);
+
+        var areas = await warehouseClient.GetFromJsonAsync<List<PreparationAreaRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/areas");
+        Assert.Equal(6, areas!.Count);
+        var area = areas[0];
+        var placement = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/warehouse/finished-goods-preparation/areas/{area.Id}/pallet")
+        {
+            Content = JsonContent.Create(new PlacePalletHttpRequest(
+                "EMPTY", demand.ContainerTypeId!.Value, null, requestId))
+        };
+        placement.Headers.Add(ApiHeaders.IdempotencyKey, "wp33-empty-placement");
+        var placedResponse = await warehouseClient.SendAsync(placement);
+        Assert.Equal(HttpStatusCode.Created, placedResponse.StatusCode);
+        var placed = await placedResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(placed);
+        Assert.Equal(requestId, placed.TransportRequestId);
+
+        var readyResponse = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/finished-goods-preparation/pallets/{placed.Id}/ready",
+            new PalletVersionHttpRequest(placed.RowVersion));
+        readyResponse.EnsureSuccessStatusCode();
+
+        Assert.Equal("READY", await fixture.ScalarAsync<string>(
+            "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
+        var claimedAfterReady = await warehouseClient.GetFromJsonAsync<List<WarehouseDemandRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/demands");
+        var retained = Assert.Single(claimedAfterReady!, item => item.RequestId == requestId);
+        Assert.Equal(area.Id, retained.ClaimedByAreaId);
+        Assert.Equal(demand.VariantCode, retained.VariantCode);
+        Assert.Equal(demand.PartCode, retained.PartCode);
+
+        var navigationId = await fixture.ScalarAsync<Guid>(
+            """
+            INSERT INTO master.navigation_profiles (machine_id, code, name, status, created_by)
+            VALUES (@machine, @code, 'Prepared empty source test', 'DRAFT', @user)
+            RETURNING id
+            """,
+            ("machine", context.MachineId),
+            ("code", "DEV-RDS-SIM-" + Guid.NewGuid().ToString("N")),
+            ("user", lineIdentity.UserId));
+        await fixture.ExecuteAsync(
+            "UPDATE ops.transport_requests SET navigation_id = @navigation WHERE id = @id",
+            ("navigation", navigationId), ("id", requestId));
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var execution = new PostgresRdsExecutionStore(dataSource);
+        Assert.Equal(
+            "PREPARATION_WORKSITE_MAPPING_MISSING",
+            await execution.ReadPhysicalDispatchBlockAsync(requestId));
+
+        var workSiteId = await fixture.ScalarAsync<Guid>(
+            """
+            INSERT INTO integration.rds_worksites (
+                navigation_profile_id, rds_site_id, rds_type, last_filled,
+                last_locked, last_disabled, last_sync_failed, last_sync_at)
+            VALUES (@navigation, @site, 1, 1, 0, 0, 0, clock_timestamp())
+            RETURNING id
+            """,
+            ("navigation", navigationId),
+            ("site", "PREP-EMPTY-" + Guid.NewGuid().ToString("N")));
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO integration.preparation_area_rds_mapping (preparation_area_id, rds_worksite_id)
+            VALUES (@area, @worksite)
+            """,
+            ("area", area.Id), ("worksite", workSiteId));
+        Assert.Null(await execution.ReadPhysicalDispatchBlockAsync(requestId));
+
+        await fixture.ExecuteAsync(
+            "UPDATE integration.rds_worksites SET last_filled = 0, last_sync_at = clock_timestamp() WHERE id = @id",
+            ("id", workSiteId));
+        Assert.Equal(
+            "RDS_WORKSITE_OCCUPANCY_CONFLICT",
+            await execution.ReadPhysicalDispatchBlockAsync(requestId));
     }
 
     [Fact]

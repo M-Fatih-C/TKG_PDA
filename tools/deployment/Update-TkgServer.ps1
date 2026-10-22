@@ -316,12 +316,13 @@ try {
     $migrationApplied = $true
     Log-Update "Database migrations applied and master data verified."
 
-    # 7b. If DemoMode is active, apply updated demo seeds (19 FG locations, universal accounts)
+    # 7b. If DemoMode is active, apply updated demo seeds (two delivery locations,
+    # six empty-container preparation areas, and universal accounts)
     if ($rawConfig.DemoMode -and $rawConfig.DemoMode.Enabled) {
         $demoSeed = Join-Path $SourceDir 'db\seeds\demo\demo_seed.sql'
         if (-not (Test-Path $demoSeed)) { $demoSeed = Join-Path $SourceDir 'Tools\db\seeds\demo\demo_seed.sql' }
         if (Test-Path $demoSeed) {
-            Log-Update "Applying updated demo seeds (19 finished goods store locations, universal demo accounts)..."
+            Log-Update "Applying updated demo seeds (2 finished-goods delivery locations, 6 empty-container preparation areas, universal demo accounts)..."
             $psqlBin = 'psql.exe'
             $chkPsql = Get-Command 'psql.exe' -ErrorAction SilentlyContinue
             if ($chkPsql) { $psqlBin = $chkPsql.Source }

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using TkgPda.Api;
@@ -216,6 +217,16 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.NotEqual("Kullanıcı çıkışı", expiredRow.StatusLabel);
         Assert.Equal("UNKNOWN", expiredRow.MachineState);
         Assert.Null(expiredRow.MachineCode);
+
+        var excel = await client.GetAsync($"/api/v1/admin/reports/sessions/export.xlsx?from={Uri.EscapeDataString(WindowStart.ToString("O"))}&to={Uri.EscapeDataString(WindowEnd.ToString("O"))}&employeeNo=4455");
+        excel.EnsureSuccessStatusCode();
+        await using var excelStream = await excel.Content.ReadAsStreamAsync();
+        using var workbook = new ZipArchive(excelStream, ZipArchiveMode.Read);
+        var sheet = await ReadEntryAsync(workbook, "xl/worksheets/sheet1.xml");
+        var styles = await ReadEntryAsync(workbook, "xl/styles.xml");
+        Assert.Contains("Oturum Süresi", sheet);
+        Assert.Contains("Ayşe Demir", sheet);
+        Assert.Contains("[h]:mm:ss", styles);
     }
 
     [Fact]
@@ -267,6 +278,20 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Contains("'=Şişe", csv);
         Assert.DoesNotContain(second.ToString(), csv);
 
+        var excel = await client.GetAsync($"/api/v1/admin/reports/tasks/export.xlsx?from=2026-10-07T00:00:00Z&to=2026-10-08T00:00:00Z&status=FAILED&employeeNo=1234");
+        excel.EnsureSuccessStatusCode();
+        Assert.Equal(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            excel.Content.Headers.ContentType!.MediaType);
+        await using var excelStream = await excel.Content.ReadAsStreamAsync();
+        using var workbook = new ZipArchive(excelStream, ZipArchiveMode.Read);
+        var sheet = await ReadEntryAsync(workbook, "xl/worksheets/sheet1.xml");
+        var styles = await ReadEntryAsync(workbook, "xl/styles.xml");
+        Assert.Contains("Depo Hazırlık Başlangıcı", sheet);
+        Assert.Contains("Robot Başlangıç", sheet);
+        Assert.Contains("Şişe", sheet);
+        Assert.Contains("[h]:mm:ss", styles);
+
         var hash = await fixture.ScalarAsync<string>("SELECT password_hash FROM auth.users WHERE id = @id", ("id", admin.UserId));
         var body = await client.GetStringAsync(Report("tasks"));
         Assert.DoesNotContain(hash, body);
@@ -283,6 +308,14 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
         var auditStillThere = await client.GetAsync("/api/v1/admin/audit-logs?limit=5");
         Assert.Equal(HttpStatusCode.OK, auditStillThere.StatusCode);
+    }
+
+    private static async Task<string> ReadEntryAsync(ZipArchive archive, string name)
+    {
+        var entry = archive.GetEntry(name) ?? throw new InvalidOperationException($"{name} missing");
+        await using var stream = entry.Open();
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return await reader.ReadToEndAsync();
     }
 
     private static string Report(string kind) =>

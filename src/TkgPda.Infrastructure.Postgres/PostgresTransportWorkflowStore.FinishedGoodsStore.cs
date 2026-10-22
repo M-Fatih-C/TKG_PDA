@@ -49,6 +49,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                  AND b.endpoint_class = 'FINISHED_GOODS'
                  AND b.business_code = @code
                 WHERE sl.is_enabled
+                  AND sl.area_purpose = 'DELIVERY'
                   AND (
                       (b.id IS NOT NULL AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND sl.code = @code)))
                       OR (@profile IS NULL AND sl.code = @code)
@@ -104,6 +105,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             FROM ops.store_locations sl
             WHERE sl.id = @location
               AND sl.is_enabled
+              AND sl.area_purpose = 'DELIVERY'
               AND NOT EXISTS (
                   SELECT 1 FROM ops.store_units u
                   WHERE u.store_location_id = sl.id AND u.removed_at IS NULL)
@@ -247,6 +249,21 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         CancellationToken cancellationToken)
     {
         if (request.TaskType != TransportTaskType.BringEmpty) return;
+
+        // New finished-goods preparation flow: the exact empty pallet is
+        // request-bound in ops.preparation_pallets and remains there until the
+        // warehouse confirms physical collection. It is not a store unit and
+        // therefore has no legacy PICKUP reservation to remove here.
+        await using (var prepared = new NpgsqlCommand("""
+            SELECT 1 FROM ops.preparation_pallets
+            WHERE transport_request_id = @req
+              AND released_at IS NULL AND ready_at IS NOT NULL
+            LIMIT 1
+            """, connection, transaction))
+        {
+            prepared.Parameters.AddWithValue("req", request.Id);
+            if (await prepared.ExecuteScalarAsync(cancellationToken) is not null) return;
+        }
 
         Guid? unitId = null;
         Guid? locationId = null;
@@ -403,7 +420,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             LEFT JOIN master.slot_group_members sgm ON sgm.layout_slot_id = ls.id
             LEFT JOIN template ON true
             JOIN ops.store_location_delivery_slots d ON d.layout_slot_id = ls.id
-            JOIN ops.store_locations sl ON sl.id = d.store_location_id AND sl.is_enabled
+            JOIN ops.store_locations sl ON sl.id = d.store_location_id AND sl.is_enabled AND sl.area_purpose = 'DELIVERY'
             WHERE ls.layout_id = @layout_id
               AND ls.is_enabled
               AND ls.slot_role <> 'MACHINE'
@@ -441,7 +458,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
              SELECT 1
              FROM ops.store_location_delivery_slots d
              JOIN ops.store_locations sl ON sl.id = d.store_location_id
-             WHERE d.layout_slot_id = @slot_id AND sl.is_enabled
+             WHERE d.layout_slot_id = @slot_id AND sl.is_enabled AND sl.area_purpose = 'DELIVERY'
              {(lockRows ? "FOR SHARE OF d, sl" : string.Empty)}
              """,
             connection,
@@ -818,7 +835,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         }
 
         await using (var lockLocation = new NpgsqlCommand(
-            "SELECT is_enabled FROM ops.store_locations WHERE id = @loc FOR UPDATE",
+            "SELECT is_enabled FROM ops.store_locations WHERE id = @loc AND area_purpose = 'DELIVERY' FOR UPDATE",
             connection,
             transaction))
         {
@@ -852,7 +869,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         await using (var insert = new NpgsqlCommand("""
             INSERT INTO ops.store_units (store_location_id, load_state)
             SELECT id, 'EMPTY' FROM ops.store_locations
-            WHERE id = @location AND is_enabled
+            WHERE id = @location AND is_enabled AND area_purpose = 'DELIVERY'
             RETURNING id
             """, connection, transaction))
         {
@@ -892,7 +909,9 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             LEFT JOIN master.parts p ON p.id = u.part_id
             LEFT JOIN master.container_types ct ON ct.id = u.container_type_id
             LEFT JOIN master.machines m ON m.id = u.machine_id
-            WHERE (@location::uuid IS NULL OR l.id = @location)
+            WHERE l.area_purpose = 'DELIVERY'
+              AND l.is_operator_visible
+              AND (@location::uuid IS NULL OR l.id = @location)
             ORDER BY l.code, u.delivered_at
             """, connection, transaction);
         AddNullableUuid(command, "location", locationId);

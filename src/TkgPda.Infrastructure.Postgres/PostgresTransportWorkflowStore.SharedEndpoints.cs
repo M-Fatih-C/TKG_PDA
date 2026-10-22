@@ -96,6 +96,7 @@ public sealed partial class PostgresTransportWorkflowStore
                     b.endpoint_class NOT IN ('FINISHED_GOODS', 'EMPTY_SOURCE') OR EXISTS (
                        SELECT 1 FROM ops.store_locations sl
                        WHERE sl.is_enabled
+                         AND (b.endpoint_class <> 'FINISHED_GOODS' OR sl.area_purpose = 'DELIVERY')
                          AND (sl.id = b.store_location_id OR (b.store_location_id IS NULL AND sl.code = b.business_code)))
             FROM integration.profile_shared_endpoint_bindings b
             JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
@@ -384,6 +385,7 @@ public sealed partial class PostgresTransportWorkflowStore
                     SELECT sl.id
                     FROM ops.store_locations sl
                     WHERE sl.is_enabled
+                      AND sl.area_purpose = 'DELIVERY'
                       AND EXISTS (
                           SELECT 1
                           FROM integration.profile_shared_endpoint_bindings b

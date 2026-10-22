@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 
 import '../../app/app_controller.dart' show AppStage;
 import '../../app/design_tokens.dart';
+import '../../data/models/preparation_area.dart';
 import '../../data/models/store_location.dart';
 import '../../shared/widgets/pda_empty_state.dart';
 import 'store_coordinator.dart';
@@ -168,7 +169,7 @@ class _LocationList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (coordinator.locations.isEmpty) {
+    if (coordinator.locations.isEmpty && coordinator.preparationAreas.isEmpty) {
       return Center(
         key: const Key('store-empty'),
         child: Padding(
@@ -188,24 +189,292 @@ class _LocationList extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = (constraints.maxWidth / 400).floor().clamp(1, 4);
-        return GridView.builder(
+        final gutter = PdaScale.gutter(context);
+        final deliveryColumns = (constraints.maxWidth / 450).floor().clamp(
+          1,
+          2,
+        );
+        final preparationColumns = (constraints.maxWidth / 360).floor().clamp(
+          1,
+          3,
+        );
+        return CustomScrollView(
           key: const Key('store-location-list'),
-          padding: EdgeInsets.all(PdaScale.gutter(context)),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: columns,
-            crossAxisSpacing: PdaScale.gutter(context),
-            mainAxisSpacing: PdaScale.gutter(context),
-            mainAxisExtent: 280,
-          ),
-          itemCount: coordinator.locations.length,
-          itemBuilder: (context, index) => _LocationCard(
-            coordinator: coordinator,
-            location: coordinator.locations[index],
-          ),
+          slivers: [
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(gutter, gutter, gutter, gutter / 2),
+              sliver: const SliverToBoxAdapter(
+                child: _SectionTitle(
+                  title: 'Mamul Teslim Alanları',
+                  subtitle:
+                      'Robotun bitmiş ürün kasalarını bıraktığı 2 sabit alan',
+                  icon: Icons.inventory_2_outlined,
+                ),
+              ),
+            ),
+            SliverPadding(
+              padding: EdgeInsets.symmetric(horizontal: gutter),
+              sliver: SliverGrid.builder(
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: deliveryColumns,
+                  crossAxisSpacing: gutter,
+                  mainAxisSpacing: gutter,
+                  mainAxisExtent: 250,
+                ),
+                itemCount: coordinator.locations.length,
+                itemBuilder: (context, index) => _LocationCard(
+                  coordinator: coordinator,
+                  location: coordinator.locations[index],
+                ),
+              ),
+            ),
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(
+                gutter,
+                gutter * 1.5,
+                gutter,
+                gutter / 2,
+              ),
+              sliver: SliverToBoxAdapter(
+                child: _SectionTitle(
+                  title: 'Boş Kasa Hazırlık Alanları',
+                  subtitle:
+                      '${coordinator.emptyContainerDemands.length} bekleyen talep · Her alanda en fazla 1 palet',
+                  icon: Icons.inbox_outlined,
+                ),
+              ),
+            ),
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(gutter, 0, gutter, gutter),
+              sliver: SliverGrid.builder(
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: preparationColumns,
+                  crossAxisSpacing: gutter,
+                  mainAxisSpacing: gutter,
+                  mainAxisExtent: 285,
+                ),
+                itemCount: coordinator.preparationAreas.length,
+                itemBuilder: (context, index) => _EmptyPreparationCard(
+                  coordinator: coordinator,
+                  area: coordinator.preparationAreas[index],
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+  });
+  final String title;
+  final String subtitle;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Icon(icon, color: Theme.of(context).colorScheme.primary),
+      const SizedBox(width: 10),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800),
+            ),
+            Text(
+              subtitle,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+class _EmptyPreparationCard extends StatelessWidget {
+  const _EmptyPreparationCard({required this.coordinator, required this.area});
+  final StoreCoordinator coordinator;
+  final PreparationArea area;
+
+  @override
+  Widget build(BuildContext context) {
+    final pallet = area.pallet;
+    final busy =
+        coordinator.isBusy(area.id) ||
+        (pallet != null && coordinator.isBusy(pallet.id));
+    final demand = pallet?.transportRequestId == null
+        ? null
+        : coordinator.emptyContainerDemands
+              .where((item) => item.requestId == pallet!.transportRequestId)
+              .firstOrNull;
+    return Card(
+      key: Key('empty-preparation-${area.areaNumber}'),
+      child: Padding(
+        padding: EdgeInsets.all(PdaScale.cardPadding(context)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              area.displayName,
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
+            ),
+            const SizedBox(height: 10),
+            if (pallet == null) ...[
+              const Text(
+                'ALAN BOŞ',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF475569),
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Bekleyen bir talebi seçip istenen boş paleti bu alana yerleştirin.',
+              ),
+            ] else ...[
+              Text(
+                pallet.isReady
+                    ? 'HAZIR · ROBOT BEKLİYOR'
+                    : 'HAZIRLIK YAPILIYOR',
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: pallet.isReady
+                      ? const Color(0xFF166534)
+                      : const Color(0xFFB45309),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Makine: ${demand?.machineCode ?? pallet.targetMachineCode ?? '—'}',
+              ),
+              Text(
+                'Varyant: ${demand?.variantName ?? demand?.variantCode ?? '—'}',
+              ),
+              Text('Parça: ${demand?.partCode ?? '—'}'),
+              Text(
+                'Palet/Kasa: ${demand?.containerCode ?? pallet.containerCode}',
+              ),
+              if (pallet.requestNo != null) Text('Talep #${pallet.requestNo}'),
+            ],
+            const Spacer(),
+            if (busy)
+              const LinearProgressIndicator()
+            else if (pallet == null)
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: FilledButton.icon(
+                  key: Key('select-empty-demand-${area.areaNumber}'),
+                  onPressed:
+                      coordinator.inFlight ||
+                          coordinator.unclaimedEmptyContainerDemands.isEmpty
+                      ? null
+                      : () => _selectDemand(context),
+                  icon: const Icon(Icons.playlist_add_check),
+                  label: Text(
+                    coordinator.unclaimedEmptyContainerDemands.isEmpty
+                        ? 'Bekleyen talep yok'
+                        : 'Talep Seç',
+                  ),
+                ),
+              )
+            else if (!pallet.isReady)
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: coordinator.inFlight
+                          ? null
+                          : () => coordinator.releasePreparation(
+                              pallet,
+                              'WITHDRAWN',
+                            ),
+                      child: const Text('Geri Al'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton(
+                      key: Key('mark-empty-ready-${area.areaNumber}'),
+                      onPressed: coordinator.inFlight
+                          ? null
+                          : () => coordinator.markPreparationReady(pallet),
+                      child: const Text('Hazır'),
+                    ),
+                  ),
+                ],
+              )
+            else if (pallet.canConfirmCollected)
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: FilledButton(
+                  key: Key('empty-collected-${area.areaNumber}'),
+                  onPressed: coordinator.inFlight
+                      ? null
+                      : () =>
+                            coordinator.releasePreparation(pallet, 'COLLECTED'),
+                  child: const Text('Robot Aldı'),
+                ),
+              )
+            else
+              const SizedBox(
+                width: double.infinity,
+                child: Text(
+                  'Talep sırada. Robot görevi başlayınca alan kapatılabilir.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _selectDemand(BuildContext context) async {
+    final selected = await showModalBottomSheet<WarehouseDemand>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Text(
+              'Boş Kasa Talebi Seç',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            for (final demand in coordinator.unclaimedEmptyContainerDemands)
+              ListTile(
+                key: Key('empty-demand-${demand.requestId}'),
+                title: Text(
+                  '${demand.machineCode} · ${demand.partCode ?? 'Parça'}',
+                ),
+                subtitle: Text(
+                  '${demand.variantName ?? demand.variantCode ?? 'Varyant —'} · ${demand.containerCode ?? 'Palet tipi tanımsız'} · Talep #${demand.requestNo}',
+                ),
+                enabled: demand.containerTypeId?.isNotEmpty == true,
+                onTap: () => Navigator.pop(sheetContext, demand),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (selected != null && context.mounted) {
+      await coordinator.prepareEmptyContainer(area: area, demand: selected);
+    }
   }
 }
 
@@ -339,12 +608,9 @@ class _LocationCard extends StatelessWidget {
                   height: 48,
                   width: double.infinity,
                   child: OutlinedButton.icon(
-                    key: Key('record-empty-${location.code}'),
-                    onPressed: coordinator.inFlight
-                        ? null
-                        : () => coordinator.recordEmptyContainer(location),
-                    icon: const Icon(Icons.inbox_outlined),
-                    label: const Text('Boş kasa bırak'),
+                    onPressed: null,
+                    icon: const Icon(Icons.precision_manufacturing_outlined),
+                    label: const Text('Robot teslim alanı'),
                   ),
                 ),
             ],

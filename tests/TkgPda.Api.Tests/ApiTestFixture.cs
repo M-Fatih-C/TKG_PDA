@@ -51,6 +51,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("029_store_reservation_integrity.sql"));
         await ExecuteScriptAsync(MigrationFile("030_deferred_part_demand_slot_reservation.sql"));
         await ExecuteScriptAsync(MigrationFile("031_physical_reconciliation_and_removal_audit.sql"));
+        await ExecuteScriptAsync(MigrationFile("032_finished_goods_preparation_areas.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -149,7 +150,27 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             DELETE FROM master.navigation_profiles WHERE code LIKE 'DEV-RDS-SIM-%';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'P08A-%';
             DELETE FROM master.task_templates
-            WHERE config_json ->> 'testScope' IN ('P07A', 'TEST-NAV-GATE');
+            WHERE config_json ->> 'testScope' IN ('P07A', 'TEST-NAV-GATE', 'PRODUCTION_END');
+            DELETE FROM master.slot_group_members m
+            USING master.slot_groups g
+            WHERE m.slot_group_id = g.id AND g.code LIKE 'PE-GROUP-%';
+            DELETE FROM master.slot_groups WHERE code LIKE 'PE-GROUP-%';
+            DELETE FROM master.layout_slot_parts m
+            USING master.parts p
+            WHERE m.part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_group_parts m
+            USING master.parts p
+            WHERE m.part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_group_parts m
+            USING master.product_groups g, master.parts p
+            WHERE m.product_group_id = g.id
+              AND g.main_part_id = p.id
+              AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_groups g
+            USING master.parts p
+            WHERE g.main_part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.layout_slots WHERE code LIKE 'PE-RETURN-%';
+            DELETE FROM master.parts WHERE part_code LIKE 'PE-%';
             DELETE FROM auth.user_sessions;
             DELETE FROM auth.user_machine_permissions;
             DELETE FROM auth.user_roles;
@@ -329,7 +350,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     /// API suite have no DROP role (simulation DROP-001 is seed 002d, not
     /// loaded here), so a test-only DROP is inserted when the layout has none.
     /// The mapping then follows the same first-enabled-DROP rule as dispatch.
-    /// Customer names, the 19 FG areas and capacity are not modelled.
+    /// Customer names are not modelled. The test surface exposes only the two
+    /// approved finished-goods delivery positions.
     /// </summary>
     private async Task EnsureDefaultFinishedGoodsDestinationAsync(Guid layoutId)
     {
@@ -346,15 +368,16 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
             WHERE layout_id = @layout_id AND slot_role = 'DROP'
             ON CONFLICT (layout_slot_id) DO NOTHING;
-            INSERT INTO ops.store_locations (code, display_name, capacity)
-            VALUES (@location_code, 'Test Finished Goods Location', 1)
-            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1;
-            INSERT INTO ops.store_locations (code, display_name, capacity)
+            INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
+            VALUES (@location_code, 'Test Finished Goods Location', 1, 'DELIVERY')
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
+            INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
             SELECT CASE WHEN i = 1 THEN 'TEST-FG-EMPTY' ELSE 'TEST-FG-EMPTY-' || lpad(i::text, 2, '0') END,
                    'Test Empty Pallet Location ' || i,
-                   1
+                   1,
+                   'DELIVERY'
             FROM generate_series(1, 6) i
-            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1;
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
             INSERT INTO ops.store_units (store_location_id, load_state, delivered_at)
             SELECT id, 'EMPTY', now() FROM ops.store_locations
             WHERE (code = 'TEST-FG-EMPTY' OR code ~ '^TEST-FG-EMPTY-[0-9]{2}$')
@@ -388,9 +411,9 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
                 SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
                 WHERE layout_id = @layout_id AND code = @slot_code
                 ON CONFLICT (layout_slot_id) DO NOTHING;
-                INSERT INTO ops.store_locations (code, display_name, capacity)
-                VALUES (@location_code, @display_name, 1)
-                ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1;
+                INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
+                VALUES (@location_code, @display_name, 1, 'DELIVERY')
+                ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
                 INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
                 SELECT ls.id, sl.id
                 FROM master.layout_slots ls

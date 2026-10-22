@@ -7,9 +7,8 @@ import 'package:tkg_pda/features/warehouse/store_screen.dart';
 
 import '../support/fakes.dart';
 
-/// The finished-goods screen. It reports what the robot left and records what
-/// the operator took; nothing here can add a container, because only a
-/// completing transport puts one in the store.
+/// Two robot delivery areas and six request-bound empty-container preparation
+/// areas form the finished-goods warehouse screen.
 void main() {
   late FakePdaRepository repository;
   late StoreCoordinator coordinator;
@@ -53,7 +52,7 @@ void main() {
 
     expect(find.textContaining('Bu alan boş.'), findsOneWidget);
     expect(find.byKey(const Key('clear-location-STORE-1')), findsNothing);
-    expect(find.byKey(const Key('record-empty-STORE-1')), findsOneWidget);
+    expect(find.text('Robot teslim alanı'), findsOneWidget);
   });
 
   testWidgets('a delivered container shows what it is and where from', (
@@ -269,49 +268,90 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('nineteen locations use a readable grid without overflow', (
-    tester,
-  ) async {
+  testWidgets(
+    'two delivery and six preparation areas form the approved layout',
+    (tester) async {
+      repository.storeLocationsValue = [
+        for (var number = 1; number <= 2; number++)
+          fakeStoreLocation(code: 'AREA-${number.toString().padLeft(2, '0')}'),
+      ];
+      repository.finishedGoodsPreparationAreasValue = [
+        for (var number = 1; number <= 6; number++) fakeArea(number: number),
+      ];
+      await pump(tester, size: const Size(1024, 600));
+
+      expect(find.byKey(const Key('store-location-list')), findsOneWidget);
+      expect(find.text('Mamul Teslim Alanları'), findsOneWidget);
+      expect(find.text('Boş Kasa Hazırlık Alanları'), findsOneWidget);
+      final first = tester.getTopLeft(
+        find.byKey(const Key('store-location-AREA-01')),
+      );
+      final second = tester.getTopLeft(
+        find.byKey(const Key('store-location-AREA-02')),
+      );
+      expect((second.dy - first.dy).abs(), lessThan(2));
+      expect(second.dx, greaterThan(first.dx));
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('empty-preparation-6')),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.byKey(const Key('empty-preparation-6')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('1280x800 shows three preparation columns', (tester) async {
     repository.storeLocationsValue = [
-      for (var number = 1; number <= 19; number++)
+      for (var number = 1; number <= 2; number++)
         fakeStoreLocation(code: 'AREA-${number.toString().padLeft(2, '0')}'),
     ];
-    await pump(tester, size: const Size(1024, 600));
-
-    expect(find.byKey(const Key('store-location-list')), findsOneWidget);
-    expect(find.text('ALAN BOŞ'), findsWidgets);
-    final first = tester.getTopLeft(
-      find.byKey(const Key('store-location-AREA-01')),
-    );
-    final second = tester.getTopLeft(
-      find.byKey(const Key('store-location-AREA-02')),
-    );
-    expect((second.dy - first.dy).abs(), lessThan(2));
-    expect(second.dx, greaterThan(first.dx));
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('store-location-AREA-19')),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
-    expect(find.byKey(const Key('store-location-AREA-19')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('1280x800 shows three finished-goods columns', (tester) async {
-    repository.storeLocationsValue = [
-      for (var number = 1; number <= 19; number++)
-        fakeStoreLocation(code: 'AREA-${number.toString().padLeft(2, '0')}'),
+    repository.finishedGoodsPreparationAreasValue = [
+      for (var number = 1; number <= 6; number++) fakeArea(number: number),
     ];
     await pump(tester, size: const Size(1280, 800));
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('empty-preparation-3')),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
 
     final wideFirst = tester.getTopLeft(
-      find.byKey(const Key('store-location-AREA-01')),
+      find.byKey(const Key('empty-preparation-1')),
     );
     final wideThird = tester.getTopLeft(
-      find.byKey(const Key('store-location-AREA-03')),
+      find.byKey(const Key('empty-preparation-3')),
     );
     expect((wideThird.dy - wideFirst.dy).abs(), lessThan(2));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('empty pallet preparation binds the selected request', (
+    tester,
+  ) async {
+    repository.storeLocationsValue = [
+      fakeStoreLocation(code: 'FG-01'),
+      fakeStoreLocation(code: 'FG-02'),
+    ];
+    repository.finishedGoodsPreparationAreasValue = [
+      for (var number = 1; number <= 6; number++) fakeArea(number: number),
+    ];
+    repository.finishedGoodsPreparationDemandsValue = [
+      fakeDemand(requestNo: 77, requestedLoad: 'EMPTY'),
+    ];
+    await pump(tester);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('select-empty-demand-1')),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byKey(const Key('select-empty-demand-1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('empty-demand-request-77')));
+    await tester.pumpAndSettle();
+
+    expect(repository.placedPallets.single['transportRequestId'], 'request-77');
+    expect(repository.placedPallets.single['load'], 'EMPTY');
   });
 
   testWidgets('store states use words and icons, not color alone', (

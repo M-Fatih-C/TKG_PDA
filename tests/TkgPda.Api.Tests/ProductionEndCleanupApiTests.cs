@@ -199,8 +199,9 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         await AddReturnSlotAsync(setup, genericGroup, priority: 1, displayOrder: 9801);
         await SeedAltRemovalAsync(setup, specificGroup);
         await fixture.ExecuteAsync("""
-            INSERT INTO master.task_templates (variant_id, task_type_id, destination_slot_group_id, is_active)
-            SELECT @variant, id, @destination, true FROM master.task_types WHERE code = 'REMOVE_FULL'
+            INSERT INTO master.task_templates (variant_id, task_type_id, destination_slot_group_id, is_active, config_json)
+            SELECT @variant, id, @destination, true, '{"testScope":"PRODUCTION_END"}'::jsonb
+            FROM master.task_types WHERE code = 'REMOVE_FULL'
             """, ("variant", setup.Context.VariantId), ("destination", genericGroup));
         using var client = await fixture.LoginClientAsync(setup.User);
         var session = await StartAsync(client, setup);
@@ -277,6 +278,52 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
             SELECT ls.slot_role FROM ops.transport_requests r
             JOIN master.layout_slots ls ON ls.id = r.destination_slot_id
             """));
+    }
+
+    [Fact]
+    public async Task Full_pallets_are_removed_before_empty_material_containers_by_approved_priority()
+    {
+        var setup = await SetupAsync(slotCount: 2);
+        var originalOrder = new List<(Guid Slot, int Order)>();
+        foreach (var slot in setup.Slots)
+            originalOrder.Add((slot, await fixture.ScalarAsync<int>(
+                "SELECT display_order FROM master.layout_slots WHERE id = @id", ("id", slot))));
+
+        try
+        {
+            await fixture.ExecuteAsync(
+                "UPDATE master.layout_slots SET display_order = 1 WHERE id = @id",
+                ("id", setup.Slots[0]));
+            await fixture.ExecuteAsync(
+                "UPDATE master.layout_slots SET display_order = 2 WHERE id = @id",
+                ("id", setup.Slots[1]));
+            await fixture.SetSlotAsync(setup.Slots[0], "OCCUPIED", "EMPTY", setup.MainPart);
+            await fixture.SetSlotAsync(setup.Slots[1], "OCCUPIED", "FULL", setup.MainPart);
+            await SeedPriorityAsync("REMOVE_FULL", 40);
+            await SeedPriorityAsync("REMOVE_EMPTY", 70);
+            await SeedTemplateAsync(setup, "REMOVE_FULL");
+            await SeedTemplateAsync(setup, "REMOVE_EMPTY");
+            using var client = await fixture.LoginClientAsync(setup.User);
+            var session = await StartAsync(client, setup);
+
+            (await EndAsync(client, setup, session.Id, "end-priority-order")).EnsureSuccessStatusCode();
+
+            var operations = await StringsAsync("""
+                SELECT tt.code
+                FROM ops.production_end_run_items i
+                JOIN ops.transport_requests r ON r.id = i.transport_request_id
+                JOIN master.task_types tt ON tt.id = r.task_type_id
+                ORDER BY i.sequence_no
+                """);
+            Assert.Equal(["REMOVE_FULL", "REMOVE_EMPTY"], operations);
+        }
+        finally
+        {
+            foreach (var (slot, order) in originalOrder)
+                await fixture.ExecuteAsync(
+                    "UPDATE master.layout_slots SET display_order = @order WHERE id = @id",
+                    ("order", order), ("id", slot));
+        }
     }
 
     [Fact]
@@ -607,7 +654,8 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         await SeedPriorityAsync("REMOVE_FULL", 40);
         using var client = await fixture.LoginClientAsync(setup.User);
         var session = await StartAsync(client, setup);
-        (await EndAsync(client, setup, session.Id, "end-alt")).EnsureSuccessStatusCode();
+        var end = await EndAsync(client, setup, session.Id, "end-alt");
+        Assert.True(end.IsSuccessStatusCode, await end.Content.ReadAsStringAsync());
 
         Assert.Equal(destination, await fixture.ScalarAsync<Guid>("SELECT destination_slot_id FROM ops.transport_requests"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_location_delivery_slots WHERE layout_slot_id = @id", ("id", destination)));
@@ -1043,6 +1091,21 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         while (await reader.ReadAsync())
         {
             values.Add(reader.GetGuid(0));
+        }
+
+        return values.ToArray();
+    }
+
+    private async Task<string[]> StringsAsync(string sql)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        var values = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            values.Add(reader.GetString(0));
         }
 
         return values.ToArray();

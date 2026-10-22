@@ -145,6 +145,25 @@ abstract interface class PdaDataSource {
     required String reason,
   });
 
+  /// Finished-goods warehouse — six request-bound empty-container areas.
+  Future<List<PreparationArea>> finishedGoodsPreparationAreas();
+  Future<List<WarehouseDemand>> finishedGoodsPreparationDemands();
+  Future<PreparationPallet> placeFinishedGoodsPreparation({
+    required String areaId,
+    required String containerTypeId,
+    required String transportRequestId,
+    required String idempotencyKey,
+  });
+  Future<PreparationPallet> markFinishedGoodsPreparationReady({
+    required String palletId,
+    required int expectedRowVersion,
+  });
+  Future<PreparationPallet> releaseFinishedGoodsPreparation({
+    required String palletId,
+    required int expectedRowVersion,
+    required String reason,
+  });
+
   /// Warehouse tablet — the finished-goods store.
   Future<List<StoreLocation>> storeLocations();
   Future<StoreLocation> removeStoreUnit({
@@ -582,6 +601,73 @@ class PdaRepository implements PdaDataSource {
   }) async {
     final response = await _api.post(
       '$_preparation/pallets/$palletId/release',
+      body: {'expectedRowVersion': expectedRowVersion, 'reason': reason},
+    );
+    return PreparationPallet.fromJson(_json(response.body));
+  }
+
+  static const _finishedGoodsPreparation =
+      '/api/v1/warehouse/finished-goods-preparation';
+
+  @override
+  Future<List<PreparationArea>> finishedGoodsPreparationAreas() async {
+    final response = await _api.get('$_finishedGoodsPreparation/areas');
+    final values = response.body is List ? response.body as List : const [];
+    return values
+        .whereType<Map<String, dynamic>>()
+        .map(PreparationArea.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<List<WarehouseDemand>> finishedGoodsPreparationDemands() async {
+    final response = await _api.get('$_finishedGoodsPreparation/demands');
+    final values = response.body is List ? response.body as List : const [];
+    return values
+        .whereType<Map<String, dynamic>>()
+        .map(WarehouseDemand.fromJson)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<PreparationPallet> placeFinishedGoodsPreparation({
+    required String areaId,
+    required String containerTypeId,
+    required String transportRequestId,
+    required String idempotencyKey,
+  }) async {
+    final response = await _api.post(
+      '$_finishedGoodsPreparation/areas/$areaId/pallet',
+      body: {
+        'load': 'EMPTY',
+        'containerTypeId': containerTypeId,
+        'transportRequestId': transportRequestId,
+      },
+      idempotencyKey: idempotencyKey,
+    );
+    return PreparationPallet.fromJson(_json(response.body));
+  }
+
+  @override
+  Future<PreparationPallet> markFinishedGoodsPreparationReady({
+    required String palletId,
+    required int expectedRowVersion,
+  }) async {
+    final response = await _api.post(
+      '$_finishedGoodsPreparation/pallets/$palletId/ready',
+      body: {'expectedRowVersion': expectedRowVersion},
+    );
+    return PreparationPallet.fromJson(_json(response.body));
+  }
+
+  @override
+  Future<PreparationPallet> releaseFinishedGoodsPreparation({
+    required String palletId,
+    required int expectedRowVersion,
+    required String reason,
+  }) async {
+    final response = await _api.post(
+      '$_finishedGoodsPreparation/pallets/$palletId/release',
       body: {'expectedRowVersion': expectedRowVersion, 'reason': reason},
     );
     return PreparationPallet.fromJson(_json(response.body));
