@@ -373,7 +373,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
     }
 
     [Fact]
-    public async Task Reservation_is_released_when_request_is_failed()
+    public async Task Post_dispatch_failure_holds_endpoint_until_operator_reconciliation()
     {
         var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
         try
@@ -406,15 +406,39 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
                     FailureMessage: "Failed for test",
                     EvidenceType: null));
 
-            // Now Request C from Machine B should succeed and reuse FG-01
+            // The robot had already accepted the task, so failure does not
+            // prove where the pallet is. FG-01 stays held and both transport
+            // endpoints become UNKNOWN until a physical reconciliation.
             var resC = await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "fail-test-c"));
             var bodyC = await resC.Content.ReadAsStringAsync();
-            Assert.True(resC.IsSuccessStatusCode, bodyC);
+            Assert.False(resC.IsSuccessStatusCode);
+            Assert.Contains("FINISHED_GOODS_STORE_FULL", bodyC);
+            Assert.Equal(1L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.store_reservations WHERE transport_request_id = @id AND released_at IS NULL AND reconciliation_required",
+                ("id", reqAId)));
+            Assert.Equal(1L, await fixture.ScalarAsync<long>(
+                """
+                SELECT count(*)
+                FROM ops.slot_runtime_state s
+                JOIN ops.transport_requests r
+                  ON s.layout_slot_id IN (r.source_slot_id, r.destination_slot_id)
+                WHERE r.id = @id AND s.occupancy_state = 'UNKNOWN' AND s.load_state = 'UNKNOWN'
+                """,
+                ("id", reqAId)));
 
-            var destC = await fixture.ScalarAsync<string>(
-                "SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @m AND status IN ('CREATED','QUEUED','SENT_TO_RDS','RUNNING')",
-                ("m", setup.SceneB.MachineId));
-            Assert.Equal("FG-01", destC);
+            var locationId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.store_locations WHERE code = 'FG-01'");
+            var warehouse = await fixture.SeedIdentityAsync(role: RoleCodes.FinishedGoodsWarehouseOperator);
+            using var warehouseClient = await fixture.LoginClientAsync(warehouse);
+            var reconciled = await warehouseClient.PostAsync(
+                $"/api/v1/warehouse/store/locations/{locationId}/clear", null);
+            Assert.True(reconciled.IsSuccessStatusCode, await reconciled.Content.ReadAsStringAsync());
+            Assert.Equal(1L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.store_reservations WHERE transport_request_id = @id AND released_at IS NOT NULL AND reconciled_at IS NOT NULL",
+                ("id", reqAId)));
+
+            var resD = await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "fail-test-d"));
+            Assert.True(resD.IsSuccessStatusCode, await resD.Content.ReadAsStringAsync());
         }
         finally
         {
@@ -1217,6 +1241,16 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             JOIN ops.store_locations sl ON sl.id = sr.store_location_id
             WHERE sr.released_at IS NULL AND sr.reservation_type = 'PICKUP'
             """));
+
+        var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
+        await using var workflow = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds);
+        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running);
+        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Completed);
+        Assert.Equal("ROBOT", await fixture.ScalarAsync<string>(
+            "SELECT removal_source FROM ops.store_units WHERE transport_request_id IS NULL AND removed_at IS NOT NULL ORDER BY removed_at DESC LIMIT 1"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_units WHERE removal_source = 'ROBOT' AND removed_by IS NULL AND removed_device_id IS NULL"));
     }
 
     [Fact]

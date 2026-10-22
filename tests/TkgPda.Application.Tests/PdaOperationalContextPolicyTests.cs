@@ -91,6 +91,49 @@ public sealed class PdaOperationalContextPolicyTests
     }
 
     [Fact]
+    public void Deferred_preparation_demand_does_not_mark_the_machine_slot_busy()
+    {
+        var slot = Slot(occupancy: "VACANT", load: "UNKNOWN");
+        var deferred = Request(TransportRequestStatus.Queued) with
+        {
+            DestinationSlotId = slot.Id,
+            ReadinessState = "WAITING_PREPARATION",
+            MachineSlotReservationActive = false
+        };
+
+        var context = PdaOperationalContextPolicy.Project(
+            Data(slot) with { ActiveTransportRequests = [deferred] },
+            Actor(KnownRoleCodes.LineOperator));
+
+        var action = Assert.Single(context.Slots).AvailableActions
+            .Single(candidate => candidate.Action == "BRING_EMPTY");
+        Assert.True(action.Enabled);
+        Assert.Null(action.DisabledCode);
+    }
+
+    [Fact]
+    public void Activated_preparation_demand_marks_the_machine_slot_busy()
+    {
+        var slot = Slot(occupancy: "VACANT", load: "UNKNOWN");
+        var active = Request(TransportRequestStatus.Queued) with
+        {
+            DestinationSlotId = slot.Id,
+            ReadinessState = "READY",
+            MachineSlotReservationActive = true
+        };
+
+        var context = PdaOperationalContextPolicy.Project(
+            Data(slot) with { ActiveTransportRequests = [active] },
+            Actor(KnownRoleCodes.LineOperator));
+
+        Assert.All(Assert.Single(context.Slots).AvailableActions, action =>
+        {
+            Assert.False(action.Enabled);
+            Assert.Equal("SLOT_BUSY", action.DisabledCode);
+        });
+    }
+
+    [Fact]
     public void Admin_web_context_never_receives_pda_transport_capabilities()
     {
         var actions = PdaOperationalContextPolicy.EvaluateActions(

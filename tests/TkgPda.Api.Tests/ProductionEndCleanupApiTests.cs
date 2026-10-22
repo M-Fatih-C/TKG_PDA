@@ -72,7 +72,17 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         using var restarted = await api.LoginAsync(setup.User);
         Assert.True((await ReadAsync(await EndAsync(restarted, setup, session.Id, "failed-original"))).WasIdempotentReplay);
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-        (await EndAsync(restarted, setup, session.Id, "failed-new-key")).EnsureSuccessStatusCode();
+        var retryResponse = await EndAsync(restarted, setup, session.Id, "failed-new-key");
+        if (!cancel)
+        {
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, retryResponse.StatusCode);
+            Assert.Equal("PRODUCTION_END_POSITION_UNKNOWN", await ApiTestFixture.ErrorCodeAsync(retryResponse));
+            Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
+            Assert.Equal("ENDING", await StatusAsync(session.Id));
+            return;
+        }
+
+        retryResponse.EnsureSuccessStatusCode();
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
         var retried = await IdsAsync("SELECT i.transport_request_id FROM ops.production_end_run_items i JOIN ops.production_end_runs r ON r.id=i.run_id WHERE r.status='RUNNING' ORDER BY i.sequence_no");
         Assert.Equal(2, retried.Length);
@@ -529,7 +539,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     }
 
     [Fact]
-    public async Task Predecessor_failure_blocks_later_cleanup_and_a_new_attempt_skips_completed_slots()
+    public async Task Post_dispatch_predecessor_failure_blocks_later_cleanup_and_a_new_attempt()
     {
         var setup = await OccupyAsync(3, "FULL");
         using var client = await fixture.LoginClientAsync(setup.User);
@@ -551,16 +561,11 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         (await EndAsync(client, setup, session.Id, "end-fail")).EnsureSuccessStatusCode();
         Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         var retry = await EndAsync(client, setup, session.Id, "end-retry");
-        retry.EnsureSuccessStatusCode();
-        var retrySlots = await IdsAsync("""
-            SELECT i.layout_slot_id
-            FROM ops.production_end_run_items i
-            JOIN ops.production_end_runs r ON r.id = i.run_id
-            WHERE r.idempotency_key = 'end-retry'
-            ORDER BY i.sequence_no
-            """);
-        Assert.DoesNotContain(slots[0], retrySlots);
-        Assert.Equal(2, retrySlots.Length);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, retry.StatusCode);
+        Assert.Equal("PRODUCTION_END_POSITION_UNKNOWN", await ApiTestFixture.ErrorCodeAsync(retry));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", slots[1])));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
     }
 
     [Fact]
@@ -740,7 +745,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     }
 
     [Fact]
-    public async Task Failed_or_cancelled_alt_removal_does_not_occupy_the_return_slot()
+    public async Task Failed_post_dispatch_alt_removal_marks_its_endpoints_unknown_while_queued_successor_is_cancelled()
     {
         var setup = await SetupAsync(slotCount: 2);
         await MapAltAsync(setup, setup.Slots);
@@ -758,7 +763,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
 
         Assert.Equal("FAILED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requests[0])));
         Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requests[1])));
-        Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
         Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
         Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
         Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
@@ -767,7 +772,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     }
 
     [Fact]
-    public async Task New_end_attempt_does_not_reuse_an_occupied_return_slot()
+    public async Task New_end_attempt_is_blocked_after_an_unreconciled_post_dispatch_failure()
     {
         var setup = await SetupAsync(slotCount: 2);
         var alt = await MapAltAsync(setup, setup.Slots);
@@ -788,26 +793,13 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         Assert.Equal("OCCUPIED", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
         Assert.Equal(alt, await fixture.ScalarAsync<Guid>("SELECT current_part_id FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
         var retry = await EndAsync(client, setup, session.Id, "end-retry-return-2");
-        retry.EnsureSuccessStatusCode();
-        var retryDestinations = await IdsAsync("""
-            SELECT r.destination_slot_id
-            FROM ops.production_end_run_items i
-            JOIN ops.transport_requests r ON r.id = i.transport_request_id
-            JOIN ops.production_end_runs run ON run.id = i.run_id
-            WHERE run.idempotency_key = 'end-retry-return-2'
-            ORDER BY i.sequence_no
-            """);
-        var retrySources = await IdsAsync("""
-            SELECT i.layout_slot_id
-            FROM ops.production_end_run_items i
-            JOIN ops.production_end_runs run ON run.id = i.run_id
-            WHERE run.idempotency_key = 'end-retry-return-2'
-            ORDER BY i.sequence_no
-            """);
-        Assert.Equal([sources[1]], retrySources);
-        Assert.Equal([secondReturn], retryDestinations);
-        Assert.DoesNotContain(firstReturn, retryDestinations);
-        Assert.DoesNotContain(sources[0], retrySources);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, retry.StatusCode);
+        Assert.Equal("PRODUCTION_END_POSITION_UNKNOWN", await ApiTestFixture.ErrorCodeAsync(retry));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", sources[1])));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
     }
 
     [Fact]

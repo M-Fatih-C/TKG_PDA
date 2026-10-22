@@ -533,7 +533,8 @@ BEGIN
         removed_device_id = COALESCE(
             (SELECT id FROM audit.client_devices WHERE device_code = 'TAB-BITMIS-URUN' LIMIT 1),
             (SELECT id FROM audit.client_devices LIMIT 1)
-        )
+        ),
+        removal_source = 'OPERATOR'
     WHERE removed_at IS NULL;
 
     -- 14. Clean up any legacy unrenamed FG_AREA locations so exactly 19 FG-01..FG-19 locations exist

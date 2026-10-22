@@ -425,26 +425,25 @@ public sealed class DemoSimulationWorker(
             ),
             candidate AS (
                 SELECT u.id AS unit_id, u.store_location_id, sl.display_name AS location_name
-                FROM ops.store_units u
+                FROM ops.store_reservations sr
+                JOIN ops.store_units u ON u.id = sr.store_unit_id
                 JOIN ops.store_locations sl ON sl.id = u.store_location_id
-                WHERE u.load_state = 'EMPTY'
+                WHERE sr.transport_request_id = @id
+                  AND sr.reservation_type = 'PICKUP'
+                  AND sr.released_at IS NULL
+                  AND sr.store_location_id = u.store_location_id
+                  AND u.load_state = 'EMPTY'
                   AND u.removed_at IS NULL
                   AND sl.is_enabled
                   AND NOT EXISTS (SELECT 1 FROM already_removed)
-                ORDER BY sl.code ASC, u.delivered_at ASC, u.id ASC
                 LIMIT 1
             ),
             updated_unit AS (
                 UPDATE ops.store_units u
                 SET removed_at = @now,
-                    removed_by = COALESCE(
-                        (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1),
-                        (SELECT id FROM auth.users LIMIT 1)
-                    ),
-                    removed_device_id = COALESCE(
-                        (SELECT id FROM audit.client_devices WHERE device_code = 'TAB-BITMIS-URUN' LIMIT 1),
-                        (SELECT id FROM audit.client_devices LIMIT 1)
-                    ),
+                    removed_by = NULL,
+                    removed_device_id = NULL,
+                    removal_source = 'ROBOT',
                     row_version = u.row_version + 1
                 FROM candidate c
                 WHERE u.id = c.unit_id AND u.removed_at IS NULL

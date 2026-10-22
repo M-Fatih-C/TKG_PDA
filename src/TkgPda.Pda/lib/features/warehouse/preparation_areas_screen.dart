@@ -493,7 +493,7 @@ class _AreaActions extends StatelessWidget {
                   fontWeight: FontWeight.w800,
                 ),
               ),
-              onPressed: coordinator.inFlight
+              onPressed: coordinator.inFlight || !pallet.canConfirmCollected
                   ? null
                   : () => coordinator.release(pallet, 'COLLECTED'),
               icon: const Icon(Icons.local_shipping_outlined, size: 20),
@@ -511,7 +511,7 @@ class _AreaActions extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
               ),
             ),
-            onPressed: coordinator.inFlight
+            onPressed: coordinator.inFlight || !pallet.canWithdraw
                 ? null
                 : () => coordinator.release(pallet, 'WITHDRAWN'),
             child: const Text('Hazırlığı Geri Al'),

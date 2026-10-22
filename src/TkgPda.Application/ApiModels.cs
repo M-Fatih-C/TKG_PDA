@@ -247,7 +247,11 @@ public sealed record ActiveTransportDataRecord(
     long AgeSeconds = 0,
     long? ExecutionElapsedSeconds = null,
     string? ChainState = null,
-    bool ProductionEnd = false);
+    bool ProductionEnd = false,
+    // Deferred warehouse demands are visible in the active queue before they
+    // own the physical machine position. Consumers must use this flag instead
+    // of treating every endpoint on every active request as reserved.
+    bool MachineSlotReservationActive = true);
 
 /// <summary>
 /// Business execution view for the PDA. Raw RDS identifiers — taskRecordId,

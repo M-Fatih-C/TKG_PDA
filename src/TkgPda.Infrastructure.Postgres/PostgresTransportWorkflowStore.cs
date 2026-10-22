@@ -585,7 +585,28 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         TransportStateMachine.EnsureTransition(request.Status, outcome.Status);
         var previousStatus = request.Status;
         request = await UpdateRequestOutcomeAsync(connection, transaction, request, outcome, cancellationToken);
-        await ReleaseStoreReservationAsync(connection, transaction, request.Id, cancellationToken);
+        if (previousStatus is TransportRequestStatus.SentToRds or TransportRequestStatus.Running)
+        {
+            // Once execution was handed to the robot, a failure/cancellation
+            // does not prove whether the physical pallet moved. Keep the exact
+            // PICKUP/DROP endpoint held until an operator reconciles the area.
+            foreach (var endpointSlotId in EndpointSlotIds(request))
+            {
+                await UpdateSlotStateAsync(
+                    connection,
+                    transaction,
+                    endpointSlotId,
+                    new SlotState(OccupancyState.Unknown, LoadState.Unknown, null, null),
+                    updatedBy: null,
+                    cancellationToken);
+            }
+
+            await MarkStoreReservationForReconciliationAsync(connection, transaction, request.Id, cancellationToken);
+        }
+        else
+        {
+            await ReleaseStoreReservationAsync(connection, transaction, request.Id, cancellationToken);
+        }
 
         if (outcome.Status == TransportRequestStatus.Cancelled)
         {
@@ -2089,6 +2110,24 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             """
             UPDATE ops.store_reservations
             SET released_at = clock_timestamp()
+            WHERE transport_request_id = @req AND released_at IS NULL
+            """,
+            connection,
+            transaction);
+        cmd.Parameters.AddWithValue("req", requestId);
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task MarkStoreReservationForReconciliationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var cmd = new NpgsqlCommand(
+            """
+            UPDATE ops.store_reservations
+            SET reconciliation_required = true
             WHERE transport_request_id = @req AND released_at IS NULL
             """,
             connection,

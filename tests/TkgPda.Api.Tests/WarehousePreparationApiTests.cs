@@ -106,6 +106,28 @@ public sealed class WarehousePreparationApiTests(ApiTestFixture fixture) : IClas
     }
 
     [Fact]
+    public async Task Cancelled_waiting_request_is_excluded()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var slot = Assert.Single(await fixture.LogisticsSlotsAsync(context.LayoutId, 1));
+        await fixture.SetSlotAsync(slot, "VACANT", "UNKNOWN");
+        var creator = await fixture.SeedIdentityAsync();
+        using var creatorClient = await fixture.LoginClientAsync(creator);
+        var created = await CreateWaitingRequestAsync(creatorClient, context, slot, "cancelled-hidden");
+        await fixture.ExecuteAsync(
+            "UPDATE ops.transport_requests SET status = 'CANCELLED', cancelled_at = now() WHERE id = @id",
+            ("id", created.Id));
+
+        var warehouseOperator = await fixture.SeedIdentityAsync(role: RoleCodes.WarehouseOperator);
+        using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);
+        var response = await warehouseClient.GetAsync("/api/v1/warehouse/preparation-requests");
+        response.EnsureSuccessStatusCode();
+
+        Assert.DoesNotContain(await ReadAsync(response), request => request.RequestId == created.Id);
+    }
+
+    [Fact]
     public async Task Results_are_ordered_deterministically_oldest_first()
     {
         await fixture.ResetAsync();

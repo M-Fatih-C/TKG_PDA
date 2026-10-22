@@ -29,7 +29,8 @@ public sealed record PreparationPalletRecord(
     DateTimeOffset PlacedAt,
     Guid PlacedBy,
     DateTimeOffset? ReadyAt,
-    long RowVersion)
+    long RowVersion,
+    string? RequestStatus = null)
 {
     /// <summary>PLACED until the operator confirms it, then READY.</summary>
     public string Status => ReadyAt is null ? "PLACED" : "READY";

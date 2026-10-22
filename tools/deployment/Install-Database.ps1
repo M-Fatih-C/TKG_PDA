@@ -2,7 +2,7 @@
 .SYNOPSIS
     Installs, configures, and migrates the PostgreSQL database for TKG PDA.
 .DESCRIPTION
-    Executes all required schema migrations (001-029) and canonical customer seeds
+    Executes all required forward-only schema migrations and canonical customer seeds
     idempotently without destroying or fabricating persistent data.
     Supports existing PostgreSQL instances as well as dedicated local instances.
     Enforces SCRAM authentication, dedicated application user (tkg_app),

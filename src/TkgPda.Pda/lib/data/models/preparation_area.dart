@@ -33,6 +33,7 @@ class PreparationPallet {
     required this.placedAt,
     required this.readyAt,
     required this.rowVersion,
+    required this.requestStatus,
   });
 
   final String id;
@@ -48,6 +49,7 @@ class PreparationPallet {
   final String? targetMachineCode;
   final DateTime? placedAt;
   final DateTime? readyAt;
+  final String? requestStatus;
 
   /// The version this screen is showing. Sent back on ready and release so a
   /// screen left open on a pallet that has since been replaced cannot confirm
@@ -57,6 +59,16 @@ class PreparationPallet {
   bool get isReady => readyAt != null;
   bool get holdsMaterial => load == 'FULL';
   bool get isBoundToRequest => transportRequestId != null;
+  bool get canConfirmCollected =>
+      requestStatus == 'SENT_TO_RDS' ||
+      requestStatus == 'RUNNING' ||
+      requestStatus == 'COMPLETED';
+  bool get canWithdraw =>
+      requestStatus == 'CREATED' ||
+      requestStatus == 'VALIDATING' ||
+      requestStatus == 'QUEUED' ||
+      requestStatus == 'FAILED' ||
+      requestStatus == 'CANCELLED';
 
   factory PreparationPallet.fromJson(JsonMap json) => PreparationPallet(
     id: json['id'] as String,
@@ -71,6 +83,7 @@ class PreparationPallet {
     placedAt: _time(json['placedAt']),
     readyAt: _time(json['readyAt']),
     rowVersion: _integer(json['rowVersion']),
+    requestStatus: json['requestStatus'] as String?,
   );
 }
 

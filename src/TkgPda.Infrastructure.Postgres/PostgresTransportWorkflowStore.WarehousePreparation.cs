@@ -25,7 +25,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
 {
     private const string PalletColumns = """
         p.id, p.container_type_id, ct.code, p.load_state, p.part_id, part.part_code,
-        p.transport_request_id, r.request_no, m.code, p.placed_at, p.placed_by, p.ready_at, p.row_version
+        p.transport_request_id, r.request_no, m.code, p.placed_at, p.placed_by, p.ready_at, p.row_version, r.status
         """;
 
     // Every join is LEFT: ListAreasAsync reaches these through a LEFT JOIN to
@@ -226,9 +226,10 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         // Unlocked peek only to learn which request to lock first; the binding
         // is re-verified below once both rows are held.
         var boundRequestId = await ReadPalletRequestIdAsync(connection, transaction, command.PalletId, cancellationToken);
+        TransportRequestSnapshot? boundRequest = null;
         if (boundRequestId is { } requestId)
         {
-            await LockRequestAsync(connection, transaction, requestId, cancellationToken);
+            boundRequest = await LockRequestAsync(connection, transaction, requestId, cancellationToken);
         }
 
         var pallet = await LockPalletAsync(connection, transaction, command.PalletId, cancellationToken);
@@ -244,18 +245,34 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                 "PREPARATION_VERSION_CONFLICT", "Bu palet siz bakarken değişti; ekranı yenileyin.");
         }
 
+        if (pallet.TransportRequestId is null || boundRequest is null)
+        {
+            throw new WorkflowRuleException(
+                "PREPARATION_DEMAND_REQUIRED", "Taşımaya hazır onayı için palet bir taleple eşleştirilmelidir.");
+        }
+
+        if (boundRequest.Status is not (TransportRequestStatus.Created or TransportRequestStatus.Validating or TransportRequestStatus.Queued))
+        {
+            throw new WorkflowRuleException(
+                "PREPARATION_REQUEST_NOT_WAITING", "Bu talep için yeni hazırlık veya hazır onayı yapılamaz.");
+        }
+
         if (pallet.ReadyAt is not null)
         {
+            if (boundRequest.ReadinessState != TransportReadinessState.Ready)
+            {
+                throw new WorkflowRuleException(
+                    "PREPARATION_READINESS_CONFLICT", "Palet ve talebin hazırlık durumu uyuşmuyor; ekranı yenileyin.");
+            }
+
             await transaction.CommitAsync(cancellationToken);
             return pallet; // Already confirmed; a retry is not a second event.
         }
 
-        // A pallet only becomes collectable once it is matched to a demand.
-        // Empty stock staged ahead of demand is matched here, not when placed.
-        if (pallet.TransportRequestId is null)
+        if (boundRequest.ReadinessState != TransportReadinessState.WaitingPreparation)
         {
             throw new WorkflowRuleException(
-                "PREPARATION_DEMAND_REQUIRED", "Taşımaya hazır onayı için palet bir taleple eşleştirilmelidir.");
+                "PREPARATION_READINESS_CONFLICT", "Talep hazırlık beklemiyor; güncel durumu yenileyin.");
         }
 
         PreparationPalletRecord updated;
@@ -286,7 +303,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await MarkRequestReadyInTransactionAsync(
             connection,
             transaction,
-            pallet.TransportRequestId.Value,
+            boundRequest.Id,
             command.ActorUserId,
             readyAreaId,
             updated.Id,
@@ -308,11 +325,20 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         await ValidateWarehouseActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
 
+        // Keep the workflow-wide lock order: request first, then pallet. The
+        // unlocked binding read is verified after both rows are locked.
+        var boundRequestId = await ReadPalletRequestIdAsync(connection, transaction, command.PalletId, cancellationToken);
+        TransportRequestSnapshot? boundRequest = null;
+        if (boundRequestId is { } requestId)
+        {
+            boundRequest = await LockRequestAsync(connection, transaction, requestId, cancellationToken);
+        }
+
         var pallet = await LockPalletAsync(connection, transaction, command.PalletId, cancellationToken);
-        if (pallet.RowVersion != command.ExpectedRowVersion)
+        if (pallet.TransportRequestId != boundRequestId)
         {
             throw new WorkflowRuleException(
-                "PREPARATION_VERSION_CONFLICT", "Bu palet siz bakarken değişti; ekranı yenileyin.");
+                "PREPARATION_PALLET_CHANGED", "Hazırlık kaydı değişti; ekranı yenileyin.");
         }
 
         var areaId = await ReadPalletAreaIdAsync(connection, transaction, command.PalletId, cancellationToken);
@@ -323,12 +349,76 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             return pallet; // The area is already free; a retry frees nothing twice.
         }
 
-        // COLLECTED states that the robot physically took it, and the database
-        // refuses that before the pallet was marked ready.
-        if (command.Reason == "COLLECTED" && pallet.ReadyAt is null)
+        if (pallet.RowVersion != command.ExpectedRowVersion)
         {
             throw new WorkflowRuleException(
-                "PREPARATION_PALLET_NOT_READY", "Hazır işaretlenmemiş palet toplanmış olarak kapatılamaz.");
+                "PREPARATION_VERSION_CONFLICT", "Bu palet siz bakarken değişti; ekranı yenileyin.");
+        }
+
+        // COLLECTED is physical evidence, not a shortcut for dispatch. It is
+        // accepted only after the request has actually reached the executor.
+        if (command.Reason == "COLLECTED")
+        {
+            if (pallet.ReadyAt is null)
+            {
+                throw new WorkflowRuleException(
+                    "PREPARATION_PALLET_NOT_READY", "Hazır işaretlenmemiş palet toplanmış olarak kapatılamaz.");
+            }
+
+            if (boundRequest is null || boundRequest.Status is not (
+                    TransportRequestStatus.SentToRds or TransportRequestStatus.Running or TransportRequestStatus.Completed))
+            {
+                throw new WorkflowRuleException(
+                    "PREPARATION_COLLECTION_NOT_DISPATCHED",
+                    "Robot görevi başlamadan palet toplanmış olarak kapatılamaz.");
+            }
+        }
+        else if (boundRequest is not null)
+        {
+            if (boundRequest.Status is TransportRequestStatus.SentToRds or TransportRequestStatus.Running)
+            {
+                throw new WorkflowRuleException(
+                    "PREPARATION_WITHDRAWAL_AFTER_DISPATCH",
+                    "Robot görevi başladıktan sonra hazırlık geri çekilemez; fiziksel durum uzlaştırılmalıdır.");
+            }
+
+            if (boundRequest.Status == TransportRequestStatus.Completed)
+            {
+                throw new WorkflowRuleException(
+                    "PREPARATION_WITHDRAWAL_AFTER_COMPLETION",
+                    "Tamamlanan taşımanın paleti geri çekilmiş olarak kapatılamaz.");
+            }
+
+            if (boundRequest.Status is TransportRequestStatus.Created or TransportRequestStatus.Validating or TransportRequestStatus.Queued)
+            {
+                await using var reset = new NpgsqlCommand("""
+                    UPDATE ops.transport_requests
+                    SET readiness_state = 'WAITING_PREPARATION', ready_at = NULL,
+                        machine_slot_reservation_active = false, updated_at = now()
+                    WHERE id = @id
+                      AND status IN ('CREATED','VALIDATING','QUEUED')
+                    RETURNING id
+                    """, connection, transaction);
+                reset.Parameters.AddWithValue("id", boundRequest.Id);
+                if (await reset.ExecuteScalarAsync(cancellationToken) is null)
+                {
+                    throw new WorkflowRuleException(
+                        "PREPARATION_REQUEST_CHANGED", "Talep durumu değişti; ekranı yenileyin.");
+                }
+
+                await InsertEventAsync(
+                    connection,
+                    transaction,
+                    boundRequest.Id,
+                    command.ActorUserId,
+                    TransportEventTypes.WarehousePreparationWithdrawn,
+                    boundRequest.Status,
+                    boundRequest.Status,
+                    "Warehouse preparation was withdrawn before robot dispatch.",
+                    new { preparation_area_id = areaId, preparation_pallet_id = pallet.Id },
+                    cancellationToken,
+                    OperationalEventContext.ForUser(command.ActorUserId, command.DeviceId));
+            }
         }
 
         await using (var update = new NpgsqlCommand("""
@@ -374,7 +464,8 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         PlacedAt: r.GetFieldValue<DateTimeOffset>(offset + 9),
         PlacedBy: r.GetGuid(offset + 10),
         ReadyAt: r.IsDBNull(offset + 11) ? null : r.GetFieldValue<DateTimeOffset>(offset + 11),
-        RowVersion: r.GetInt64(offset + 12));
+        RowVersion: r.GetInt64(offset + 12),
+        RequestStatus: r.IsDBNull(offset + 13) ? null : r.GetString(offset + 13));
 
     private static async Task<PreparationPalletRecord?> FindPalletAsync(
         NpgsqlConnection connection, NpgsqlTransaction? transaction, string predicate,
@@ -510,7 +601,9 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await using (var update = new NpgsqlCommand("""
             UPDATE ops.transport_requests
             SET readiness_state = 'READY', ready_at = @ready_at, updated_at = now()
-            WHERE id = @id AND readiness_state = 'WAITING_PREPARATION'
+            WHERE id = @id
+              AND status IN ('CREATED','VALIDATING','QUEUED')
+              AND readiness_state = 'WAITING_PREPARATION'
             RETURNING id
             """, connection, transaction))
         {
@@ -518,9 +611,8 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             update.Parameters.AddWithValue("ready_at", readyAt);
             if (await update.ExecuteScalarAsync(cancellationToken) is null)
             {
-                // Already Ready, or no longer waiting. Marking the pallet is
-                // still correct; the request simply needed no change.
-                return;
+                throw new WorkflowRuleException(
+                    "PREPARATION_REQUEST_CHANGED", "Talep durumu değişti; ekranı yenileyin.");
             }
         }
 

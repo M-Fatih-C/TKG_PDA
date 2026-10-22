@@ -1321,6 +1321,7 @@ PreparationPallet fakePallet({
   String? targetMachineCode,
   DateTime? readyAt,
   int rowVersion = 0,
+  String? requestStatus = 'QUEUED',
 }) => PreparationPallet(
   id: id,
   containerTypeId: 'container-1',
@@ -1334,6 +1335,7 @@ PreparationPallet fakePallet({
   placedAt: DateTime.utc(2026, 1, 1),
   readyAt: readyAt,
   rowVersion: rowVersion,
+  requestStatus: requestStatus,
 );
 
 PreparationArea fakeArea({

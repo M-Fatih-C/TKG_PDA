@@ -208,6 +208,7 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
             LEFT JOIN auth.user_machine_permissions perm
               ON perm.machine_id = r.machine_id AND perm.user_id = @user_id
             WHERE r.readiness_state = 'WAITING_PREPARATION'
+              AND r.status IN ('CREATED','VALIDATING','QUEUED')
               AND (@administrator OR COALESCE(perm.can_operate, false))
             ORDER BY r.created_at, r.request_no
             """);
@@ -734,7 +735,8 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
                    END AS chain_state,
                    EXISTS (
                        SELECT 1 FROM ops.production_end_run_items pe
-                       WHERE pe.transport_request_id = r.id) AS production_end
+                       WHERE pe.transport_request_id = r.id) AS production_end,
+                   r.machine_slot_reservation_active
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
             JOIN ranked ON ranked.id = r.id
@@ -794,7 +796,8 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
                 reader.GetInt64(32),
                 reader.IsDBNull(33) ? null : reader.GetInt64(33),
                 NullableString(reader, 34),
-                reader.GetBoolean(35)));
+                reader.GetBoolean(35),
+                reader.GetBoolean(36)));
         }
 
         return result;

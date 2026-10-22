@@ -562,11 +562,14 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", successorId)));
         Assert.Equal(1L, await CancelledEventsAsync(successorId));
         Assert.Equal(0L, await EligibleCountAsync(successorId));
-        Assert.Equal("OCCUPIED", await fixture.ScalarAsync<string>(
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
             "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
             ("slot", setup.Slot)));
-        Assert.Equal(setup.AltPart, await fixture.ScalarAsync<Guid>(
-            "SELECT current_part_id FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.slot_runtime_state WHERE layout_slot_id = @slot AND current_part_id IS NOT NULL",
             ("slot", setup.Slot)));
     }
 

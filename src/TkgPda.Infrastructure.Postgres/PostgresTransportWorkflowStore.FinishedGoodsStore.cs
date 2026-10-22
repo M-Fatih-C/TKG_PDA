@@ -291,15 +291,15 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             """
             UPDATE ops.store_units
             SET removed_at = clock_timestamp(),
-                removed_by = COALESCE(@actor, (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1), (SELECT id FROM auth.users LIMIT 1)),
-                removed_device_id = COALESCE((SELECT id FROM audit.client_devices WHERE device_code = 'TAB-BITMIS-URUN' LIMIT 1), (SELECT id FROM audit.client_devices LIMIT 1)),
+                removed_by = NULL,
+                removed_device_id = NULL,
+                removal_source = 'ROBOT',
                 row_version = row_version + 1
             WHERE id = @id AND removed_at IS NULL
             """,
             connection,
             transaction);
         removeCmd.Parameters.AddWithValue("id", unitId.Value);
-        AddNullableUuid(removeCmd, "actor", request.RequestedBy);
         if (await removeCmd.ExecuteNonQueryAsync(cancellationToken) != 1)
             throw new WorkflowRuleException("STORE_PICKUP_UNIT_MISSING", "Rezerve edilen boş kasa kaldırılamadı.");
 
@@ -505,6 +505,46 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         await ValidateFinishedGoodsActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
 
         Guid locationId;
+        long observedRowVersion;
+        bool observedRemoved;
+        await using (var peek = new NpgsqlCommand("""
+            SELECT store_location_id, row_version, removed_at IS NOT NULL
+            FROM ops.store_units WHERE id = @id
+            """, connection, transaction))
+        {
+            peek.Parameters.AddWithValue("id", command.UnitId);
+            await using var reader = await peek.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                throw new WorkflowRuleException("STORE_UNIT_NOT_FOUND", "Depo kaydı bulunamadı.");
+            }
+
+            locationId = reader.GetGuid(0);
+            observedRowVersion = reader.GetInt64(1);
+            observedRemoved = reader.GetBoolean(2);
+        }
+
+        if (observedRemoved)
+        {
+            // A retry removes nothing twice.
+            var current = await ReadLocationsAsync(connection, transaction, locationId, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return current.Single();
+        }
+
+        if (observedRowVersion != command.ExpectedRowVersion)
+        {
+            throw new WorkflowRuleException(
+                "STORE_VERSION_CONFLICT", "Bu kayıt siz bakarken değişti; ekranı yenileyin.");
+        }
+
+        var reconciledReservation = await ReconcileTerminalStoreReservationAsync(
+            connection, transaction, locationId, command.UnitId,
+            command.ActorUserId, command.DeviceId, cancellationToken);
+
+        // Robot completion locks the reservation before the exact store unit.
+        // Reconciliation follows the same order above, then locks and verifies
+        // the unit so the two paths cannot deadlock or remove a changed pallet.
         Guid? partId;
         Guid? containerTypeId;
         Guid? requestId;
@@ -523,7 +563,12 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                 throw new WorkflowRuleException("STORE_UNIT_NOT_FOUND", "Depo kaydı bulunamadı.");
             }
 
-            locationId = reader.GetGuid(0);
+            if (reader.GetGuid(0) != locationId)
+            {
+                throw new WorkflowRuleException(
+                    "STORE_VERSION_CONFLICT", "Bu kayıt siz bakarken değişti; ekranı yenileyin.");
+            }
+
             partId = reader.IsDBNull(1) ? null : reader.GetGuid(1);
             containerTypeId = reader.IsDBNull(2) ? null : reader.GetGuid(2);
             requestId = reader.IsDBNull(3) ? null : reader.GetGuid(3);
@@ -533,10 +578,15 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
 
         if (alreadyRemoved)
         {
-            // A retry removes nothing twice.
             var current = await ReadLocationsAsync(connection, transaction, locationId, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return current.Single();
+        }
+
+        if (rowVersion != command.ExpectedRowVersion)
+        {
+            throw new WorkflowRuleException(
+                "STORE_VERSION_CONFLICT", "Bu kayıt siz bakarken değişti; ekranı yenileyin.");
         }
 
         await using (var checkReservation = new NpgsqlCommand("""
@@ -556,16 +606,10 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             }
         }
 
-        if (rowVersion != command.ExpectedRowVersion)
-        {
-            throw new WorkflowRuleException(
-                "STORE_VERSION_CONFLICT", "Bu kayıt siz bakarken değişti; ekranı yenileyin.");
-        }
-
         await using (var update = new NpgsqlCommand("""
             UPDATE ops.store_units
             SET removed_at = GREATEST(clock_timestamp(), delivered_at), removed_by = @actor,
-                removed_device_id = @device, row_version = row_version + 1
+                removed_device_id = @device, removal_source = 'OPERATOR', row_version = row_version + 1
             WHERE id = @id AND removed_at IS NULL
             """, connection, transaction))
         {
@@ -577,7 +621,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
 
         await InsertStoreEventAsync(connection, transaction, locationId, command.UnitId, "UNIT_REMOVED",
             partId, containerTypeId, requestId, command.ActorUserId, command.DeviceId,
-            new { }, cancellationToken);
+            new { reconciled_transport_reservation = reconciledReservation }, cancellationToken);
 
         var refreshed = await ReadLocationsAsync(connection, transaction, locationId, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -591,6 +635,11 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
         await ValidateFinishedGoodsActorAsync(connection, transaction, command.ActorUserId, command.DeviceId, cancellationToken);
 
+        var reconciledReservation = await ReconcileTerminalStoreReservationAsync(
+            connection, transaction, command.LocationId, storeUnitId: null,
+            command.ActorUserId, command.DeviceId, cancellationToken);
+
+        // Match robot delivery's reservation -> location lock order.
         await using (var exists = new NpgsqlCommand(
             "SELECT 1 FROM ops.store_locations WHERE id = @id FOR UPDATE", connection, transaction))
         {
@@ -642,7 +691,7 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
             await using (var update = new NpgsqlCommand("""
                 UPDATE ops.store_units
                 SET removed_at = GREATEST(clock_timestamp(), delivered_at), removed_by = @actor,
-                    removed_device_id = @device, row_version = row_version + 1
+                    removed_device_id = @device, removal_source = 'OPERATOR', row_version = row_version + 1
                 WHERE id = ANY(@ids)
                 """, connection, transaction))
             {
@@ -652,15 +701,95 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
                 await update.ExecuteNonQueryAsync(cancellationToken);
             }
 
+        }
+
+        if (cleared.Count > 0 || reconciledReservation)
+        {
             await InsertStoreEventAsync(connection, transaction, command.LocationId, storeUnitId: null,
                 "LOCATION_CLEARED", partId: null, containerTypeId: null, transportRequestId: null,
-                command.ActorUserId, command.DeviceId, new { removed_units = cleared.Count },
+                command.ActorUserId, command.DeviceId,
+                new { removed_units = cleared.Count, reconciled_transport_reservation = reconciledReservation },
                 cancellationToken);
         }
 
         var refreshed = await ReadLocationsAsync(connection, transaction, command.LocationId, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return refreshed.Single();
+    }
+
+    /// <summary>
+    /// A failed/cancelled robot execution keeps its endpoint reserved because
+    /// its physical result is unknown. A warehouse operator's explicit remove
+    /// or clear action is the evidence that closes that hold. PICKUP holds can
+    /// be reconciled by removing their exact pallet; clearing a location can
+    /// reconcile either reservation shape.
+    /// </summary>
+    private static async Task<bool> ReconcileTerminalStoreReservationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid locationId,
+        Guid? storeUnitId,
+        Guid actorUserId,
+        Guid deviceId,
+        CancellationToken cancellationToken)
+    {
+        // Lock every active reservation for the location first. Non-terminal
+        // robot work remains locked and is rejected by the caller; only a
+        // terminal, explicitly uncertain reservation can be reconciled.
+        var locked = new List<(Guid Id, bool ReconciliationRequired, string Status, string Type, Guid? UnitId)>();
+        await using (var locking = new NpgsqlCommand(
+            """
+            SELECT sr.id, sr.reconciliation_required, r.status,
+                   sr.reservation_type, sr.store_unit_id
+            FROM ops.store_reservations sr
+            JOIN ops.transport_requests r ON r.id = sr.transport_request_id
+            WHERE sr.store_location_id = @location
+              AND sr.released_at IS NULL
+            ORDER BY sr.created_at, sr.id
+            FOR UPDATE OF sr
+            """,
+            connection,
+            transaction))
+        {
+            locking.Parameters.AddWithValue("location", locationId);
+            await using var reader = await locking.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                locked.Add((
+                    reader.GetGuid(0),
+                    reader.GetBoolean(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetGuid(4)));
+            }
+        }
+
+        var reconciled = false;
+        foreach (var reservation in locked)
+        {
+            var terminal = reservation.Status is "FAILED" or "CANCELLED";
+            var matchesEvidence = storeUnitId is null
+                || (reservation.Type == "PICKUP" && reservation.UnitId == storeUnitId);
+            if (!reservation.ReconciliationRequired || !terminal || !matchesEvidence) continue;
+
+            await using var command = new NpgsqlCommand(
+                """
+                UPDATE ops.store_reservations
+                SET released_at = clock_timestamp(),
+                    reconciled_at = clock_timestamp(),
+                    reconciled_by = @actor,
+                    reconciled_device_id = @device
+                WHERE id = @id AND released_at IS NULL
+                """,
+                connection,
+                transaction);
+            command.Parameters.AddWithValue("id", reservation.Id);
+            command.Parameters.AddWithValue("actor", actorUserId);
+            command.Parameters.AddWithValue("device", deviceId);
+            reconciled |= await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+        }
+
+        return reconciled;
     }
 
     public async Task<StoreLocationRecord> RecordEmptyContainerAsync(

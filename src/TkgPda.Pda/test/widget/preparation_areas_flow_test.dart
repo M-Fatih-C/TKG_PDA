@@ -126,6 +126,7 @@ void main() {
           transportRequestId: 'request-1',
           readyAt: DateTime.utc(2026, 1, 1),
           rowVersion: 4,
+          requestStatus: 'SENT_TO_RDS',
         ),
       ),
     ];
@@ -139,6 +140,39 @@ void main() {
 
     expect(repository.releasedPallets.single['reason'], 'COLLECTED');
     expect(repository.releasedPallets.single['expectedRowVersion'], 4);
+  });
+
+  testWidgets('a ready pallet cannot be collected before dispatch', (
+    tester,
+  ) async {
+    repository.preparationAreasValue = [
+      fakeArea(
+        number: 1,
+        pallet: fakePallet(
+          load: 'FULL',
+          partId: 'part-1',
+          transportRequestId: 'request-1',
+          readyAt: DateTime.utc(2026, 1, 1),
+          requestStatus: 'QUEUED',
+        ),
+      ),
+    ];
+    await pump(tester);
+
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('collected-area-1')))
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<OutlinedButton>(
+            find.byKey(const Key('withdraw-ready-area-1')),
+          )
+          .onPressed,
+      isNotNull,
+    );
   });
 
   testWidgets('filling an area prepares the demand the server published', (
