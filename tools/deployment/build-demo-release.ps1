@@ -8,6 +8,9 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $stagingDir = Join-Path $repoRoot 'build_staging'
 $outputDir = Join-Path $repoRoot "artifacts\release\$AppVersion"
 if (-not (Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
+$shortCommit = (& git -C $repoRoot rev-parse --short HEAD).Trim()
+$fullCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
+$now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 function Reset-StagingDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -48,7 +51,13 @@ Write-Host "Publishing self-contained .NET server to staging..." -ForegroundColo
 $serverStaging = Join-Path $stagingDir 'Server'
 Reset-StagingDirectory $serverStaging
 $apiProj = Join-Path $repoRoot 'src\TkgPda.Api\TkgPda.Api.csproj'
-& dotnet publish $apiProj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:IncludeNativeLibrariesForSelfExtract=true -o $serverStaging
+& dotnet publish $apiProj -c Release -r win-x64 --self-contained true `
+    -p:PublishSingleFile=false `
+    -p:IncludeNativeLibrariesForSelfExtract=true `
+    "-p:Version=$AppVersion" `
+    "-p:InformationalVersion=$AppVersion+$fullCommit" `
+    "-p:TkgBuildTimestamp=$now" `
+    -o $serverStaging
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
 Write-Host "Syncing updated deployment tools, db migrations, seeds, web interfaces and demo seed to staging..." -ForegroundColor Cyan
@@ -108,10 +117,6 @@ foreach ($file in $files) {
         $updateFileHashes[$rel] = $hash
     }
 }
-
-$shortCommit = (& git -C $repoRoot rev-parse --short HEAD).Trim()
-$fullCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
-$now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 $fullManifest = @{
     name = "TKG PDA Demo Server"

@@ -2,7 +2,7 @@ namespace TkgPda.Api;
 
 public static class TkgVersionInfo
 {
-    public const string Version = "1.0.0";
+    public static string Version { get; private set; } = "1.0.0";
     public const string ServiceName = "TKG PDA Server";
     public const string DisplayName = "TKG PDA Server";
 
@@ -19,13 +19,13 @@ public static class TkgVersionInfo
         if (!string.IsNullOrWhiteSpace(infoVer))
         {
             var parts = infoVer.Split('+');
+            if (!string.IsNullOrWhiteSpace(parts[0]))
+            {
+                Version = parts[0];
+            }
             if (parts.Length > 1)
             {
                 CommitHash = parts[1];
-            }
-            else if (!string.IsNullOrWhiteSpace(parts[0]))
-            {
-                CommitHash = parts[0];
             }
         }
 

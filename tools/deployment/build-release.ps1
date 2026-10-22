@@ -120,6 +120,8 @@ $apiProj = Join-Path $projectRoot 'src\TkgPda.Api\TkgPda.Api.csproj'
     --self-contained true `
     -p:PublishSingleFile=false `
     -p:IncludeNativeLibrariesForSelfExtract=true `
+    "-p:Version=$Version" `
+    "-p:InformationalVersion=$Version+$fullCommit" `
     -p:TkgBuildTimestamp=$buildTimeUtc `
     -o $serverStaging
 
@@ -206,7 +208,7 @@ $manifest = @{
     fullCommit = $fullCommit
     releaseTimestamp = $buildTimeUtc
     architecture = "win-x64"
-    databaseMigrationLevel = "031"
+    databaseMigrationLevel = "032"
     components = @{
         server = "ASP.NET Core Kestrel (Native Windows Service)"
         adminWeb = "React SPA (/admin/)"
@@ -227,7 +229,7 @@ $updateManifest = @{
     fullCommit = $fullCommit
     releaseTimestamp = $buildTimeUtc
     architecture = "win-x64"
-    databaseMigrationLevel = "031"
+    databaseMigrationLevel = "032"
     components = @{
         server = "ASP.NET Core Kestrel (Native Windows Service)"
         adminWeb = "React SPA (/admin/)"
