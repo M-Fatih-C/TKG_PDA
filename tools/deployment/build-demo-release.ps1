@@ -9,6 +9,19 @@ $stagingDir = Join-Path $repoRoot 'build_staging'
 $outputDir = Join-Path $repoRoot "artifacts\release\$AppVersion"
 if (-not (Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
 
+function Reset-StagingDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullStaging = [System.IO.Path]::GetFullPath($stagingDir).TrimEnd('\') + '\'
+    if (-not $fullPath.StartsWith($fullStaging, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to reset a directory outside build staging: $fullPath"
+    }
+    if (Test-Path -LiteralPath $fullPath) {
+        Remove-Item -LiteralPath $fullPath -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $fullPath -Force | Out-Null
+}
+
 Write-Host "=== Building TKG PDA Demo Installer (Version $AppVersion) ===" -ForegroundColor Cyan
 
 # 1. Locate ISCC.exe
@@ -33,30 +46,31 @@ Write-Host "Found Inno Setup Compiler at: $iscc" -ForegroundColor Green
 # 2. Publish updated server and sync tools to staging
 Write-Host "Publishing self-contained .NET server to staging..." -ForegroundColor Cyan
 $serverStaging = Join-Path $stagingDir 'Server'
+Reset-StagingDirectory $serverStaging
 $apiProj = Join-Path $repoRoot 'src\TkgPda.Api\TkgPda.Api.csproj'
 & dotnet publish $apiProj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:IncludeNativeLibrariesForSelfExtract=true -o $serverStaging
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 
 Write-Host "Syncing updated deployment tools, db migrations, seeds, web interfaces and demo seed to staging..." -ForegroundColor Cyan
 $toolsStaging = Join-Path $stagingDir 'Tools'
-if (-not (Test-Path $toolsStaging)) { New-Item -ItemType Directory -Path $toolsStaging -Force | Out-Null }
+Reset-StagingDirectory $toolsStaging
 Get-ChildItem -Path (Join-Path $repoRoot 'tools\deployment\*.ps1') | ForEach-Object {
     Copy-Item $_.FullName (Join-Path $toolsStaging $_.Name) -Force
 }
 
 $dbMigrationsStaging = Join-Path $stagingDir 'db\migrations'
-if (-not (Test-Path $dbMigrationsStaging)) { New-Item -ItemType Directory -Path $dbMigrationsStaging -Force | Out-Null }
+Reset-StagingDirectory $dbMigrationsStaging
 Copy-Item (Join-Path $repoRoot 'db\migrations\*') $dbMigrationsStaging -Recurse -Force
 
 $dbSeedsStaging = Join-Path $stagingDir 'db\seeds'
-if (-not (Test-Path $dbSeedsStaging)) { New-Item -ItemType Directory -Path $dbSeedsStaging -Force | Out-Null }
+Reset-StagingDirectory $dbSeedsStaging
 Copy-Item (Join-Path $repoRoot 'db\seeds\*') $dbSeedsStaging -Recurse -Force
 
 $adminDist = Join-Path $repoRoot 'src\TkgPda.AdminWeb\dist'
 $adminStaging = Join-Path $stagingDir 'Web\admin'
 if (Test-Path $adminDist) {
     Write-Host "Syncing Admin Web ($adminDist) to staging ($adminStaging)..." -ForegroundColor Cyan
-    if (-not (Test-Path $adminStaging)) { New-Item -ItemType Directory -Path $adminStaging -Force | Out-Null }
+    Reset-StagingDirectory $adminStaging
     Copy-Item (Join-Path $adminDist '*') $adminStaging -Recurse -Force
 }
 
@@ -64,7 +78,7 @@ $pdaBuild = Join-Path $repoRoot 'src\TkgPda.Pda\build\web'
 $pdaStaging = Join-Path $stagingDir 'Web\pda'
 if (Test-Path $pdaBuild) {
     Write-Host "Syncing Flutter PDA Web ($pdaBuild) to staging ($pdaStaging)..." -ForegroundColor Cyan
-    if (-not (Test-Path $pdaStaging)) { New-Item -ItemType Directory -Path $pdaStaging -Force | Out-Null }
+    Reset-StagingDirectory $pdaStaging
     Copy-Item (Join-Path $pdaBuild '*') $pdaStaging -Recurse -Force
     $pdaIndex = Join-Path $pdaStaging 'index.html'
     if (Test-Path $pdaIndex) {
