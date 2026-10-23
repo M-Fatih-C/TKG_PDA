@@ -161,12 +161,12 @@ public sealed class DemoSimulationWorker(
                     SELECT pa.id
                     FROM ops.preparation_areas pa
                     WHERE pa.is_enabled
-                      AND pa.scope = CASE WHEN @task_type = 'BRING_EMPTY' THEN 'FINISHED_GOODS' ELSE 'SEMI_FINISHED' END
+                      AND pa.warehouse_scope = CASE WHEN @task_type = 'BRING_EMPTY' THEN 'FINISHED_GOODS' ELSE 'SEMI_FINISHED' END
                       AND NOT EXISTS (
                           SELECT 1 FROM ops.preparation_pallets pp
                           WHERE pp.preparation_area_id = pa.id AND pp.released_at IS NULL
                       )
-                    ORDER BY pa.code
+                    ORDER BY pa.area_number
                     LIMIT 1
                 ),
                 inserted_pallet AS (
@@ -201,7 +201,14 @@ public sealed class DemoSimulationWorker(
                     updated_at = now()
                 WHERE id = @id
                   AND status = 'QUEUED'
-                  AND readiness_state = 'WAITING_PREPARATION';
+                  AND readiness_state = 'WAITING_PREPARATION'
+                  AND (
+                      EXISTS (SELECT 1 FROM inserted_pallet)
+                      OR EXISTS (
+                          SELECT 1 FROM ops.preparation_pallets existing
+                          WHERE existing.transport_request_id = @id AND existing.released_at IS NULL
+                      )
+                  );
                 """, connection);
             prepCmd.Parameters.AddWithValue("id", req.Id);
             prepCmd.Parameters.AddWithValue("task_type", req.TaskType);
@@ -617,6 +624,7 @@ public sealed class DemoSimulationWorker(
             WITH cancelled_pallets AS (
                 UPDATE ops.preparation_pallets pp
                 SET released_at = now(),
+                    released_by = COALESCE(pp.ready_by, pp.placed_by),
                     released_reason = 'REQUEST_CANCELLED',
                     row_version = row_version + 1
                 WHERE pp.released_at IS NULL
@@ -635,6 +643,48 @@ public sealed class DemoSimulationWorker(
             FROM cancelled_pallets c;
             """, connection);
         await cleanPalletsCmd.ExecuteNonQueryAsync(cancellationToken);
+
+        // 4. In demo simulation, if all preparation areas of a scope are occupied and any request is waiting preparation,
+        // recycle the oldest pallet so preparation areas never deadlock.
+        await using var recyclePalletsCmd = new NpgsqlCommand(
+            """
+            WITH recycled_pallets AS (
+                UPDATE ops.preparation_pallets pp
+                SET released_at = now(),
+                    released_by = COALESCE(pp.ready_by, pp.placed_by),
+                    released_reason = 'AUTO_DEMO_RECYCLED',
+                    row_version = row_version + 1
+                WHERE pp.id IN (
+                    SELECT oldest.id
+                    FROM (
+                        SELECT p.id,
+                               ROW_NUMBER() OVER (PARTITION BY pa.warehouse_scope ORDER BY p.placed_at ASC) as rn
+                        FROM ops.preparation_pallets p
+                        JOIN ops.preparation_areas pa ON pa.id = p.preparation_area_id
+                        WHERE p.released_at IS NULL
+                          AND NOT EXISTS (
+                              SELECT 1 FROM ops.preparation_areas free_pa
+                              WHERE free_pa.is_enabled
+                                AND free_pa.warehouse_scope = pa.warehouse_scope
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM ops.preparation_pallets free_pp
+                                    WHERE free_pp.preparation_area_id = free_pa.id AND free_pp.released_at IS NULL
+                                )
+                          )
+                    ) oldest
+                    WHERE oldest.rn = 1
+                )
+                RETURNING pp.id, pp.preparation_area_id, pp.part_id, pp.container_type_id, pp.transport_request_id, COALESCE(pp.ready_by, pp.placed_by) AS actor, pp.placed_device_id
+            )
+            INSERT INTO ops.preparation_events (
+                preparation_area_id, preparation_pallet_id, event_type, part_id, container_type_id,
+                transport_request_id, actor_user_id, device_id, occurred_at, data_json
+            )
+            SELECT r.preparation_area_id, r.id, 'PALLET_RELEASED', r.part_id, r.container_type_id,
+                   r.transport_request_id, r.actor, r.placed_device_id, now(), '{"reason":"AUTO_DEMO_RECYCLED","simulated":true}'::jsonb
+            FROM recycled_pallets r;
+            """, connection);
+        await recyclePalletsCmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private sealed record DemoCandidateRequest(
