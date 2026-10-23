@@ -234,23 +234,14 @@ class StoreCoordinator extends ChangeNotifier {
   Future<bool> prepareEmptyContainer({
     required PreparationArea area,
     required WarehouseDemand demand,
-  }) {
-    final containerTypeId = demand.containerTypeId;
-    if (containerTypeId == null || containerTypeId.isEmpty) {
-      error =
-          'Talebin palet/kasa tipi tanımlı değil. Yönetim panelinden makine konumu taşıma kabını kontrol edin.';
-      _notify();
-      return Future.value(false);
-    }
-    return _mutate(area.id, () async {
-      await repository.placeFinishedGoodsPreparation(
-        areaId: area.id,
-        containerTypeId: containerTypeId,
-        transportRequestId: demand.requestId,
-        idempotencyKey: _uuid.v4(),
-      );
-    });
-  }
+  }) => _mutate(area.id, () async {
+    await repository.placeFinishedGoodsPreparation(
+      areaId: area.id,
+      containerTypeId: demand.containerTypeId,
+      transportRequestId: demand.requestId,
+      idempotencyKey: _uuid.v4(),
+    );
+  });
 
   Future<bool> markPreparationReady(PreparationPallet pallet) =>
       _mutate(pallet.id, () async {

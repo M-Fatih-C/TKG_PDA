@@ -32,8 +32,8 @@ public sealed record PreparationAreaRecord(
 
 public sealed record PreparationPalletRecord(
     Guid Id,
-    Guid ContainerTypeId,
-    string ContainerCode,
+    Guid? ContainerTypeId,
+    string? ContainerCode,
     string Load,
     Guid? PartId,
     string? PartCode,
@@ -64,6 +64,7 @@ public sealed record WarehouseDemandRecord(
     string? PartCode,
     Guid? ContainerTypeId,
     string? ContainerCode,
+    string? ContainerDimensions,
     string Operation,
     string RequestedLoad,
     DateTimeOffset RequestedAt,
@@ -82,7 +83,7 @@ public sealed record WarehouseDemandRecord(
 /// </summary>
 public sealed record PlacePalletCommand(
     Guid AreaId,
-    Guid ContainerTypeId,
+    Guid? ContainerTypeId,
     LoadState Load,
     Guid? PartId,
     Guid? TransportRequestId,
@@ -180,7 +181,7 @@ public sealed class WarehousePreparationService(IWarehousePreparationStore store
         PlacePalletCommand command, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
-        RequireIds(command.AreaId, command.ContainerTypeId, command.ActorUserId, command.DeviceId);
+        RequireIds(command.AreaId, command.ActorUserId, command.DeviceId);
         RequireIdempotencyKey(command.IdempotencyKey);
 
         var content = new WarehousePalletContent(command.ContainerTypeId, command.Load, command.PartId);
@@ -188,10 +189,13 @@ public sealed class WarehousePreparationService(IWarehousePreparationStore store
         switch (command.Load)
         {
             case LoadState.Empty:
-                // Staged ahead of demand, so there is no demand to match it
-                // against yet. The helper checks the rest of the shape: an
-                // empty container may not carry material.
-                WarehousePreparationRules.EnsurePalletMatchesDemand(content, demand: null);
+                if (command.PartId is not null)
+                {
+                    throw new WorkflowRuleException(
+                        "EMPTY_PALLET_HAS_MATERIAL",
+                        "Boş palet içinde malzeme varmış gibi kaydedilemez.");
+                }
+
                 if (command.TransportRequestId is not null && scope != WarehousePreparationScopes.FinishedGoods)
                 {
                     // Matching empty stock to a request is the ready step's job,
@@ -210,9 +214,31 @@ public sealed class WarehousePreparationService(IWarehousePreparationStore store
                         "Boş kasa yalnız gelen talep için hazırlanabilir.");
                 }
 
+                if (scope != WarehousePreparationScopes.FinishedGoods)
+                {
+                    // Semi-finished empty stock is staged before a demand and
+                    // therefore has no request from which to recover identity.
+                    WarehousePreparationRules.EnsurePalletMatchesDemand(content, demand: null);
+                }
+
+                if (command.ContainerTypeId is { } suppliedEmptyContainerTypeId
+                    && suppliedEmptyContainerTypeId == Guid.Empty)
+                {
+                    throw new WorkflowRuleException(
+                        "PREPARATION_CONTAINER_REQUIRED",
+                        "Taşıma kabı kimliği geçerli olmalıdır.");
+                }
+
                 break;
 
             case LoadState.Full:
+                if (command.ContainerTypeId is not { } fullContainerTypeId || fullContainerTypeId == Guid.Empty)
+                {
+                    throw new WorkflowRuleException(
+                        "PREPARATION_CONTAINER_REQUIRED",
+                        "Dolu paletteki taşıma kabı tipi bilinmelidir.");
+                }
+
                 // The helper cannot be used here: with no demand loaded it
                 // always reports one missing. Only the shape is checked now;
                 // the store re-reads the real request and matches part,

@@ -130,7 +130,7 @@ abstract interface class PdaDataSource {
   Future<PreparationPallet> placePallet({
     required String areaId,
     required String load,
-    required String containerTypeId,
+    String? containerTypeId,
     String? partId,
     String? transportRequestId,
     required String idempotencyKey,
@@ -150,7 +150,7 @@ abstract interface class PdaDataSource {
   Future<List<WarehouseDemand>> finishedGoodsPreparationDemands();
   Future<PreparationPallet> placeFinishedGoodsPreparation({
     required String areaId,
-    required String containerTypeId,
+    String? containerTypeId,
     required String transportRequestId,
     required String idempotencyKey,
   });
@@ -563,7 +563,7 @@ class PdaRepository implements PdaDataSource {
   Future<PreparationPallet> placePallet({
     required String areaId,
     required String load,
-    required String containerTypeId,
+    String? containerTypeId,
     String? partId,
     String? transportRequestId,
     required String idempotencyKey,
@@ -572,7 +572,7 @@ class PdaRepository implements PdaDataSource {
       '$_preparation/areas/$areaId/pallet',
       body: {
         'load': load,
-        'containerTypeId': containerTypeId,
+        'containerTypeId': ?containerTypeId,
         'partId': ?partId,
         'transportRequestId': ?transportRequestId,
       },
@@ -632,7 +632,7 @@ class PdaRepository implements PdaDataSource {
   @override
   Future<PreparationPallet> placeFinishedGoodsPreparation({
     required String areaId,
-    required String containerTypeId,
+    String? containerTypeId,
     required String transportRequestId,
     required String idempotencyKey,
   }) async {
@@ -640,7 +640,7 @@ class PdaRepository implements PdaDataSource {
       '$_finishedGoodsPreparation/areas/$areaId/pallet',
       body: {
         'load': 'EMPTY',
-        'containerTypeId': containerTypeId,
+        'containerTypeId': ?containerTypeId,
         'transportRequestId': transportRequestId,
       },
       idempotencyKey: idempotencyKey,

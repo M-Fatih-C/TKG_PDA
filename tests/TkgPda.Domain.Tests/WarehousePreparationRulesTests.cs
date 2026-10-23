@@ -67,8 +67,17 @@ public sealed class WarehousePreparationRulesTests
         () => WarehousePreparationRules.EnsurePalletMatchesDemand(Empty with { PartId = Part }, null));
 
     [Fact]
-    public void Missing_container_is_not_guessed() => Error("PREPARATION_IDENTITY_REQUIRED",
+    public void Missing_unbound_container_is_not_guessed() => Error("PREPARATION_CONTAINER_REQUIRED",
         () => WarehousePreparationRules.EnsurePalletMatchesDemand(Empty with { ContainerTypeId = Guid.Empty }, null));
+
+    [Fact]
+    public void Exact_empty_request_can_preserve_an_unresolved_customer_container_type()
+    {
+        var pallet = Empty with { ContainerTypeId = null };
+        var demand = Demand with { ContainerTypeId = null, RequestedLoad = LoadState.Empty };
+
+        WarehousePreparationRules.EnsurePalletMatchesDemand(pallet, demand);
+    }
 
     [Fact]
     public void Missing_full_pallet_part_is_not_guessed() => Error("PREPARATION_PART_REQUIRED",

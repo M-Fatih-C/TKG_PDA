@@ -31,8 +31,9 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
 
     // Every join is LEFT: ListAreasAsync reaches these through a LEFT JOIN to
     // the pallet, so an inner join on the container would drop free areas from
-    // the result entirely. A real pallet always has a container_type_id, so
-    // nothing is lost where the pallet does exist.
+    // the result entirely. Request-bound finished-goods empty pallets may also
+    // intentionally have no container type when the customer source contains
+    // dimensions but no container code.
     private const string PalletJoins = """
         LEFT JOIN master.container_types ct ON ct.id = p.container_type_id
         LEFT JOIN master.parts part ON part.id = p.part_id
@@ -79,7 +80,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await using var command = new NpgsqlCommand($"""
             SELECT r.id, r.request_no, r.machine_id, m.code, r.part_id, part.part_code,
                    COALESCE(r.container_type_id, machine_slot.default_container_type_id), ct.code,
-                   tt.code, r.created_at,
+                   ppm.container_dimensions, tt.code, r.created_at,
                    claimed.preparation_area_id, claimed_area.area_number, part.description,
                    v.code, v.name, pg.name
             FROM ops.transport_requests r
@@ -92,6 +93,10 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                    ON machine_slot.id = CASE WHEN tt.code = 'BRING_EMPTY' THEN r.destination_slot_id ELSE r.source_slot_id END
             LEFT JOIN master.container_types ct
                    ON ct.id = COALESCE(r.container_type_id, machine_slot.default_container_type_id)
+            LEFT JOIN master.part_planning_metrics ppm
+                   ON ppm.variant_id = r.variant_id
+                  AND ppm.product_group_id = r.product_group_id
+                  AND ppm.part_id = r.part_id
             LEFT JOIN ops.preparation_pallets claimed
                    ON claimed.transport_request_id = r.id AND claimed.released_at IS NULL
             LEFT JOIN ops.preparation_areas claimed_area ON claimed_area.id = claimed.preparation_area_id
@@ -111,7 +116,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         var demands = new List<WarehouseDemandRecord>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var operation = WorkflowCode.ParseTaskType(reader.GetString(8));
+            var operation = WorkflowCode.ParseTaskType(reader.GetString(9));
             // What the warehouse has to put in the container, derived from the
             // operation rather than stored twice and allowed to drift.
             var requestedLoad = operation == TransportTaskType.BringFull ? LoadState.Full : LoadState.Empty;
@@ -124,15 +129,16 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                 PartCode: reader.IsDBNull(5) ? null : reader.GetString(5),
                 ContainerTypeId: reader.IsDBNull(6) ? null : reader.GetGuid(6),
                 ContainerCode: reader.IsDBNull(7) ? null : reader.GetString(7),
+                ContainerDimensions: reader.IsDBNull(8) ? null : reader.GetString(8),
                 Operation: operation.ToDatabase(),
                 RequestedLoad: requestedLoad.ToDatabase(),
-                RequestedAt: reader.GetFieldValue<DateTimeOffset>(9),
-                ClaimedByAreaId: reader.IsDBNull(10) ? null : reader.GetGuid(10),
-                ClaimedByAreaNumber: reader.IsDBNull(11) ? null : reader.GetInt32(11),
-                PartDescription: reader.IsDBNull(12) ? null : reader.GetString(12),
-                VariantCode: reader.IsDBNull(13) ? null : reader.GetString(13),
-                VariantName: reader.IsDBNull(14) ? null : reader.GetString(14),
-                ProductGroupName: reader.IsDBNull(15) ? null : reader.GetString(15),
+                RequestedAt: reader.GetFieldValue<DateTimeOffset>(10),
+                ClaimedByAreaId: reader.IsDBNull(11) ? null : reader.GetGuid(11),
+                ClaimedByAreaNumber: reader.IsDBNull(12) ? null : reader.GetInt32(12),
+                PartDescription: reader.IsDBNull(13) ? null : reader.GetString(13),
+                VariantCode: reader.IsDBNull(14) ? null : reader.GetString(14),
+                VariantName: reader.IsDBNull(15) ? null : reader.GetString(15),
+                ProductGroupName: reader.IsDBNull(16) ? null : reader.GetString(16),
                 WarehouseScope: warehouseScope));
         }
 
@@ -190,7 +196,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                 """, connection, transaction))
             {
                 insert.Parameters.AddWithValue("area", command.AreaId);
-                insert.Parameters.AddWithValue("container", command.ContainerTypeId);
+                AddNullableUuid(insert, "container", command.ContainerTypeId);
                 insert.Parameters.AddWithValue("load", command.Load.ToDatabase());
                 AddNullableUuid(insert, "part", command.PartId);
                 AddNullableUuid(insert, "request", command.TransportRequestId);
@@ -486,8 +492,8 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
 
     private static PreparationPalletRecord ReadPallet(NpgsqlDataReader r, int offset) => new(
         Id: r.GetGuid(offset),
-        ContainerTypeId: r.GetGuid(offset + 1),
-        ContainerCode: r.GetString(offset + 2),
+        ContainerTypeId: r.IsDBNull(offset + 1) ? null : r.GetGuid(offset + 1),
+        ContainerCode: r.IsDBNull(offset + 2) ? null : r.GetString(offset + 2),
         Load: r.GetString(offset + 3),
         PartId: r.IsDBNull(offset + 4) ? null : r.GetGuid(offset + 4),
         PartCode: r.IsDBNull(offset + 5) ? null : r.GetString(offset + 5),
@@ -590,11 +596,15 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await using var query = new NpgsqlCommand($"""
             SELECT r.machine_id, r.part_id,
                    COALESCE(r.container_type_id, machine_slot.default_container_type_id),
-                   tt.code, r.status, r.readiness_state
+                   ppm.container_dimensions, tt.code, r.status, r.readiness_state
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
             LEFT JOIN master.layout_slots machine_slot
                    ON machine_slot.id = CASE WHEN tt.code = 'BRING_EMPTY' THEN r.destination_slot_id ELSE r.source_slot_id END
+            LEFT JOIN master.part_planning_metrics ppm
+                   ON ppm.variant_id = r.variant_id
+                  AND ppm.product_group_id = r.product_group_id
+                  AND ppm.part_id = r.part_id
             WHERE r.id = @id
             """, connection, transaction);
         query.Parameters.AddWithValue("id", requestId);
@@ -604,13 +614,13 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             throw new WorkflowRuleException("REQUEST_NOT_FOUND", "Hazırlanacak talep bulunamadı.");
         }
 
-        if (reader.IsDBNull(1) || reader.IsDBNull(2))
+        if (reader.IsDBNull(1))
         {
             throw new WorkflowRuleException(
-                "PREPARATION_DEMAND_INCOMPLETE", "Talebin parça ve taşıma kabı bilgisi eksik; hazırlık eşleştirilemez.");
+                "PREPARATION_DEMAND_INCOMPLETE", "Talebin parça bilgisi eksik; hazırlık eşleştirilemez.");
         }
 
-        var operation = WorkflowCode.ParseTaskType(reader.GetString(3));
+        var operation = WorkflowCode.ParseTaskType(reader.GetString(4));
         var expectedOperation = warehouseScope == WarehousePreparationScopes.FinishedGoods
             ? TransportTaskType.BringEmpty
             : TransportTaskType.BringFull;
@@ -619,14 +629,23 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             throw new WorkflowRuleException(
                 "PREPARATION_SCOPE_MISMATCH", "Talep seçilen depo hazırlık alanına ait değil.");
         }
+
+        if (reader.IsDBNull(2)
+            && (reader.IsDBNull(3) || string.IsNullOrWhiteSpace(reader.GetString(3))))
+        {
+            throw new WorkflowRuleException(
+                "PREPARATION_CONTAINER_SPEC_REQUIRED",
+                "Talebin palet/kasa kodu veya doğrulanmış ölçüsü bulunmuyor; hazırlık eşleştirilemez.");
+        }
+
         var demand = new WarehousePreparationDemand(
             RequestId: requestId,
             MachineId: reader.GetGuid(0),
             PartId: reader.GetGuid(1),
-            ContainerTypeId: reader.GetGuid(2),
+            ContainerTypeId: reader.IsDBNull(2) ? null : reader.GetGuid(2),
             RequestedLoad: operation == TransportTaskType.BringFull ? LoadState.Full : LoadState.Empty,
-            Status: WorkflowCode.ParseTransportStatus(reader.GetString(4)),
-            Readiness: WorkflowCode.ParseReadinessState(reader.GetString(5)));
+            Status: WorkflowCode.ParseTransportStatus(reader.GetString(5)),
+            Readiness: WorkflowCode.ParseReadinessState(reader.GetString(6)));
 
         WarehousePreparationRules.EnsurePalletMatchesDemand(
             new WarehousePalletContent(command.ContainerTypeId, command.Load, command.PartId), demand);

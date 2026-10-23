@@ -946,7 +946,7 @@ class FakePdaRepository implements PdaDataSource {
   Future<PreparationPallet> placePallet({
     required String areaId,
     required String load,
-    required String containerTypeId,
+    String? containerTypeId,
     String? partId,
     String? transportRequestId,
     required String idempotencyKey,
@@ -1006,7 +1006,7 @@ class FakePdaRepository implements PdaDataSource {
   @override
   Future<PreparationPallet> placeFinishedGoodsPreparation({
     required String areaId,
-    required String containerTypeId,
+    String? containerTypeId,
     required String transportRequestId,
     required String idempotencyKey,
   }) => placePallet(
@@ -1402,6 +1402,8 @@ WarehouseDemand fakeDemand({
   String? variantCode,
   String? variantName,
   String? containerCode = '4311',
+  String? containerTypeId = 'container-1',
+  String? containerDimensions,
   String requestedLoad = 'FULL',
   DateTime? requestedAt,
   int? claimedByAreaNumber,
@@ -1412,8 +1414,9 @@ WarehouseDemand fakeDemand({
   machineCode: machineCode,
   partId: 'part-1',
   partCode: partCode,
-  containerTypeId: 'container-1',
+  containerTypeId: containerTypeId,
   containerCode: containerCode,
+  containerDimensions: containerDimensions,
   operation: requestedLoad == 'FULL' ? 'BRING_FULL' : 'BRING_EMPTY',
   requestedLoad: requestedLoad,
   requestedAt: requestedAt,

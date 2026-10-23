@@ -128,6 +128,7 @@ class WarehouseDemand {
     required this.partCode,
     required this.containerTypeId,
     required this.containerCode,
+    required this.containerDimensions,
     required this.operation,
     required this.requestedLoad,
     required this.requestedAt,
@@ -151,6 +152,7 @@ class WarehouseDemand {
   final String? productGroupName;
   final String? containerTypeId;
   final String? containerCode;
+  final String? containerDimensions;
 
   /// 'BRING_FULL', 'BRING_EMPTY', …
   final String operation;
@@ -176,6 +178,7 @@ class WarehouseDemand {
     partDescription: json['partDescription'] as String?,
     containerTypeId: json['containerTypeId'] as String?,
     containerCode: json['containerCode'] as String?,
+    containerDimensions: json['containerDimensions'] as String?,
     operation: json['operation'] as String? ?? '',
     requestedLoad: json['requestedLoad'] as String? ?? '',
     requestedAt: _time(json['requestedAt']),

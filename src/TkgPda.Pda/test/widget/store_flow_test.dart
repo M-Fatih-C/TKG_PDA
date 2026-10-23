@@ -355,6 +355,43 @@ void main() {
   });
 
   testWidgets(
+    'dimensions-only finished-goods demand remains selectable without inventing a container code',
+    (tester) async {
+      repository.storeLocationsValue = [fakeStoreLocation(code: 'FG-01')];
+      repository.finishedGoodsPreparationAreasValue = [fakeArea(number: 1)];
+      repository.finishedGoodsPreparationDemandsValue = [
+        fakeDemand(
+          requestNo: 150,
+          requestedLoad: 'EMPTY',
+          containerTypeId: null,
+          containerCode: null,
+          containerDimensions: '1200/1000/1370',
+        ),
+      ];
+
+      await pump(tester);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('select-empty-demand-1')),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byKey(const Key('select-empty-demand-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Ölçü: 1200 × 1000 × 1370'), findsNWidgets(2));
+      await tester.tap(find.byKey(const Key('empty-demand-request-150')));
+      await tester.pumpAndSettle();
+
+      expect(
+        repository.placedPallets.single['transportRequestId'],
+        'request-150',
+      );
+      expect(repository.placedPallets.single['containerTypeId'], isNull);
+      expect(repository.placedPallets.single['load'], 'EMPTY');
+    },
+  );
+
+  testWidgets(
     'incoming empty-container demands show machine variant part and preparation state',
     (tester) async {
       repository.storeLocationsValue = [

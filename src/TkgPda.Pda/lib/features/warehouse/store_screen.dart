@@ -420,7 +420,7 @@ class _FinishedGoodsDemandTile extends StatelessWidget {
                 style: TextStyle(fontSize: PdaScale.caption(context)),
               ),
             Text(
-              'Palet/Kasa: ${demand.containerCode ?? 'Tanımsız'}',
+              'Palet/Kasa: ${_demandContainerLabel(demand)}',
               style: TextStyle(fontSize: PdaScale.caption(context)),
             ),
             Text(
@@ -566,7 +566,7 @@ class _EmptyPreparationCard extends StatelessWidget {
               ),
               Text('Parça: ${demand?.partCode ?? '—'}'),
               Text(
-                'Palet/Kasa: ${demand?.containerCode ?? pallet.containerCode}',
+                'Palet/Kasa: ${demand == null ? (pallet.containerCode.isEmpty ? '—' : pallet.containerCode) : _demandContainerLabel(demand)}',
               ),
               if (pallet.requestNo != null) Text('Talep #${pallet.requestNo}'),
             ],
@@ -665,9 +665,11 @@ class _EmptyPreparationCard extends StatelessWidget {
                   '${demand.machineCode} · ${demand.partCode ?? 'Parça'}',
                 ),
                 subtitle: Text(
-                  '${demand.variantName ?? demand.variantCode ?? 'Varyant —'} · ${demand.containerCode ?? 'Palet tipi tanımsız'} · Talep #${demand.requestNo}',
+                  '${demand.variantName ?? demand.variantCode ?? 'Varyant —'} · ${_demandContainerLabel(demand)} · Talep #${demand.requestNo}',
                 ),
-                enabled: demand.containerTypeId?.isNotEmpty == true,
+                enabled:
+                    demand.containerTypeId?.isNotEmpty == true ||
+                    demand.containerDimensions?.trim().isNotEmpty == true,
                 onTap: () => Navigator.pop(sheetContext, demand),
               ),
           ],
@@ -678,6 +680,16 @@ class _EmptyPreparationCard extends StatelessWidget {
       await coordinator.prepareEmptyContainer(area: area, demand: selected);
     }
   }
+}
+
+String _demandContainerLabel(WarehouseDemand demand) {
+  final code = demand.containerCode?.trim();
+  if (code != null && code.isNotEmpty) return code;
+  final dimensions = demand.containerDimensions?.trim();
+  if (dimensions != null && dimensions.isNotEmpty) {
+    return 'Ölçü: ${dimensions.replaceAll('/', ' × ')}';
+  }
+  return 'Palet/kasa bilgisi yok';
 }
 
 class _LocationCard extends StatelessWidget {

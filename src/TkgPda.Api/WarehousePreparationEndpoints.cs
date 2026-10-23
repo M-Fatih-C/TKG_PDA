@@ -8,7 +8,7 @@ namespace TkgPda.Api;
 /// exact BRING_EMPTY request; semi-finished filled material binds BRING_FULL.
 /// </summary>
 public sealed record PlacePalletHttpRequest(
-    string Load, Guid ContainerTypeId, Guid? PartId, Guid? TransportRequestId);
+    string Load, Guid? ContainerTypeId, Guid? PartId, Guid? TransportRequestId);
 
 public sealed record PalletVersionHttpRequest(long ExpectedRowVersion);
 

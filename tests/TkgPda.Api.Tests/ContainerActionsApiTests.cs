@@ -305,6 +305,118 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     }
 
     [Fact]
+    public async Task Source_backed_dimensions_allow_finished_goods_to_prepare_an_exact_empty_request_without_inventing_a_container_code()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var vacant = await SeedMappedPositionAsync(context, "EMPTY-DIMENSIONS-ONLY");
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO master.part_planning_metrics
+                (variant_id, product_group_id, part_id, container_dimensions, source_note)
+            VALUES (@variant, @group, @part, '1200/1000/1370', 'Customer source test evidence')
+            """,
+            ("variant", context.VariantId),
+            ("group", vacant.ProductGroupId),
+            ("part", vacant.PartId));
+        await fixture.ExecuteAsync(
+            "UPDATE master.layout_slots SET default_container_type_id = NULL WHERE id = @slot",
+            ("slot", vacant.SlotId));
+        await SetPositionAsync(vacant.SlotId, vacant.PartId, "VACANT", "UNKNOWN");
+
+        using var lineClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(machineCode: "SH-01-A"));
+        var created = await SendActionAsync(
+            lineClient, context, vacant, "EMPTY", "wp33-empty-dimensions-only");
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var requestId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp33-empty-dimensions-only'");
+
+        using var warehouseClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(
+                role: RoleCodes.FinishedGoodsWarehouseOperator,
+                machineCode: "SH-01-A"));
+        var demands = await warehouseClient.GetFromJsonAsync<List<WarehouseDemandRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/demands");
+        var demand = Assert.Single(demands!, item => item.RequestId == requestId);
+        Assert.Null(demand.ContainerTypeId);
+        Assert.Null(demand.ContainerCode);
+        Assert.Equal("1200/1000/1370", demand.ContainerDimensions);
+
+        var areas = await warehouseClient.GetFromJsonAsync<List<PreparationAreaRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/areas");
+        var placement = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/warehouse/finished-goods-preparation/areas/{areas![0].Id}/pallet")
+        {
+            Content = JsonContent.Create(new PlacePalletHttpRequest(
+                "EMPTY", null, null, requestId))
+        };
+        placement.Headers.Add(ApiHeaders.IdempotencyKey, "wp33-empty-dimensions-placement");
+        var placedResponse = await warehouseClient.SendAsync(placement);
+        var placedBody = await placedResponse.Content.ReadAsStringAsync();
+        Assert.True(
+            placedResponse.StatusCode == HttpStatusCode.Created,
+            $"Expected 201 Created but received {(int)placedResponse.StatusCode}: {placedBody}");
+        var placed = await placedResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(placed);
+        Assert.Null(placed.ContainerTypeId);
+
+        var readyResponse = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/finished-goods-preparation/pallets/{placed.Id}/ready",
+            new PalletVersionHttpRequest(placed.RowVersion));
+        readyResponse.EnsureSuccessStatusCode();
+
+        Assert.Equal("READY", await fixture.ScalarAsync<string>(
+            "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE id = @id AND container_type_id IS NOT NULL",
+            ("id", requestId)));
+    }
+
+    [Fact]
+    public async Task Finished_goods_preparation_rejects_an_untyped_empty_request_without_source_dimensions()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var vacant = await SeedMappedPositionAsync(context, "EMPTY-NO-SPEC");
+        await fixture.ExecuteAsync(
+            "UPDATE master.layout_slots SET default_container_type_id = NULL WHERE id = @slot",
+            ("slot", vacant.SlotId));
+        await SetPositionAsync(vacant.SlotId, vacant.PartId, "VACANT", "UNKNOWN");
+
+        using var lineClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(machineCode: "SH-01-A"));
+        var created = await SendActionAsync(
+            lineClient, context, vacant, "EMPTY", "wp33-empty-no-spec");
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var requestId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp33-empty-no-spec'");
+
+        using var warehouseClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(
+                role: RoleCodes.FinishedGoodsWarehouseOperator,
+                machineCode: "SH-01-A"));
+        var areas = await warehouseClient.GetFromJsonAsync<List<PreparationAreaRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/areas");
+        var placement = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/warehouse/finished-goods-preparation/areas/{areas![0].Id}/pallet")
+        {
+            Content = JsonContent.Create(new PlacePalletHttpRequest(
+                "EMPTY", null, null, requestId))
+        };
+        placement.Headers.Add(ApiHeaders.IdempotencyKey, "wp33-empty-no-spec-placement");
+
+        var response = await warehouseClient.SendAsync(placement);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(
+            "PREPARATION_CONTAINER_SPEC_REQUIRED",
+            problem.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task Remove_all_uses_entire_layout_and_is_atomic_on_unknown()
     {
         await fixture.ResetAsync();
