@@ -596,7 +596,7 @@ public sealed class DemoSimulationWorker(
             """
             UPDATE ops.store_units
             SET removed_at = now(),
-                removal_source = 'SIMULATION_RECYCLED',
+                removal_source = 'ROBOT',
                 row_version = row_version + 1
             WHERE id IN (
                 SELECT u.id
