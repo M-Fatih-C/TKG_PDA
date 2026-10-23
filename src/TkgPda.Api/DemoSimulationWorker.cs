@@ -606,14 +606,23 @@ public sealed class DemoSimulationWorker(
                   AND u.load_state = 'FULL'
                   AND sl.area_purpose = 'DELIVERY'
                 ORDER BY u.delivered_at ASC
-                LIMIT 5
+                LIMIT 1
             )
             AND (
-                SELECT count(*)
-                FROM ops.store_units u2
-                JOIN ops.store_locations sl2 ON sl2.id = u2.store_location_id
-                WHERE u2.removed_at IS NULL AND u2.load_state = 'FULL' AND sl2.area_purpose = 'DELIVERY'
-            ) >= 14;
+                (
+                    SELECT count(*)
+                    FROM ops.store_units u2
+                    JOIN ops.store_locations sl2 ON sl2.id = u2.store_location_id
+                    WHERE u2.removed_at IS NULL AND u2.load_state = 'FULL' AND sl2.area_purpose = 'DELIVERY'
+                ) >= 2
+                OR EXISTS (
+                    SELECT 1
+                    FROM ops.store_units u3
+                    JOIN ops.store_locations sl3 ON sl3.id = u3.store_location_id
+                    WHERE u3.removed_at IS NULL AND u3.load_state = 'FULL' AND sl3.area_purpose = 'DELIVERY'
+                      AND now() - u3.delivered_at > interval '20 seconds'
+                )
+            );
             """, connection);
         await recycleCmd.ExecuteNonQueryAsync(cancellationToken);
 
