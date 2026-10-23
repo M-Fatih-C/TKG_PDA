@@ -97,6 +97,10 @@ public sealed partial class PostgresTransportWorkflowStore
         var expectedOperation = command.Action == OperatorContainerAction.Full
             ? TransportTaskType.RemoveFull
             : TransportTaskType.BringEmpty;
+        var finishedProductContainerTypeId = expectedOperation == TransportTaskType.BringEmpty
+            ? await ResolveFinishedProductContainerTypeAsync(
+                connection, transaction, command.PartId, cancellationToken)
+            : null;
 
         var existing = await FindByIdempotencyKeyAsync(connection, transaction, command.IdempotencyKey, cancellationToken);
         if (existing is not null)
@@ -104,7 +108,10 @@ public sealed partial class PostgresTransportWorkflowStore
             var replayRows = await ReadPartPositionsAsync(connection, transaction, query, cancellationToken);
             var replayPosition = replayRows.SingleOrDefault(item => item.PositionNumber == command.PositionNumber)
                 ?? throw new WorkflowRuleException("CONTAINER_POSITION_NOT_FOUND", "Seçilen kasa konumu artık mevcut değildir.");
-            var replayRequest = BuildTransportRequest(command, expectedOperation, replayPosition.SlotId, expectedOperation == TransportTaskType.BringEmpty);
+            var replayRequest = BuildTransportRequest(
+                command, expectedOperation, replayPosition.SlotId,
+                expectedOperation == TransportTaskType.BringEmpty,
+                existing.ContainerTypeId);
             EnsureEquivalentPayload(existing, replayRequest);
             await ValidateExpectedProductionAsync(connection, transaction, command.MachineId, command.ProductionSessionId, [existing.Id], cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -154,7 +161,9 @@ public sealed partial class PostgresTransportWorkflowStore
                 cancellationToken);
         }
 
-        var request = BuildTransportRequest(command, resolution.Operation, slot.Id, resolution.RequiresPreparation);
+        var request = BuildTransportRequest(
+            command, resolution.Operation, slot.Id, resolution.RequiresPreparation,
+            finishedProductContainerTypeId);
         var created = await CreateAndQueueWithinTransactionAsync(connection, transaction, request, batchId: null, command.EventContext, cancellationToken);
         if (resolution.MarkFullBeforeCreate)
         {
@@ -285,6 +294,10 @@ public sealed partial class PostgresTransportWorkflowStore
 
             var machineSlotSource = operation == TransportTaskType.BringEmpty ? (Guid?)null : slot.Id;
             var machineSlotDestination = operation == TransportTaskType.BringEmpty ? slot.Id : (Guid?)null;
+            var resolvedContainerTypeId = operation == TransportTaskType.BringEmpty
+                ? await ResolveFinishedProductContainerTypeAsync(
+                    connection, transaction, partId.Value, cancellationToken)
+                : slot.State.CurrentContainerTypeId ?? slot.DefaultContainerTypeId;
             items.Add(new CreateTransportRequest(
                 ChildIdempotencyKey("remove-all:", command.IdempotencyKey, slot.Id),
                 RequestOrigin.Api,
@@ -295,7 +308,7 @@ public sealed partial class PostgresTransportWorkflowStore
                 command.NavigationProfileId,
                 group,
                 partId,
-                slot.State.CurrentContainerTypeId ?? slot.DefaultContainerTypeId,
+                resolvedContainerTypeId,
                 operation.Value,
                 machineSlotSource,
                 machineSlotDestination,
@@ -391,24 +404,40 @@ public sealed partial class PostgresTransportWorkflowStore
                 "Aynı fiziksel kasa konumu grup içinde birden fazla kez seçilemez.");
         }
 
-        var expectedRequests = resolved.Select(entry => new CreateTransportRequest(
-            ChildIdempotencyKey("container-action-batch:", command.IdempotencyKey, entry.SlotId),
-            RequestOrigin.Api,
-            command.ActorUserId,
-            command.MachineId,
-            command.VariantId,
-            command.LayoutId,
-            command.NavigationProfileId,
-            entry.Item.ProductGroupId,
-            entry.Item.PartId,
-            null,
-            entry.Item.Action == OperatorContainerAction.Full
-                ? TransportTaskType.RemoveFull
-                : TransportTaskType.BringEmpty,
-            entry.Item.Action == OperatorContainerAction.Full ? entry.SlotId : null,
-            entry.Item.Action == OperatorContainerAction.Empty ? entry.SlotId : null,
-            command.Priority,
-            RequiresFinishedGoodsDestination: entry.Item.Action == OperatorContainerAction.Full)).ToArray();
+        var containerTypesBySlot = new Dictionary<Guid, Guid?>();
+        var expectedRequests = new List<CreateTransportRequest>(resolved.Count);
+        foreach (var entry in resolved)
+        {
+            var childIdempotencyKey = ChildIdempotencyKey(
+                "container-action-batch:", command.IdempotencyKey, entry.SlotId);
+            var containerTypeId = existing?.Items
+                .SingleOrDefault(item => item.IdempotencyKey == childIdempotencyKey)
+                ?.ContainerTypeId;
+            if (containerTypeId is null && entry.Item.Action == OperatorContainerAction.Empty)
+            {
+                containerTypeId = await ResolveFinishedProductContainerTypeAsync(
+                    connection, transaction, entry.Item.PartId, cancellationToken);
+            }
+            containerTypesBySlot[entry.SlotId] = containerTypeId;
+            expectedRequests.Add(new CreateTransportRequest(
+                childIdempotencyKey,
+                RequestOrigin.Api,
+                command.ActorUserId,
+                command.MachineId,
+                command.VariantId,
+                command.LayoutId,
+                command.NavigationProfileId,
+                entry.Item.ProductGroupId,
+                entry.Item.PartId,
+                containerTypeId,
+                entry.Item.Action == OperatorContainerAction.Full
+                    ? TransportTaskType.RemoveFull
+                    : TransportTaskType.BringEmpty,
+                entry.Item.Action == OperatorContainerAction.Full ? entry.SlotId : null,
+                entry.Item.Action == OperatorContainerAction.Empty ? entry.SlotId : null,
+                command.Priority,
+                RequiresFinishedGoodsDestination: entry.Item.Action == OperatorContainerAction.Full));
+        }
 
         if (existing is not null)
         {
@@ -477,7 +506,9 @@ public sealed partial class PostgresTransportWorkflowStore
                     command.NavigationProfileId,
                     entry.Item.ProductGroupId,
                     entry.Item.PartId,
-                    null,
+                    resolution.Operation == TransportTaskType.BringEmpty
+                        ? containerTypesBySlot[entry.SlotId]
+                        : null,
                     resolution.Operation,
                     resolution.Operation == TransportTaskType.BringEmpty ? null : entry.SlotId,
                     resolution.Operation == TransportTaskType.BringEmpty ? entry.SlotId : null,
@@ -554,7 +585,8 @@ public sealed partial class PostgresTransportWorkflowStore
         ContainerActionCommand command,
         TransportTaskType operation,
         Guid? machineSlotId,
-        bool requiresPreparation = false) => new(
+        bool requiresPreparation = false,
+        Guid? containerTypeId = null) => new(
             command.IdempotencyKey,
             RequestOrigin.Api,
             command.ActorUserId,
@@ -564,13 +596,29 @@ public sealed partial class PostgresTransportWorkflowStore
             command.NavigationProfileId,
             command.ProductGroupId,
             command.PartId,
-            null,
+            operation == TransportTaskType.BringEmpty ? containerTypeId : null,
             operation,
             operation == TransportTaskType.BringEmpty ? null : machineSlotId,
             operation == TransportTaskType.BringEmpty ? machineSlotId : null,
             command.Priority,
             requiresPreparation,
             RequiresFinishedGoodsDestination: operation == TransportTaskType.RemoveFull);
+
+    private static async Task<Guid?> ResolveFinishedProductContainerTypeAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid partId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT primary_container_type_id
+            FROM master.finished_product_container_options
+            WHERE part_id = @part_id AND is_active
+            """, connection, transaction);
+        command.Parameters.AddWithValue("part_id", partId);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is null or DBNull ? null : (Guid)value;
+    }
 
     private static async Task<IReadOnlyList<PositionRow>> ReadPartPositionsAsync(
         NpgsqlConnection connection,

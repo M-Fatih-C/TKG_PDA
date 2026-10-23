@@ -355,6 +355,54 @@ void main() {
   });
 
   testWidgets(
+    'operator can select the confirmed alternative empty-container type',
+    (tester) async {
+      repository.storeLocationsValue = [fakeStoreLocation(code: 'FG-01')];
+      repository.finishedGoodsPreparationAreasValue = [fakeArea(number: 1)];
+      repository.finishedGoodsPreparationDemandsValue = [
+        fakeDemand(
+          requestNo: 78,
+          requestedLoad: 'EMPTY',
+          containerTypeId: 'container-primary',
+          containerCode: 'CLK_121213',
+          alternativeContainerTypeId: 'container-alternative',
+          alternativeContainerCode: 'CLK_1284',
+        ),
+      ];
+
+      await pump(tester);
+      expect(
+        find.textContaining('Ana: CLK_121213 · Alternatif: CLK_1284'),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('select-empty-demand-1')),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byKey(const Key('select-empty-demand-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('empty-demand-request-78')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Hazırlanacak Kasa Tipini Seç'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('alternative-container-request-78')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        repository.placedPallets.single['containerTypeId'],
+        'container-alternative',
+      );
+      expect(
+        repository.placedPallets.single['transportRequestId'],
+        'request-78',
+      );
+    },
+  );
+
+  testWidgets(
     'dimensions-only finished-goods demand remains selectable without inventing a container code',
     (tester) async {
       repository.storeLocationsValue = [fakeStoreLocation(code: 'FG-01')];

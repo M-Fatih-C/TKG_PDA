@@ -677,14 +677,81 @@ class _EmptyPreparationCard extends StatelessWidget {
       ),
     );
     if (selected != null && context.mounted) {
-      await coordinator.prepareEmptyContainer(area: area, demand: selected);
+      final containerTypeId = await _selectContainerType(context, selected);
+      if (!context.mounted || containerTypeId == _cancelledContainerChoice) {
+        return;
+      }
+      await coordinator.prepareEmptyContainer(
+        area: area,
+        demand: selected,
+        containerTypeId: containerTypeId,
+      );
     }
+  }
+
+  static const _cancelledContainerChoice = '__cancelled__';
+
+  Future<String?> _selectContainerType(
+    BuildContext context,
+    WarehouseDemand demand,
+  ) async {
+    final primaryId = demand.containerTypeId?.trim();
+    final alternativeId = demand.alternativeContainerTypeId?.trim();
+    if (alternativeId == null ||
+        alternativeId.isEmpty ||
+        alternativeId == primaryId) {
+      return primaryId == null || primaryId.isEmpty ? null : primaryId;
+    }
+
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Hazırlanacak Kasa Tipini Seç',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              Text('${demand.machineCode} · ${demand.partCode ?? 'Parça'}'),
+              const SizedBox(height: 8),
+              if (primaryId != null && primaryId.isNotEmpty)
+                ListTile(
+                  key: Key('primary-container-${demand.requestId}'),
+                  title: Text(demand.containerCode ?? 'Ana kasa'),
+                  subtitle: const Text('Ana kasa'),
+                  onTap: () => Navigator.pop(sheetContext, primaryId),
+                ),
+              ListTile(
+                key: Key('alternative-container-${demand.requestId}'),
+                title: Text(
+                  demand.alternativeContainerCode ?? 'Alternatif kasa',
+                ),
+                subtitle: const Text('Alternatif kasa'),
+                onTap: () => Navigator.pop(sheetContext, alternativeId),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    return selected ?? _cancelledContainerChoice;
   }
 }
 
 String _demandContainerLabel(WarehouseDemand demand) {
   final code = demand.containerCode?.trim();
-  if (code != null && code.isNotEmpty) return code;
+  final alternative = demand.alternativeContainerCode?.trim();
+  if (code != null && code.isNotEmpty) {
+    if (alternative != null && alternative.isNotEmpty && alternative != code) {
+      return 'Ana: $code · Alternatif: $alternative';
+    }
+    return code;
+  }
   final dimensions = demand.containerDimensions?.trim();
   if (dimensions != null && dimensions.isNotEmpty) {
     return 'Ölçü: ${dimensions.replaceAll('/', ' × ')}';

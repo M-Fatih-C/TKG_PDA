@@ -138,6 +138,8 @@ class WarehouseDemand {
     this.variantCode,
     this.variantName,
     this.productGroupName,
+    this.alternativeContainerTypeId,
+    this.alternativeContainerCode,
   });
 
   final String requestId;
@@ -152,6 +154,8 @@ class WarehouseDemand {
   final String? productGroupName;
   final String? containerTypeId;
   final String? containerCode;
+  final String? alternativeContainerTypeId;
+  final String? alternativeContainerCode;
   final String? containerDimensions;
 
   /// 'BRING_FULL', 'BRING_EMPTY', …
@@ -178,6 +182,8 @@ class WarehouseDemand {
     partDescription: json['partDescription'] as String?,
     containerTypeId: json['containerTypeId'] as String?,
     containerCode: json['containerCode'] as String?,
+    alternativeContainerTypeId: json['alternativeContainerTypeId'] as String?,
+    alternativeContainerCode: json['alternativeContainerCode'] as String?,
     containerDimensions: json['containerDimensions'] as String?,
     operation: json['operation'] as String? ?? '',
     requestedLoad: json['requestedLoad'] as String? ?? '',

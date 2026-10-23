@@ -188,6 +188,109 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     }
 
     [Fact]
+    public async Task Customer_confirmed_finished_product_container_options_are_loaded_without_guessing_the_unresolved_part()
+    {
+        await fixture.ResetAsync();
+
+        Assert.Equal(23L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM master.finished_product_container_options WHERE source_reference = 'TKG_EMAIL_RE_AMR_TAKIP_V1' AND is_active"));
+        Assert.Equal(22L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM master.finished_product_container_options WHERE source_reference = 'TKG_EMAIL_RE_AMR_TAKIP_V1' AND part_id IS NOT NULL"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM master.finished_product_container_options WHERE customer_part_code = '66424BN100-10-HMTR' AND part_id IS NULL"));
+        Assert.Equal("CLK_STR03|CLK_S963", await fixture.ScalarAsync<string>(
+            """
+            SELECT primary_container.code || '|' || alternative_container.code
+            FROM master.finished_product_container_options option
+            JOIN master.container_types primary_container ON primary_container.id = option.primary_container_type_id
+            JOIN master.container_types alternative_container ON alternative_container.id = option.alternative_container_type_id
+            WHERE option.customer_part_code = '66424BN100-10-HMTR'
+            """));
+        Assert.Equal("CLK_DB121010|CLK_1284", await fixture.ScalarAsync<string>(
+            """
+            SELECT primary_container.code || '|' || alternative_container.code
+            FROM master.finished_product_container_options option
+            JOIN master.container_types primary_container ON primary_container.id = option.primary_container_type_id
+            JOIN master.container_types alternative_container ON alternative_container.id = option.alternative_container_type_id
+            WHERE option.customer_part_code = '77160BN400-10-HWON'
+            """));
+    }
+
+    [Fact]
+    public async Task Finished_goods_operator_can_prepare_the_confirmed_alternative_container_for_an_empty_request()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var vacant = await SeedMappedPositionAsync(context, "EMPTY-ALTERNATIVE");
+        await SetPositionAsync(vacant.SlotId, vacant.PartId, "VACANT", "UNKNOWN");
+        await fixture.ExecuteAsync(
+            "UPDATE master.layout_slots SET default_container_type_id = NULL WHERE id = @slot",
+            ("slot", vacant.SlotId));
+        var suffix = Guid.NewGuid().ToString("N");
+        var primary = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.container_types (code, name, category) VALUES (@code, 'Ana kasa', 'OTHER') RETURNING id",
+            ("code", "PRIMARY-" + suffix));
+        var alternative = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.container_types (code, name, category) VALUES (@code, 'Alternatif kasa', 'OTHER') RETURNING id",
+            ("code", "ALTERNATIVE-" + suffix));
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO master.finished_product_container_options
+                (customer_part_code, part_id, primary_container_type_id,
+                 alternative_container_type_id, source_reference)
+            VALUES (@customer_code, @part, @primary, @alternative, 'TEST')
+            """,
+            ("customer_code", "CUSTOMER-" + suffix),
+            ("part", vacant.PartId),
+            ("primary", primary),
+            ("alternative", alternative));
+
+        using var lineClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(machineCode: "SH-01-A"));
+        var created = await SendActionAsync(
+            lineClient, context, vacant, "EMPTY", "empty-alternative-" + suffix);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var requestId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = @key",
+            ("key", "empty-alternative-" + suffix));
+        Assert.Equal(primary, await fixture.ScalarAsync<Guid>(
+            "SELECT container_type_id FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
+
+        using var warehouseClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(
+                role: RoleCodes.FinishedGoodsWarehouseOperator,
+                machineCode: "SH-01-A"));
+        var demands = await warehouseClient.GetFromJsonAsync<List<WarehouseDemandRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/demands");
+        var demand = Assert.Single(demands!, item => item.RequestId == requestId);
+        Assert.Equal(primary, demand.ContainerTypeId);
+        Assert.Equal(alternative, demand.AlternativeContainerTypeId);
+
+        var areas = await warehouseClient.GetFromJsonAsync<List<PreparationAreaRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/areas");
+        var placement = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/warehouse/finished-goods-preparation/areas/{areas![0].Id}/pallet")
+        {
+            Content = JsonContent.Create(new PlacePalletHttpRequest(
+                "EMPTY", alternative, null, requestId))
+        };
+        placement.Headers.Add(ApiHeaders.IdempotencyKey, "empty-alternative-placement-" + suffix);
+        var placedResponse = await warehouseClient.SendAsync(placement);
+        Assert.Equal(HttpStatusCode.Created, placedResponse.StatusCode);
+        var placed = await placedResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(placed);
+        Assert.Equal(alternative, placed.ContainerTypeId);
+
+        var readyResponse = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/finished-goods-preparation/pallets/{placed.Id}/ready",
+            new PalletVersionHttpRequest(placed.RowVersion));
+        readyResponse.EnsureSuccessStatusCode();
+        Assert.Equal(alternative, await fixture.ScalarAsync<Guid>(
+            "SELECT container_type_id FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
+    }
+
+    [Fact]
     public async Task Empty_container_request_stays_the_same_request_until_finished_goods_marks_it_ready()
     {
         await fixture.ResetAsync();

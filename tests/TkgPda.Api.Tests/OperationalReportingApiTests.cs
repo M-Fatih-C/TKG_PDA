@@ -54,6 +54,16 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Null(system.DeviceId);
         Assert.Null(system.RequestedByName);
         Assert.False(system.IsSuccess);
+
+        var summary = await client.GetFromJsonAsync<SummaryPage>(Report("summary"));
+        Assert.NotNull(summary);
+        Assert.Equal(2, summary.Total);
+        Assert.Equal(1, summary.Completed);
+        Assert.Equal(1, summary.Active);
+        Assert.Equal(1d, summary.SuccessRate);
+        Assert.Equal(239d, summary.AverageTotalSeconds);
+        Assert.Equal(131d, summary.AverageWarehouseSeconds);
+        Assert.Equal(96d, summary.AverageRobotSeconds);
     }
 
     [Fact]
@@ -85,6 +95,15 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Null(failedRow.RobotExecutionSeconds);
         Assert.Equal("RDS'ye gönderildi", Assert.Single(page.Items, item => item.RequestId == sent).StatusLabel);
         Assert.Equal("Robot çalışıyor", Assert.Single(page.Items, item => item.RequestId == running).StatusLabel);
+
+        var summary = await client.GetFromJsonAsync<SummaryPage>(Report("summary"));
+        Assert.NotNull(summary);
+        Assert.Equal(3, summary.Total);
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(2, summary.Active);
+        var failure = Assert.Single(summary.TopFailures);
+        Assert.Equal("MOTOR_CHECK_TIMEOUT", failure.Key);
+        Assert.Equal(1, failure.Count);
     }
 
     [Fact]
@@ -420,4 +439,16 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
     private sealed record SessionPage(SessionRow[] Items, int Total, BlockedRow[] BlockedAttempts);
     private sealed record SessionRow(string FullName, string? EmployeeNo, string DeviceCode, string StatusLabel, long? DurationSeconds, string MachineState, string? MachineCode);
     private sealed record BlockedRow(string? EmployeeNo, string Message);
+    private sealed record SummaryPage(
+        int Total,
+        int Completed,
+        int Failed,
+        int Cancelled,
+        int Active,
+        double? SuccessRate,
+        double? AverageTotalSeconds,
+        double? AverageWarehouseSeconds,
+        double? AverageRobotSeconds,
+        ReportCountRow[] TopFailures);
+    private sealed record ReportCountRow(string Key, string Label, int Count);
 }

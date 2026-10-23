@@ -234,10 +234,11 @@ class StoreCoordinator extends ChangeNotifier {
   Future<bool> prepareEmptyContainer({
     required PreparationArea area,
     required WarehouseDemand demand,
+    String? containerTypeId,
   }) => _mutate(area.id, () async {
     await repository.placeFinishedGoodsPreparation(
       areaId: area.id,
-      containerTypeId: demand.containerTypeId,
+      containerTypeId: containerTypeId ?? demand.containerTypeId,
       transportRequestId: demand.requestId,
       idempotencyKey: _uuid.v4(),
     );

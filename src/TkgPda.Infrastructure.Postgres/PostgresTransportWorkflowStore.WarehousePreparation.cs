@@ -79,10 +79,12 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         // needs to see what has waited longest, not what arrived last.
         await using var command = new NpgsqlCommand($"""
             SELECT r.id, r.request_no, r.machine_id, m.code, r.part_id, part.part_code,
-                   COALESCE(r.container_type_id, machine_slot.default_container_type_id), ct.code,
+                   COALESCE(r.container_type_id, finished_container.primary_container_type_id,
+                            machine_slot.default_container_type_id), ct.code,
                    ppm.container_dimensions, tt.code, r.created_at,
                    claimed.preparation_area_id, claimed_area.area_number, part.description,
-                   v.code, v.name, pg.name
+                   v.code, v.name, pg.name,
+                   finished_container.alternative_container_type_id, alternative_container.code
             FROM ops.transport_requests r
             JOIN master.machines m ON m.id = r.machine_id
             JOIN master.variants v ON v.id = r.variant_id
@@ -91,8 +93,13 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             LEFT JOIN master.product_groups pg ON pg.id = r.product_group_id
             LEFT JOIN master.layout_slots machine_slot
                    ON machine_slot.id = CASE WHEN tt.code = 'BRING_EMPTY' THEN r.destination_slot_id ELSE r.source_slot_id END
+            LEFT JOIN master.finished_product_container_options finished_container
+                   ON finished_container.part_id = r.part_id AND finished_container.is_active
             LEFT JOIN master.container_types ct
-                   ON ct.id = COALESCE(r.container_type_id, machine_slot.default_container_type_id)
+                   ON ct.id = COALESCE(r.container_type_id, finished_container.primary_container_type_id,
+                                       machine_slot.default_container_type_id)
+            LEFT JOIN master.container_types alternative_container
+                   ON alternative_container.id = finished_container.alternative_container_type_id
             LEFT JOIN master.part_planning_metrics ppm
                    ON ppm.variant_id = r.variant_id
                   AND ppm.product_group_id = r.product_group_id
@@ -139,7 +146,9 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                 VariantCode: reader.IsDBNull(14) ? null : reader.GetString(14),
                 VariantName: reader.IsDBNull(15) ? null : reader.GetString(15),
                 ProductGroupName: reader.IsDBNull(16) ? null : reader.GetString(16),
-                WarehouseScope: warehouseScope));
+                WarehouseScope: warehouseScope,
+                AlternativeContainerTypeId: reader.IsDBNull(17) ? null : reader.GetGuid(17),
+                AlternativeContainerCode: reader.IsDBNull(18) ? null : reader.GetString(18)));
         }
 
         return demands;
@@ -345,6 +354,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
             updated.Id,
             updated.PartId,
             updated.ContainerTypeId,
+            replaceContainerType: scope == WarehousePreparationScopes.FinishedGoods,
             cancellationToken,
             eventContext);
         await InsertPreparationEventAsync(connection, transaction, readyAreaId,
@@ -595,12 +605,16 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
     {
         await using var query = new NpgsqlCommand($"""
             SELECT r.machine_id, r.part_id,
-                   COALESCE(r.container_type_id, machine_slot.default_container_type_id),
-                   ppm.container_dimensions, tt.code, r.status, r.readiness_state
+                   COALESCE(r.container_type_id, finished_container.primary_container_type_id,
+                            machine_slot.default_container_type_id),
+                   ppm.container_dimensions, tt.code, r.status, r.readiness_state,
+                   finished_container.alternative_container_type_id
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
             LEFT JOIN master.layout_slots machine_slot
                    ON machine_slot.id = CASE WHEN tt.code = 'BRING_EMPTY' THEN r.destination_slot_id ELSE r.source_slot_id END
+            LEFT JOIN master.finished_product_container_options finished_container
+                   ON finished_container.part_id = r.part_id AND finished_container.is_active
             LEFT JOIN master.part_planning_metrics ppm
                    ON ppm.variant_id = r.variant_id
                   AND ppm.product_group_id = r.product_group_id
@@ -638,11 +652,19 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
                 "Talebin palet/kasa kodu veya doğrulanmış ölçüsü bulunmuyor; hazırlık eşleştirilemez.");
         }
 
+        var requestedContainerTypeId = reader.IsDBNull(2) ? (Guid?)null : reader.GetGuid(2);
+        var alternativeContainerTypeId = reader.IsDBNull(7) ? (Guid?)null : reader.GetGuid(7);
+        var acceptedContainerTypeId = warehouseScope == WarehousePreparationScopes.FinishedGoods
+            && command.ContainerTypeId is { } suppliedContainerTypeId
+            && suppliedContainerTypeId == alternativeContainerTypeId
+                ? suppliedContainerTypeId
+                : requestedContainerTypeId;
+
         var demand = new WarehousePreparationDemand(
             RequestId: requestId,
             MachineId: reader.GetGuid(0),
             PartId: reader.GetGuid(1),
-            ContainerTypeId: reader.IsDBNull(2) ? null : reader.GetGuid(2),
+            ContainerTypeId: acceptedContainerTypeId,
             RequestedLoad: operation == TransportTaskType.BringFull ? LoadState.Full : LoadState.Empty,
             Status: WorkflowCode.ParseTransportStatus(reader.GetString(5)),
             Readiness: WorkflowCode.ParseReadinessState(reader.GetString(6)));
@@ -660,6 +682,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         Guid palletId,
         Guid? partId,
         Guid? containerTypeId,
+        bool replaceContainerType,
         CancellationToken cancellationToken,
         OperationalEventContext? eventContext = null)
     {
@@ -667,7 +690,10 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         await using (var update = new NpgsqlCommand("""
             UPDATE ops.transport_requests
             SET readiness_state = 'READY', ready_at = @ready_at,
-                container_type_id = COALESCE(container_type_id, @container_type_id),
+                container_type_id = CASE
+                    WHEN @replace_container_type THEN @container_type_id
+                    ELSE COALESCE(container_type_id, @container_type_id)
+                END,
                 updated_at = now()
             WHERE id = @id
               AND status IN ('CREATED','VALIDATING','QUEUED')
@@ -677,6 +703,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         {
             update.Parameters.AddWithValue("id", requestId);
             update.Parameters.AddWithValue("ready_at", readyAt);
+            update.Parameters.AddWithValue("replace_container_type", replaceContainerType);
             AddNullableUuid(update, "container_type_id", containerTypeId);
             if (await update.ExecuteScalarAsync(cancellationToken) is null)
             {

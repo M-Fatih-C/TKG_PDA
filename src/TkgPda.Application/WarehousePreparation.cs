@@ -74,7 +74,9 @@ public sealed record WarehouseDemandRecord(
     string? VariantCode = null,
     string? VariantName = null,
     string? ProductGroupName = null,
-    string WarehouseScope = WarehousePreparationScopes.SemiFinished);
+    string WarehouseScope = WarehousePreparationScopes.SemiFinished,
+    Guid? AlternativeContainerTypeId = null,
+    string? AlternativeContainerCode = null);
 
 /// <summary>
 /// TransportRequestId may be null only for semi-finished empty stock staged
