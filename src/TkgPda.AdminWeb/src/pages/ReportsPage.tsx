@@ -49,7 +49,7 @@ export function ReportsPage() {
         eyebrow="Operasyon"
         title="Operasyon Kayıtları & Raporlar"
         description="Taşıma görevleri, operatör oturumları ve operasyonel dönem analizleri."
-        actions={<div className="no-print"><Button variant="secondary" onClick={() => void api.downloadReport(tab === 'sessions' ? 'sessions' : 'tasks', range, tab === 'sessions' ? 'TKG_Oturum_Raporu.xlsx' : 'TKG_Gorev_Raporu.xlsx')}>Excel indir</Button><Button variant="ghost" onClick={() => window.print()}>Yazdır</Button></div>}
+        actions={<div className="no-print"><Button variant="secondary" onClick={() => void api.downloadReport(tab === 'sessions' ? 'sessions' : 'tasks', range, tab === 'sessions' ? 'TKG_Oturum_Raporu.xlsx' : 'TKG_Yonetim_Raporu.xlsx')}>Excel indir</Button><Button variant="ghost" onClick={() => window.print()}>Yazdır</Button></div>}
       />
       <div className="no-print report-toolbar">
         {presets.map((item) => <Button key={item.id} size="sm" variant={preset === item.id ? 'primary' : 'secondary'} onClick={() => applyPreset(item.id)}>{item.label}</Button>)}

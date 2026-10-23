@@ -116,38 +116,103 @@ public static class OperationalReportEndpoints
         var rows = await AllTasksAsync(store, new TaskReportQuery(
             window.From, window.To, machineId, employeeNo, deviceId, status, operation, part, requestNo, agvId,
             errorsOnly == true, cancelledOnly == true, 1, 500), cancellationToken);
-        string[] headers = [
-            "Talep No", "Talep Oluşturma", "Depo Hazırlık Başlangıcı", "Depo Hazır",
-            "Robot Sistemine Gönderim", "Robot Başlangıç", "Tamamlanma", "Hata Zamanı", "İptal Zamanı",
-            "Sicil", "Kullanıcı", "Bilgisayar", "Makine", "Varyant", "İşlem", "Parça", "Parça Açıklaması",
-            "Palet/Kasa Tipi", "Kaynak", "Hedef", "Durum", "Depo Operatörü", "Depo Sicil",
-            "Hazırlık Alanı", "Robot", "Toplam Süre", "Depo Hazırlık Süresi", "Robot Çalışma Süresi",
-            "Hata Kodu", "Hata Açıklaması", "İptal Türü", "Korelasyon No"
-        ];
-        var data = rows.Select(row => (IReadOnlyList<OperationalReportXlsx.Cell>)[
-            OperationalReportXlsx.Number(row.RequestNo),
-            OperationalReportXlsx.Date(row.RequestCreatedAt ?? row.CreatedAt),
-            OperationalReportXlsx.Date(row.WarehouseStartedAt),
-            OperationalReportXlsx.Date(row.WarehouseReadyAt),
-            OperationalReportXlsx.Date(row.RdsSentAt),
-            OperationalReportXlsx.Date(row.RobotStartedAt),
-            OperationalReportXlsx.Date(row.CompletedAt),
-            OperationalReportXlsx.Date(row.FailedAt),
-            OperationalReportXlsx.Date(row.CancelledAt),
-            OperationalReportXlsx.Text(row.EmployeeNo), OperationalReportXlsx.Text(row.RequestedByName),
-            OperationalReportXlsx.Text(row.DeviceCode ?? row.DeviceName), OperationalReportXlsx.Text(row.MachineCode),
-            OperationalReportXlsx.Text(row.VariantCode), OperationalReportXlsx.Text(row.OperationLabel),
-            OperationalReportXlsx.Text(row.PartCode), OperationalReportXlsx.Text(row.PartDescription),
-            OperationalReportXlsx.Text(row.ContainerCode), OperationalReportXlsx.Text(row.SourceSlotCode),
-            OperationalReportXlsx.Text(row.DestinationSlotCode), OperationalReportXlsx.Text(row.StatusLabel),
-            OperationalReportXlsx.Text(row.PreparationOperatorName), OperationalReportXlsx.Text(row.PreparationEmployeeNo),
-            OperationalReportXlsx.Text(row.PreparationArea), OperationalReportXlsx.Text(row.AgvId),
-            OperationalReportXlsx.Duration(row.TotalSeconds), OperationalReportXlsx.Duration(row.WarehouseResponseSeconds),
-            OperationalReportXlsx.Duration(row.RobotExecutionSeconds), OperationalReportXlsx.Text(row.FailureCode),
-            OperationalReportXlsx.Text(row.FailureMessage), OperationalReportXlsx.Text(row.CancellationLabel),
-            OperationalReportXlsx.Text(row.CorrelationId)
-        ]);
-        return OperationalReportXlsx.File(headers, data, $"TKG_Gorev_Raporu_{ReportCsv.FileDate(window.From)}.xlsx");
+        var sheets = new OperationalReportXlsx.Sheet[]
+        {
+            TaskSummarySheet(window, rows),
+            new(
+                "Görevler",
+                [
+                    "Talep No", "Talep Zamanı", "Makine", "Varyant", "İşlem", "Parça", "Parça Açıklaması",
+                    "Durum", "İsteyen Operatör", "Sicil", "Depo Operatörü", "Hazırlık Alanı", "Robot",
+                    "Toplam Süre", "Depo Hazırlık Süresi", "Robot Çalışma Süresi", "Sonuç Açıklaması"
+                ],
+                rows.Select(row => (IReadOnlyList<OperationalReportXlsx.Cell>)[
+                    OperationalReportXlsx.Number(row.RequestNo), OperationalReportXlsx.Date(row.RequestCreatedAt ?? row.CreatedAt),
+                    OperationalReportXlsx.Text(row.MachineCode), OperationalReportXlsx.Text(row.VariantCode),
+                    OperationalReportXlsx.Text(row.OperationLabel), OperationalReportXlsx.Text(row.PartCode),
+                    OperationalReportXlsx.Text(row.PartDescription), OperationalReportXlsx.Text(row.StatusLabel),
+                    OperationalReportXlsx.Text(row.RequestedByName), OperationalReportXlsx.Text(row.EmployeeNo),
+                    OperationalReportXlsx.Text(row.PreparationOperatorName), OperationalReportXlsx.Text(row.PreparationArea),
+                    OperationalReportXlsx.Text(row.AgvId), OperationalReportXlsx.Duration(row.TotalSeconds),
+                    OperationalReportXlsx.Duration(row.WarehouseResponseSeconds), OperationalReportXlsx.Duration(row.RobotExecutionSeconds),
+                    OperationalReportXlsx.Text(TaskResult(row))
+                ])),
+            new(
+                "Zaman Ayrıntıları",
+                [
+                    "Talep No", "Talep Oluşturma", "Depo Hazırlık Başlangıcı", "Depo Hazır",
+                    "Robot Sistemine Gönderim", "Robot Başlangıç", "Tamamlanma", "Hata Zamanı", "İptal Zamanı",
+                    "Toplam Süre", "Depo Hazırlık Süresi", "Robot Çalışma Süresi"
+                ],
+                rows.Select(row => (IReadOnlyList<OperationalReportXlsx.Cell>)[
+                    OperationalReportXlsx.Number(row.RequestNo), OperationalReportXlsx.Date(row.RequestCreatedAt ?? row.CreatedAt),
+                    OperationalReportXlsx.Date(row.WarehouseStartedAt), OperationalReportXlsx.Date(row.WarehouseReadyAt),
+                    OperationalReportXlsx.Date(row.RdsSentAt), OperationalReportXlsx.Date(row.RobotStartedAt),
+                    OperationalReportXlsx.Date(row.CompletedAt), OperationalReportXlsx.Date(row.FailedAt),
+                    OperationalReportXlsx.Date(row.CancelledAt), OperationalReportXlsx.Duration(row.TotalSeconds),
+                    OperationalReportXlsx.Duration(row.WarehouseResponseSeconds), OperationalReportXlsx.Duration(row.RobotExecutionSeconds)
+                ])),
+            new(
+                "Teknik Ayrıntılar",
+                [
+                    "Talep No", "Kullanıcı Adı", "Bilgisayar", "Palet/Kasa Tipi", "Kaynak", "Hedef",
+                    "Depo Sicil", "Depo Bilgisayarı", "Navigasyon", "RDS Görev No", "RDS Durumu",
+                    "Robot Sonuç Nedeni", "Hata Kodu", "Hata Açıklaması", "İptal Türü", "Korelasyon No"
+                ],
+                rows.Select(row => (IReadOnlyList<OperationalReportXlsx.Cell>)[
+                    OperationalReportXlsx.Number(row.RequestNo), OperationalReportXlsx.Text(row.Username),
+                    OperationalReportXlsx.Text(row.DeviceCode ?? row.DeviceName), OperationalReportXlsx.Text(row.ContainerCode),
+                    OperationalReportXlsx.Text(row.SourceSlotCode), OperationalReportXlsx.Text(row.DestinationSlotCode),
+                    OperationalReportXlsx.Text(row.PreparationEmployeeNo), OperationalReportXlsx.Text(row.PreparationDeviceCode),
+                    OperationalReportXlsx.Text(row.NavigationCode), OperationalReportXlsx.Text(row.RdsTaskRecordId),
+                    OperationalReportXlsx.Text(row.RdsStatus), OperationalReportXlsx.Text(row.EndedReason),
+                    OperationalReportXlsx.Text(row.FailureCode), OperationalReportXlsx.Text(row.FailureMessage),
+                    OperationalReportXlsx.Text(row.CancellationLabel), OperationalReportXlsx.Text(row.CorrelationId)
+                ]))
+        };
+
+        return OperationalReportXlsx.File(sheets, $"TKG_Yonetim_Raporu_{ReportCsv.FileDate(window.From)}.xlsx");
+    }
+
+    private static OperationalReportXlsx.Sheet TaskSummarySheet(
+        (DateTimeOffset From, DateTimeOffset To) window,
+        IReadOnlyList<TaskReportRow> rows)
+    {
+        var completed = rows.Count(row => row.Status == "COMPLETED");
+        var failed = rows.Count(row => row.Status == "FAILED");
+        var cancelled = rows.Count(row => row.Status == "CANCELLED");
+        var finished = completed + failed + cancelled;
+        var active = rows.Count - finished;
+
+        return new OperationalReportXlsx.Sheet(
+            "Özet",
+            ["Gösterge", "Değer"],
+            [
+                [OperationalReportXlsx.Text("Rapor başlangıcı"), OperationalReportXlsx.Date(window.From)],
+                [OperationalReportXlsx.Text("Rapor bitişi"), OperationalReportXlsx.Date(window.To)],
+                [OperationalReportXlsx.Text("Toplam görev"), OperationalReportXlsx.Number(rows.Count)],
+                [OperationalReportXlsx.Text("Tamamlanan"), OperationalReportXlsx.Number(completed)],
+                [OperationalReportXlsx.Text("Hatalı"), OperationalReportXlsx.Number(failed)],
+                [OperationalReportXlsx.Text("İptal"), OperationalReportXlsx.Number(cancelled)],
+                [OperationalReportXlsx.Text("Aktif"), OperationalReportXlsx.Number(active)],
+                [OperationalReportXlsx.Text("Başarı oranı"), OperationalReportXlsx.Percent(finished == 0 ? null : completed / (double)finished)],
+                [OperationalReportXlsx.Text("Ortalama toplam süre"), OperationalReportXlsx.Duration(AverageSeconds(rows.Select(row => row.TotalSeconds)))],
+                [OperationalReportXlsx.Text("Ortalama depo hazırlık süresi"), OperationalReportXlsx.Duration(AverageSeconds(rows.Select(row => row.WarehouseResponseSeconds)))],
+                [OperationalReportXlsx.Text("Ortalama robot çalışma süresi"), OperationalReportXlsx.Duration(AverageSeconds(rows.Select(row => row.RobotExecutionSeconds)))]
+            ]);
+    }
+
+    private static long? AverageSeconds(IEnumerable<long?> values)
+    {
+        var available = values.Where(value => value.HasValue).Select(value => value!.Value).ToArray();
+        return available.Length == 0 ? null : (long)Math.Round(available.Average(), MidpointRounding.AwayFromZero);
+    }
+
+    private static string? TaskResult(TaskReportRow row)
+    {
+        if (row.Status == "FAILED") return row.FailureMessage ?? row.FailureSummary ?? row.FailureCode ?? "Hata ile sonlandı";
+        if (row.Status == "CANCELLED") return row.CancellationLabel ?? "İptal edildi";
+        return null;
     }
 
     private static async Task<IResult> ListSessionsAsync(
