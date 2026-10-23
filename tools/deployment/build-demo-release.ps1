@@ -25,7 +25,18 @@ function Reset-StagingDirectory {
     New-Item -ItemType Directory -Path $fullPath -Force | Out-Null
 }
 
+function Reset-StagingRootFiles {
+    $fullStaging = [System.IO.Path]::GetFullPath($stagingDir).TrimEnd('\')
+    if (-not (Test-Path -LiteralPath $fullStaging)) {
+        New-Item -ItemType Directory -Path $fullStaging -Force | Out-Null
+        return
+    }
+
+    Get-ChildItem -LiteralPath $fullStaging -File | Remove-Item -Force
+}
+
 Write-Host "=== Building TKG PDA Demo Installer (Version $AppVersion) ===" -ForegroundColor Cyan
+Reset-StagingRootFiles
 
 # 1. Locate ISCC.exe
 $isccCandidates = @(
