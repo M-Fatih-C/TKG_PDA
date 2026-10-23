@@ -85,16 +85,8 @@ public sealed partial class PostgresTransportWorkflowStore
         });
 
         var runId = Guid.NewGuid();
-        if (removals.Count == 0)
-        {
-            await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, "COMPLETED", cancellationToken);
-            var ended = await CompleteProductionSessionAsync(connection, transaction, before, command.ActorUserId, command.DeviceId, cancellationToken);
-            await AuditProductionAsync(connection, transaction, "PRODUCTION_ENDED", command.ActorUserId, command.DeviceId, before, ended, cancellationToken);
-            await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, ended.Status, cancellationToken);
-            return new(ended, false);
-        }
-
-        await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, "RUNNING", cancellationToken);
+        var runStatus = removals.Count == 0 ? "COMPLETED" : "RUNNING";
+        await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, runStatus, cancellationToken);
         Guid? previousRequestId = null;
         for (var index = 0; index < removals.Count; index++)
         {
@@ -145,9 +137,15 @@ public sealed partial class PostgresTransportWorkflowStore
             previousRequestId = created.Request.Id;
         }
 
-        var ending = await SetProductionStatusAsync(connection, transaction, before, "ENDING", cancellationToken);
-        await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, "RUNNING", cancellationToken);
-        return new(ending, false);
+        // The production session represents the operator's current job. Once
+        // every cleanup request has been validated and durably queued, that job
+        // is closed in the same transaction. The cleanup run and its requests
+        // retain the old session identity and continue independently, allowing
+        // a new job to start without losing ownership or audit history.
+        var ended = await CompleteProductionSessionAsync(connection, transaction, before, command.ActorUserId, command.DeviceId, cancellationToken);
+        await AuditProductionAsync(connection, transaction, "PRODUCTION_ENDED", command.ActorUserId, command.DeviceId, before, ended, cancellationToken);
+        await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, runStatus, cancellationToken);
+        return new(ended, false);
     }
 
     private static List<CleanupRemoval> ClassifyProductionEnd(

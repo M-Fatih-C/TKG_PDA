@@ -147,6 +147,7 @@ OperationalContext testContext({
             'queuePosition': request.queuePosition,
             'ageSeconds': request.ageSeconds,
             'executionElapsedSeconds': request.executionElapsedSeconds,
+            'productionEnd': request.productionEnd,
             'canCancel': request.canCancel,
             'cancelDisabledCode': request.cancelDisabledCode,
             'cancelDisabledMessage': request.cancelDisabledMessage,
@@ -391,7 +392,7 @@ class FakePdaRepository implements PdaDataSource {
     if (productionEndCompleter case final completer?) return completer.future;
     final current = productionValue!;
     if (productionEndSession case final ending?) {
-      productionValue = ending;
+      productionValue = ending.isActive ? ending : null;
       return ending;
     }
     productionValue = null;

@@ -781,7 +781,17 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         await GuardProductionVariantSwitchAsync(connection, transaction, selection, cancellationToken);
 
         await using (var active = new NpgsqlCommand(
-                         $"SELECT id FROM ops.transport_requests WHERE machine_id = @machine_id AND status IN ({ActiveStatusesSql}) LIMIT 1",
+                         $"""
+                          SELECT r.id
+                          FROM ops.transport_requests r
+                          WHERE r.machine_id = @machine_id
+                            AND r.status IN ({ActiveStatusesSql})
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM ops.production_end_run_items item
+                                WHERE item.transport_request_id = r.id)
+                          LIMIT 1
+                          """,
                          connection,
                          transaction))
         {

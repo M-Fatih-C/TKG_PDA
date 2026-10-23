@@ -75,39 +75,10 @@ public sealed class DemoSimulationWorker(
             OperationalEventContext.System(Guid.NewGuid()),
             cancellationToken);
 
-        // Fetch candidate requests
-        var candidates = new List<DemoCandidateRequest>();
-        await using (var command = new NpgsqlCommand(
-            """
-            SELECT r.id, r.request_no, tt.code AS task_type, r.status, r.readiness_state,
-                   r.created_at, r.ready_at,
-                   t.rds_status, t.sent_at, t.started_at
-            FROM ops.transport_requests r
-            JOIN master.task_types tt ON tt.id = r.task_type_id
-            LEFT JOIN integration.rds_tasks t ON t.transport_request_id = r.id
-            WHERE (r.status = 'QUEUED' AND r.readiness_state = 'WAITING_PREPARATION')
-               OR (r.status = 'QUEUED' AND r.machine_slot_reservation_active)
-               OR r.status IN ('SENT_TO_RDS', 'RUNNING')
-            ORDER BY r.created_at ASC
-            LIMIT 20;
-            """, connection))
-        {
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                candidates.Add(new DemoCandidateRequest(
-                    reader.GetGuid(0),
-                    reader.GetInt64(1).ToString(),
-                    reader.GetString(2),
-                    reader.GetString(3),
-                    reader.GetString(4),
-                    reader.GetFieldValue<DateTimeOffset>(5),
-                    reader.IsDBNull(6) ? null : reader.GetFieldValue<DateTimeOffset>(6),
-                    reader.IsDBNull(7) ? null : reader.GetInt32(7),
-                    reader.IsDBNull(8) ? null : reader.GetFieldValue<DateTimeOffset>(8),
-                    reader.IsDBNull(9) ? null : reader.GetFieldValue<DateTimeOffset>(9)));
-            }
-        }
+        var candidates = await ListCandidatesAsync(
+            connection,
+            options.AutoPrepareWarehouseDemands,
+            cancellationToken);
 
         foreach (var item in candidates)
         {
@@ -127,6 +98,103 @@ public sealed class DemoSimulationWorker(
                 logger.LogWarning(itemError, "Failed advancing demo request {RequestNo}: {Message}", item.RequestNo, itemError.Message);
             }
         }
+    }
+
+    internal static async Task<IReadOnlyList<DemoCandidateRequest>> ListCandidatesAsync(
+        NpgsqlConnection connection,
+        bool autoPrepareWarehouseDemands,
+        CancellationToken cancellationToken)
+    {
+        // One configured simulated AGV may own only one newly dispatched task.
+        // Existing in-flight rows are advanced first (including legacy data
+        // that accidentally contains more than one); no new request is sent
+        // until that set becomes terminal.
+        var active = await ReadCandidatesAsync(
+            connection,
+            """
+            r.status IN ('SENT_TO_RDS', 'RUNNING')
+            ORDER BY r.created_at, r.id
+            LIMIT 100
+            """,
+            cancellationToken);
+        if (active.Count > 0)
+        {
+            return active;
+        }
+
+        // Match the real execution queue: warehouse preparation must be real,
+        // the machine reservation must be active and every predecessor must
+        // have completed. Selecting one row prevents simultaneous dispatches
+        // to DemoMode's single SimulatedAgvId.
+        var queued = await ReadCandidatesAsync(
+            connection,
+            """
+            r.status = 'QUEUED'
+              AND r.readiness_state <> 'WAITING_PREPARATION'
+              AND r.machine_slot_reservation_active
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM ops.transport_request_dependencies dependency
+                  JOIN ops.transport_requests predecessor
+                    ON predecessor.id = dependency.predecessor_request_id
+                  WHERE dependency.successor_request_id = r.id
+                    AND predecessor.status <> 'COMPLETED')
+            ORDER BY r.priority, r.queued_at, r.id
+            LIMIT 1
+            """,
+            cancellationToken);
+        if (queued.Count > 0 || !autoPrepareWarehouseDemands)
+        {
+            return queued;
+        }
+
+        // Compatibility-only developer mode. Installed demo builds keep this
+        // disabled because customer warehouse confirmation is a real workflow.
+        return await ReadCandidatesAsync(
+            connection,
+            """
+            r.status = 'QUEUED'
+              AND r.readiness_state = 'WAITING_PREPARATION'
+            ORDER BY r.created_at, r.id
+            LIMIT 1
+            """,
+            cancellationToken);
+    }
+
+    private static async Task<List<DemoCandidateRequest>> ReadCandidatesAsync(
+        NpgsqlConnection connection,
+        string predicateAndOrder,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<DemoCandidateRequest>();
+        await using var command = new NpgsqlCommand(
+            $"""
+             SELECT r.id, r.request_no, tt.code AS task_type, r.status, r.readiness_state,
+                    r.created_at, r.ready_at,
+                    t.rds_status, t.sent_at, t.started_at
+             FROM ops.transport_requests r
+             JOIN master.task_types tt ON tt.id = r.task_type_id
+             LEFT JOIN integration.rds_tasks t ON t.transport_request_id = r.id
+             WHERE {predicateAndOrder}
+             """,
+            connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            candidates.Add(new DemoCandidateRequest(
+                reader.GetGuid(0),
+                reader.GetInt64(1).ToString(),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetFieldValue<DateTimeOffset>(5),
+                reader.IsDBNull(6) ? null : reader.GetFieldValue<DateTimeOffset>(6),
+                reader.IsDBNull(7) ? null : reader.GetInt32(7),
+                reader.IsDBNull(8) ? null : reader.GetFieldValue<DateTimeOffset>(8),
+                reader.IsDBNull(9) ? null : reader.GetFieldValue<DateTimeOffset>(9)));
+        }
+
+        return candidates;
     }
 
     private async Task AdvanceCandidateAsync(
@@ -519,7 +587,7 @@ public sealed class DemoSimulationWorker(
         await replenishCmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private sealed record DemoCandidateRequest(
+    internal sealed record DemoCandidateRequest(
         Guid Id,
         string RequestNo,
         string TaskType,

@@ -194,6 +194,11 @@ class AppController extends ChangeNotifier {
           _resolvedCompatibleVariant?.productGroupId ==
               production.active!.productGroupId);
   String? get productionContextError => _productionContextError;
+  bool get _hasCurrentJobTransport =>
+      _context?.activeTransportRequests.any(
+        (request) => !request.productionEnd,
+      ) ??
+      false;
   bool get canStartProduction =>
       usesProductionWorkflow &&
       mutationEnabled &&
@@ -202,13 +207,12 @@ class AppController extends ChangeNotifier {
       !production.hasPending &&
       partSelectionReady &&
       (_context?.machine.permissions.canOperate ?? false) &&
-      (_context?.activeTransportRequests.isEmpty ?? false) &&
+      !_hasCurrentJobTransport &&
       _batchCart.isEmpty &&
       !hasAmbiguousSubmission &&
       !hasAmbiguousBatchSubmission;
-  // A failed cleanup intentionally stays ENDING. An explicit fresh-key End
-  // may re-plan when there are no active transports; the server still rejects
-  // a RUNNING cleanup under the machine lock.
+  // Legacy ENDING sessions remain recoverable after upgrades. New production
+  // ends close immediately once cleanup work is durably queued.
   bool get canEndProduction =>
       usesProductionWorkflow &&
       mutationEnabled &&
@@ -216,7 +220,7 @@ class AppController extends ChangeNotifier {
       production.active != null &&
       !production.hasPending &&
       (_context?.machine.permissions.canOperate ?? false) &&
-      (_context?.activeTransportRequests.isEmpty ?? false) &&
+      !_hasCurrentJobTransport &&
       _batchCart.isEmpty &&
       !hasAmbiguousSubmission &&
       !hasAmbiguousBatchSubmission;
@@ -635,8 +639,11 @@ class AppController extends ChangeNotifier {
         _stage = AppStage.machines;
       } else {
         final devCodeUpper = _deviceCode?.toUpperCase() ?? '';
-        final isSemiDevice = devCodeUpper.contains('YARI') || devCodeUpper.contains('SEMI');
-        final isFgDevice = devCodeUpper.contains('BITMIS') || devCodeUpper.contains('FINISHED');
+        final isSemiDevice =
+            devCodeUpper.contains('YARI') || devCodeUpper.contains('SEMI');
+        final isFgDevice =
+            devCodeUpper.contains('BITMIS') ||
+            devCodeUpper.contains('FINISHED');
 
         if (isSemiDevice && isSemiFinished) {
           _stage = AppStage.preparationAreas;
@@ -2325,7 +2332,7 @@ class AppController extends ChangeNotifier {
         : UiNotice(
             production.active?.isEnding == true
                 ? 'Üretim bitiriliyor. Paletler sırayla kaldırılacak.'
-                : 'Üretim durumu güncellendi.',
+                : 'Üretim bitirildi. Kaldırma görevleri arka planda devam ediyor; yeni işe geçebilirsiniz.',
             UiNoticeSeverity.success,
           );
     notifyListeners();
@@ -2402,10 +2409,14 @@ class AppController extends ChangeNotifier {
                 main.relatedParts.where((item) => item.partId == part.partId),
               )?.description,
               relationType: part.relationType,
-              requestable: part.relationType != 'ALT_PART' ||
-                  (part.containerTypeId != null && part.containerTypeId!.isNotEmpty),
-              blockers: part.relationType == 'ALT_PART' &&
-                      (part.containerTypeId == null || part.containerTypeId!.isEmpty)
+              requestable:
+                  part.relationType != 'ALT_PART' ||
+                  (part.containerTypeId != null &&
+                      part.containerTypeId!.isNotEmpty),
+              blockers:
+                  part.relationType == 'ALT_PART' &&
+                      (part.containerTypeId == null ||
+                          part.containerTypeId!.isEmpty)
                   ? const ['CONTAINER_TYPE_MISSING']
                   : const [],
             ),
