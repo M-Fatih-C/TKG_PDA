@@ -353,7 +353,7 @@ try {
             Enabled = [bool]$DemoMode
             SimulationDelaySeconds = 3
             RunningDurationSeconds = 30
-            AutoPrepareWarehouseDemands = $false
+            AutoPrepareWarehouseDemands = $true
             SimulatedAgvId = "DEMO-AGV-01"
         }
         ConnectionStrings = @{
