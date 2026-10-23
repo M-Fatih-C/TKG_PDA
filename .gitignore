@@ -74,5 +74,5 @@ Thumbs.db
 *.zip
 /build_staging/
 /outputs/
-artifacts/release/**/*.exe
+artifacts/release/
 

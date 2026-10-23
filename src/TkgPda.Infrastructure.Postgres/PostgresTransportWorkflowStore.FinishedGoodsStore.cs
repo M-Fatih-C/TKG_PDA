@@ -285,9 +285,22 @@ public sealed partial class PostgresTransportWorkflowStore : IFinishedGoodsStore
         }
 
         if (unitId is null || locationId is null)
+        {
+            // If the request was prepared without a direct store reservation (e.g. simulation or deferred source),
+            // do not fail completion when destination machine slot is valid.
+            await using var unreservedCheck = new NpgsqlCommand(
+                "SELECT 1 FROM ops.transport_requests WHERE id = @req AND source_slot_id IS NULL AND destination_slot_id IS NOT NULL",
+                connection, transaction);
+            unreservedCheck.Parameters.AddWithValue("req", request.Id);
+            if (await unreservedCheck.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return;
+            }
+
             throw new WorkflowRuleException(
                 "STORE_PICKUP_RESERVATION_MISSING",
                 "Boş kasa görevinin fiziksel palet rezervasyonu bulunamadı.");
+        }
 
         await using (var lockUnit = new NpgsqlCommand("""
             SELECT 1 FROM ops.store_units

@@ -375,13 +375,47 @@ public sealed partial class PostgresTransportWorkflowStore
                  && destination.State.CurrentPartId is { } currentPartId
                  && destination.State.CurrentContainerTypeId is { } currentContainerTypeId)
         {
-            // A different FULL pallet is usable material.  Keep the new order
-            // waiting until the line reports it EMPTY; this prevents a queued
-            // batch from cycling freshly delivered pallets straight back out.
-            if (currentPartId != request.PartId && destination.State.Load == LoadState.Full)
+            if (destination.State.Load == LoadState.Full
+                && request.PartId is { } requestedPart
+                && destination.KnownPartIds.Contains(requestedPart)
+                && destination.KnownPartIds.Contains(currentPartId))
             {
+                // Both parts share the same physical slot (either exact same part or co-assigned mix pallet).
+                // The delivered full pallet already provides usable material at the slot.
+                // Complete this demand as fulfilled without cycling the freshly delivered pallet.
+                request = await UpdateRequestStatusAsync(
+                    connection,
+                    transaction,
+                    request,
+                    TransportRequestStatus.Completed,
+                    cancellationToken);
+
+                var reason = currentPartId == requestedPart
+                    ? "İstenen parça alanda zaten mevcut ve dolu durumda."
+                    : "Miks palet teslimatı ile talep karşılandı.";
+
+                await InsertEventAsync(
+                    connection,
+                    transaction,
+                    request.Id,
+                    eventContext?.ActorUserId,
+                    TransportEventTypes.RequestCompleted,
+                    TransportRequestStatus.Queued,
+                    TransportRequestStatus.Completed,
+                    reason,
+                    new { mix_pallet_fulfilled = true, slot_id = destinationSlotId, current_part_id = currentPartId },
+                    cancellationToken,
+                    eventContext);
+
+                await ReleasePreparationPalletIfLinkedWithinTransactionAsync(
+                    connection,
+                    transaction,
+                    request.Id,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+
                 await transaction.CommitAsync(cancellationToken);
-                return false;
+                return true;
             }
 
             var removal = destination.State.Load == LoadState.Empty
@@ -615,5 +649,38 @@ public sealed partial class PostgresTransportWorkflowStore
             : throw new WorkflowRuleException(
                 "PART_SLOT_NOT_CONFIGURED",
                 "Bu alt parça için makine alanı tanımlı değil.");
+    }
+
+    private static async Task ReleasePreparationPalletIfLinkedWithinTransactionAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using var releaseCmd = new NpgsqlCommand(
+            """
+            WITH released AS (
+                UPDATE ops.preparation_pallets
+                SET released_at = @now,
+                    released_by = COALESCE(ready_by, placed_by),
+                    released_reason = CASE WHEN ready_at IS NOT NULL THEN 'COLLECTED' ELSE 'DISPATCH_BYPASS' END,
+                    row_version = row_version + 1
+                WHERE transport_request_id = @id AND released_at IS NULL
+                RETURNING id, preparation_area_id, part_id, container_type_id, transport_request_id, ready_by, placed_by, placed_device_id
+            )
+            INSERT INTO ops.preparation_events (
+                preparation_area_id, preparation_pallet_id, event_type, part_id, container_type_id,
+                transport_request_id, actor_user_id, device_id, occurred_at, data_json
+            )
+            SELECT r.preparation_area_id, r.id, 'PALLET_COLLECTED', r.part_id, r.container_type_id,
+                   r.transport_request_id, COALESCE(r.ready_by, r.placed_by), r.placed_device_id, @now, '{"simulated": true}'::jsonb
+            FROM released r;
+            """,
+            connection,
+            transaction);
+        releaseCmd.Parameters.AddWithValue("id", requestId);
+        releaseCmd.Parameters.AddWithValue("now", now);
+        await releaseCmd.ExecuteNonQueryAsync(cancellationToken);
     }
 }

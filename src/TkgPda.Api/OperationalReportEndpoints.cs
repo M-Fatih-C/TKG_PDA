@@ -269,11 +269,13 @@ public static class OperationalReportEndpoints
 
     private static (DateTimeOffset From, DateTimeOffset To) Window(DateTimeOffset? from, DateTimeOffset? to)
     {
-        if (from is not null && to is not null) return (from.Value, to.Value);
+        if (from is not null && to is not null) return (from.Value.ToUniversalTime(), to.Value.ToUniversalTime());
         var zone = ReportCsv.Zone;
         var local = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, zone);
-        var start = new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, zone.GetUtcOffset(local));
-        return (from ?? start, to ?? start.AddDays(1));
+        var startLocal = new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, zone.GetUtcOffset(local));
+        var fromUtc = (from ?? startLocal).ToUniversalTime();
+        var toUtc = (to ?? startLocal.AddDays(1)).ToUniversalTime();
+        return (fromUtc, toUtc);
     }
 }
 

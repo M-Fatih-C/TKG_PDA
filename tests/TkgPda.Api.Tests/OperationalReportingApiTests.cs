@@ -342,6 +342,35 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Equal(HttpStatusCode.OK, auditStillThere.StatusCode);
     }
 
+    [Fact]
+    public async Task Reports_with_default_window_and_local_timezone_offset_do_not_throw_500()
+    {
+        await fixture.ResetAsync();
+        var admin = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+        var user = await fixture.SeedIdentityAsync(role: RoleCodes.LineOperator, machineCode: "SH-01-A");
+        var context = await fixture.ContextAsync("SH-01-A", "1");
+        await InsertRequestAsync(context, user.UserId, "COMPLETED", DateTimeOffset.UtcNow, "P1");
+
+        using var client = await fixture.AdminLoginClientAsync(admin);
+
+        // 1. Default window without parameters (uses local Turkey Standard Time offset +03:00)
+        var tasksDefault = await client.GetAsync("/api/v1/admin/reports/tasks");
+        Assert.Equal(HttpStatusCode.OK, tasksDefault.StatusCode);
+
+        // 2. Explicit +03:00 offset
+        var fromStr = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddDays(-1).ToOffset(TimeSpan.FromHours(3)).ToString("O"));
+        var toStr = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddDays(1).ToOffset(TimeSpan.FromHours(3)).ToString("O"));
+        var tasksWithOffset = await client.GetAsync($"/api/v1/admin/reports/tasks?from={fromStr}&to={toStr}");
+        Assert.Equal(HttpStatusCode.OK, tasksWithOffset.StatusCode);
+
+        // 3. /sessions and /summary with default parameters
+        var sessionsDefault = await client.GetAsync("/api/v1/admin/reports/sessions");
+        Assert.Equal(HttpStatusCode.OK, sessionsDefault.StatusCode);
+
+        var summaryDefault = await client.GetAsync("/api/v1/admin/reports/summary");
+        Assert.Equal(HttpStatusCode.OK, summaryDefault.StatusCode);
+    }
+
     private static async Task<string> ReadEntryAsync(ZipArchive archive, string name)
     {
         var entry = archive.GetEntry(name) ?? throw new InvalidOperationException($"{name} missing");
