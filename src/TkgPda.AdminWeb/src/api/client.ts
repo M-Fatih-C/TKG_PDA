@@ -25,6 +25,7 @@ import type {
   RdsTaskTemplate,
   RdsTaskTemplateValidation,
   ProductionEndPriority,
+  ProductionEndAreaPriority,
   TransportEvidence,
   TaskReportPage,
   VariantOperationReadiness,
@@ -233,6 +234,14 @@ export const createAdminApi = (token: string) => ({
     (await request<ProductionEndPriority[]>('/api/v1/admin/production-end-priorities', { token, signal })).data,
   setProductionEndPriority: async (operationCode: string, priority: number | null) =>
     (await request<ProductionEndPriority[]>('/api/v1/admin/production-end-priorities', { method: 'PUT', token, body: { operationCode, priority } })).data,
+  productionEndAreaPriorities: async (signal?: AbortSignal) =>
+    (await request<ProductionEndAreaPriority[]>('/api/v1/admin/production-end-area-priorities', { token, signal })).data,
+  setProductionEndAreaPriority: async (productGroupId: string, layoutSlotId: string, partId: string, priority: number | null) =>
+    (await request<ProductionEndAreaPriority[]>('/api/v1/admin/production-end-area-priorities', {
+      method: 'PUT',
+      token,
+      body: { productGroupId, layoutSlotId, partId, priority },
+    })).data,
   transportEvidence: async (requestId: string, signal?: AbortSignal) =>
     (await request<TransportEvidence>(`/api/v1/admin/transport-requests/${requestId}/evidence`, { token, signal })).data,
   reportTasks: async (filters: ReportWindow, signal?: AbortSignal) =>

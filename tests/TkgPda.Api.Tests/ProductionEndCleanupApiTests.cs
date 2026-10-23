@@ -260,6 +260,37 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     }
 
     [Fact]
+    public async Task Exact_area_priority_orders_cleanup_before_operation_default()
+    {
+        var setup = await OccupyAsync(2, "FULL");
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO master.production_end_area_priorities
+                (product_group_id, layout_slot_id, part_id, priority)
+            VALUES
+                (@group, @first, @part, 90),
+                (@group, @second, @part, 10)
+            """,
+            ("group", setup.Group),
+            ("first", setup.Slots[0]),
+            ("second", setup.Slots[1]),
+            ("part", setup.MainPart));
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+
+        (await EndAsync(client, setup, session.Id, "area-priority-order")).EnsureSuccessStatusCode();
+
+        var ordered = await IdsAsync("SELECT layout_slot_id FROM ops.production_end_run_items ORDER BY sequence_no");
+        Assert.Equal([setup.Slots[1], setup.Slots[0]], ordered);
+        Assert.Equal("10,90", await fixture.ScalarAsync<string>(
+            """
+            SELECT string_agg(r.priority::text, ',' ORDER BY item.sequence_no)
+            FROM ops.production_end_run_items item
+            JOIN ops.transport_requests r ON r.id = item.transport_request_id
+            """));
+    }
+
+    [Fact]
     public async Task One_empty_pallet_creates_remove_empty()
     {
         var setup = await SetupAsync();

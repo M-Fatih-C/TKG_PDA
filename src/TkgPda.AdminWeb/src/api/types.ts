@@ -535,6 +535,28 @@ export interface ProductionEndPriority {
   updatedAt: string | null
 }
 
+export interface ProductionEndAreaPriority {
+  machineId: string
+  machineCode: string
+  machineName: string
+  variantId: string
+  variantCode: string
+  variantName: string
+  productGroupId: string
+  mainPartCode: string
+  layoutId: string
+  layoutCode: string
+  layoutName: string
+  layoutSlotId: string
+  slotCode: string
+  slotName: string
+  partId: string
+  partCode: string
+  partRole: string
+  priority: number | null
+  updatedAt: string | null
+}
+
 export interface OperationCapability {
   operation: string
   state: string

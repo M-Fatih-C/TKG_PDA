@@ -12,7 +12,8 @@ public sealed partial class PostgresTransportWorkflowStore
     /// <summary>
     /// Plans pallet removal for the active production layout. Display order is
     /// only a stable sequence; transport priority comes from
-    /// master.production_end_priorities. Nothing is inserted until every
+    /// the exact area/part rule, with the approved operation priority as a
+    /// compatibility fallback. Nothing is inserted until every
     /// removal has passed the same checks.
     /// </summary>
     private async Task<ProductionSessionResult> PlanProductionEndAsync(
@@ -212,18 +213,20 @@ public sealed partial class PostgresTransportWorkflowStore
         IReadOnlyList<ConfiguredReturnSlot> returnSlots,
         CancellationToken cancellationToken)
     {
-        var priorities = new Dictionary<TransportTaskType, int>();
         var emptyCount = 0;
         var activeNavigation = await ActiveNavigationAsync(connection, transaction, session.MachineId, cancellationToken);
         var registryProfile = await IsCommissioningRegistryProfileAsync(connection, transaction, activeNavigation, cancellationToken);
         for (var index = 0; index < removals.Count; index++)
         {
             var removal = removals[index];
-            if (!priorities.TryGetValue(removal.Operation, out var priority))
-            {
-                priority = await RequireProductionEndPriorityAsync(connection, transaction, removal.Operation, cancellationToken);
-                priorities[removal.Operation] = priority;
-            }
+            var priority = await RequireProductionEndPriorityAsync(
+                connection,
+                transaction,
+                session.ProductGroupId,
+                removal.SlotId,
+                removal.PartId,
+                removal.Operation,
+                cancellationToken);
 
             await RequireTaskTemplateAsync(connection, transaction, session, removal.Operation, cancellationToken);
             if (removal.FinishedGoods && !registryProfile)
@@ -306,13 +309,36 @@ public sealed partial class PostgresTransportWorkflowStore
     private static async Task<int> RequireProductionEndPriorityAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
+        Guid productGroupId,
+        Guid layoutSlotId,
+        Guid partId,
         TransportTaskType operation,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
-            "SELECT priority FROM master.production_end_priorities WHERE operation_code = @code",
+            """
+            SELECT priority
+            FROM master.production_end_area_priorities
+            WHERE product_group_id = @group
+              AND layout_slot_id = @slot
+              AND part_id = @part
+            UNION ALL
+            SELECT priority
+            FROM master.production_end_priorities
+            WHERE operation_code = @code
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM master.production_end_area_priorities
+                  WHERE product_group_id = @group
+                    AND layout_slot_id = @slot
+                    AND part_id = @part)
+            LIMIT 1
+            """,
             connection,
             transaction);
+        command.Parameters.AddWithValue("group", productGroupId);
+        command.Parameters.AddWithValue("slot", layoutSlotId);
+        command.Parameters.AddWithValue("part", partId);
         command.Parameters.AddWithValue("code", operation.ToDatabase());
         if (await command.ExecuteScalarAsync(cancellationToken) is int priority)
         {
@@ -321,7 +347,7 @@ public sealed partial class PostgresTransportWorkflowStore
 
         throw new WorkflowRuleException(
             "PRODUCTION_END_PRIORITY_NOT_CONFIGURED",
-            $"Üretimi Bitir için {operation.ToDatabase()} önceliği tanımlanmamış.");
+            "Üretimi Bitir için alan/parça önceliği veya işlem varsayılanı tanımlanmamış.");
     }
 
     private static async Task RequireTaskTemplateAsync(

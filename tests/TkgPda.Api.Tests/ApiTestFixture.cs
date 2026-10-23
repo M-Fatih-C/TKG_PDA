@@ -54,6 +54,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("032_finished_goods_preparation_areas.sql"));
         await ExecuteScriptAsync(MigrationFile("033_finished_goods_untyped_empty_preparation.sql"));
         await ExecuteScriptAsync(MigrationFile("034_finished_product_container_options.sql"));
+        await ExecuteScriptAsync(MigrationFile("035_area_based_production_end_priorities.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -77,6 +78,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
                 ops.machine_runtime_state
             RESTART IDENTITY CASCADE;
             DELETE FROM audit.audit_logs;
+            DELETE FROM master.production_end_area_priorities;
             DELETE FROM master.production_end_priorities;
             DELETE FROM integration.layout_slot_rds_mapping
             WHERE rds_worksite_id IN (

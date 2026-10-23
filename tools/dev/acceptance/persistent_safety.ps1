@@ -11,7 +11,7 @@ function Get-PersistentBusinessSnapshot {
         'ops.slot_runtime_state', 'ops.machine_runtime_state', 'ops.store_units',
         'integration.profile_shared_endpoint_bindings', 'integration.rds_worksites',
         'integration.layout_slot_rds_mapping', 'master.task_templates', 'ops.store_locations', 'master.navigation_profiles',
-        'master.production_end_priorities', 'audit.client_devices')
+        'master.production_end_priorities', 'master.production_end_area_priorities', 'audit.client_devices')
     $snapshot = @{}
     foreach ($table in $tables) {
         $snapshot[$table] = @((Invoke-AcceptanceSql "SELECT row_to_json(t)::text FROM $table t ORDER BY row_to_json(t)::text;") -split "`n" | Where-Object { $_ })

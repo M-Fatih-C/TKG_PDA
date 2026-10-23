@@ -3,6 +3,7 @@ using TkgPda.Application;
 namespace TkgPda.Api;
 
 public sealed record SetProductionEndPriorityHttpRequest(string OperationCode, int? Priority);
+public sealed record SetProductionEndAreaPriorityHttpRequest(Guid ProductGroupId, Guid LayoutSlotId, Guid PartId, int? Priority);
 
 public static class OperationalEvidenceEndpoints
 {
@@ -12,7 +13,30 @@ public static class OperationalEvidenceEndpoints
         admin.MapGet("/production-end-priorities", ListPrioritiesAsync);
         admin.MapGet("/production-end-priorities/{operationCode}/required", RequirePriorityAsync);
         admin.MapPut("/production-end-priorities", SetPriorityAsync);
+        admin.MapGet("/production-end-area-priorities", ListAreaPrioritiesAsync);
+        admin.MapPut("/production-end-area-priorities", SetAreaPriorityAsync);
         return admin;
+    }
+
+    private static async Task<IResult> ListAreaPrioritiesAsync(
+        IOperationalEvidenceStore store,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await store.ListProductionEndAreaPrioritiesAsync(cancellationToken));
+
+    private static async Task<IResult> SetAreaPriorityAsync(
+        SetProductionEndAreaPriorityHttpRequest request,
+        HttpContext context,
+        IOperationalEvidenceStore store,
+        CancellationToken cancellationToken)
+    {
+        await store.SetProductionEndAreaPriorityAsync(
+            request.ProductGroupId,
+            request.LayoutSlotId,
+            request.PartId,
+            request.Priority,
+            context.User.UserId(),
+            cancellationToken);
+        return Results.Ok(await store.ListProductionEndAreaPrioritiesAsync(cancellationToken));
     }
 
     private static async Task<IResult> ReadEvidenceAsync(
