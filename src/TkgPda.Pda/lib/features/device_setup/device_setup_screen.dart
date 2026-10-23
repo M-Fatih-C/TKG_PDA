@@ -88,7 +88,7 @@ class _DeviceSetupScreenState extends State<DeviceSetupScreen> {
                         autocorrect: false,
                         decoration: const InputDecoration(
                           labelText: 'Cihaz Kodu',
-                          prefixIcon: Icon(Icons.qr_code_2),
+                          prefixIcon: Icon(Icons.tablet_android),
                         ),
                         validator: (value) {
                           final text = value?.trim() ?? '';

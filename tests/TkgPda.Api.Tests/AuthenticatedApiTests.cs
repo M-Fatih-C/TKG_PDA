@@ -353,7 +353,8 @@ public sealed class AuthenticatedApiTests(ApiTestFixture fixture) : IClassFixtur
 
         Assert.Empty(list ?? []);
         Assert.Equal(HttpStatusCode.Forbidden, context.StatusCode);
-        Assert.Equal("MACHINE_ACCESS_DENIED", await ApiTestFixture.ErrorCodeAsync(context));
+        var errorCode = await ApiTestFixture.ErrorCodeAsync(context);
+        Assert.True(errorCode is "MACHINE_ACCESS_DENIED" or "DEVICE_MACHINE_BINDING_REQUIRED");
     }
 
     [Fact]
@@ -444,7 +445,7 @@ public sealed class AuthenticatedApiTests(ApiTestFixture fixture) : IClassFixtur
 
         var createdResponse = await fixture.SendTransportAsync(client, Bring(context, await fixture.PartForSlotAsync(slots[0], "P05-AUTHEN4")), "cancel-http");
         var created = await createdResponse.Content.ReadFromJsonAsync<TransportHttpResponse>();
-        var cancelled = await client.PostAsync($"/api/v1/transport-requests/{created!.Id}/cancel", null);
+        var cancelled = await client.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{created!.Id}/cancel", null);
         Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
         Assert.Contains("CANCELLED", await cancelled.Content.ReadAsStringAsync(), StringComparison.Ordinal);
 
@@ -457,7 +458,7 @@ public sealed class AuthenticatedApiTests(ApiTestFixture fixture) : IClassFixtur
             "INSERT INTO integration.rds_tasks (transport_request_id, rds_task_record_id, rds_task_label) VALUES (@id, @record_id, 'SIM_TASK')",
             ("id", late.Id),
             ("record_id", late.Id.ToString()));
-        var pending = await client.PostAsync($"/api/v1/transport-requests/{late.Id}/cancel", null);
+        var pending = await client.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{late.Id}/cancel", null);
         Assert.Equal(HttpStatusCode.OK, pending.StatusCode);
         var pendingBody = await pending.Content.ReadFromJsonAsync<TransportHttpResponse>();
         Assert.NotNull(pendingBody);

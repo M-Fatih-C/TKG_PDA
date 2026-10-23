@@ -15,6 +15,14 @@ public sealed class PdaRdsContractReadinessApiTests(ApiTestFixture fixture) : IC
         const string machineCode = "SH-02-P1 -SH-02-P2";
         var identity = await fixture.SeedIdentityAsync(machineCode: machineCode);
         var machine = await fixture.ConfigureMachineAsync(machineCode: machineCode);
+        var originalTemplates = await fixture.ScalarAsync<string>(
+            "SELECT coalesce(json_agg(t), '[]'::json)::text FROM master.task_templates t WHERE variant_id = @variant",
+            ("variant", machine.VariantId));
+        try
+        {
+        // Explicitly model absent template evidence instead of relying on an
+        // obsolete seed baseline that predates the 96 generic templates.
+        await fixture.ExecuteAsync("DELETE FROM master.task_templates WHERE variant_id = @variant", ("variant", machine.VariantId));
         using var client = await fixture.LoginClientAsync(identity);
 
         var context = await GetContextAsync(client, machine.MachineId);
@@ -68,6 +76,18 @@ public sealed class PdaRdsContractReadinessApiTests(ApiTestFixture fixture) : IC
         // The raw label is no longer part of the PDA contract; only the readiness
         // signal derived from it crosses the boundary.
         Assert.False(template.RdsTaskLabelConfigured);
+        }
+        finally
+        {
+            // ResetAsync removes test-scoped templates; it deliberately preserves
+            // customer seeds. Restore this test's removed seeds even on failure.
+            await fixture.ExecuteAsync(
+                "DELETE FROM master.task_templates WHERE variant_id = @variant",
+                ("variant", machine.VariantId));
+            await fixture.ExecuteAsync(
+                "INSERT INTO master.task_templates SELECT * FROM json_populate_recordset(NULL::master.task_templates, @snapshot::json)",
+                ("snapshot", originalTemplates));
+        }
     }
 
     [Fact]
@@ -105,10 +125,9 @@ public sealed class PdaRdsContractReadinessApiTests(ApiTestFixture fixture) : IC
         AssertEnabled(adminPdaContext, slots[2], "REMOVE_FULL");
 
         using var warehouseClient = await fixture.LoginClientAsync(warehouse);
-        var warehouseContext = await GetContextAsync(warehouseClient, machine.MachineId);
-        AssertEnabled(warehouseContext, slots[0], "BRING_EMPTY");
-        AssertNotOffered(warehouseContext, slots[1], "REMOVE_EMPTY");
-        AssertDisabled(warehouseContext, slots[2], "REMOVE_FULL", "OPERATION_NOT_ALLOWED_FOR_ROLE");
+        var warehouseResponse = await warehouseClient.GetAsync($"/api/v1/machines/{machine.MachineId}/operational-context");
+        Assert.Equal(HttpStatusCode.Forbidden, warehouseResponse.StatusCode);
+        Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(warehouseResponse));
 
         var machineRegion = lineContext.Slots.Single(slot => slot.Role == "MACHINE");
         Assert.False(machineRegion.TransportEligible);

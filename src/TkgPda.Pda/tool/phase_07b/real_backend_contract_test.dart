@@ -219,7 +219,10 @@ void main() {
   });
 
   test('15 valid pre-execution cancellation succeeds', () async {
-    final cancelled = await mainClient.repository.cancel(created!.id);
+    final cancelled = await mainClient.repository.cancel(
+      machineId: machine.id,
+      requestId: created!.id,
+    );
     expect(cancelled.status, 'CANCELLED');
   });
 

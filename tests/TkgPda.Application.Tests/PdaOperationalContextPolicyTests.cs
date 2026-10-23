@@ -91,6 +91,49 @@ public sealed class PdaOperationalContextPolicyTests
     }
 
     [Fact]
+    public void Deferred_preparation_demand_does_not_mark_the_machine_slot_busy()
+    {
+        var slot = Slot(occupancy: "VACANT", load: "UNKNOWN");
+        var deferred = Request(TransportRequestStatus.Queued) with
+        {
+            DestinationSlotId = slot.Id,
+            ReadinessState = "WAITING_PREPARATION",
+            MachineSlotReservationActive = false
+        };
+
+        var context = PdaOperationalContextPolicy.Project(
+            Data(slot) with { ActiveTransportRequests = [deferred] },
+            Actor(KnownRoleCodes.LineOperator));
+
+        var action = Assert.Single(context.Slots).AvailableActions
+            .Single(candidate => candidate.Action == "BRING_EMPTY");
+        Assert.True(action.Enabled);
+        Assert.Null(action.DisabledCode);
+    }
+
+    [Fact]
+    public void Activated_preparation_demand_marks_the_machine_slot_busy()
+    {
+        var slot = Slot(occupancy: "VACANT", load: "UNKNOWN");
+        var active = Request(TransportRequestStatus.Queued) with
+        {
+            DestinationSlotId = slot.Id,
+            ReadinessState = "READY",
+            MachineSlotReservationActive = true
+        };
+
+        var context = PdaOperationalContextPolicy.Project(
+            Data(slot) with { ActiveTransportRequests = [active] },
+            Actor(KnownRoleCodes.LineOperator));
+
+        Assert.All(Assert.Single(context.Slots).AvailableActions, action =>
+        {
+            Assert.False(action.Enabled);
+            Assert.Equal("SLOT_BUSY", action.DisabledCode);
+        });
+    }
+
+    [Fact]
     public void Admin_web_context_never_receives_pda_transport_capabilities()
     {
         var actions = PdaOperationalContextPolicy.EvaluateActions(
@@ -250,6 +293,60 @@ public sealed class PdaOperationalContextPolicyTests
         Assert.True(readiness.RdsWorkSiteMapped);
         Assert.False(readiness.IsExecutionReady);
         Assert.Equal(expectedCode, readiness.ReadinessCode);
+    }
+
+    [Theory]
+    [InlineData(KnownRoleCodes.Admin, true)]
+    [InlineData(KnownRoleCodes.Supervisor, true)]
+    [InlineData(KnownRoleCodes.LineOperator, true)]
+    [InlineData(KnownRoleCodes.WarehouseOperator, false)]
+    [InlineData(KnownRoleCodes.SemiFinishedWarehouseOperator, false)]
+    [InlineData(KnownRoleCodes.FinishedGoodsWarehouseOperator, false)]
+    public void Cancel_capability_matches_the_machine_scoped_endpoint_policy(string role, bool expected)
+    {
+        // Own delivery, which the retired warehouse exception used to allow.
+        var request = Request(TransportRequestStatus.Queued) with { IsMine = true };
+        var context = PdaOperationalContextPolicy.Project(
+            Data(Slot()) with { ActiveTransportRequests = [request] },
+            Actor(role));
+
+        var projected = Assert.Single(context.ActiveTransportRequests);
+        Assert.Equal(expected, projected.CanCancel);
+        if (!expected)
+        {
+            Assert.Equal("CANCELLATION_NOT_ALLOWED_FOR_ROLE", projected.CancelDisabledCode);
+        }
+    }
+
+    [Fact]
+    public void Active_request_projection_passes_server_values_through_and_never_negative()
+    {
+        var request = Request(TransportRequestStatus.SentToRds) with
+        {
+            PartCode = "ABC-123",
+            PartDescription = "Ön Sol Braket",
+            RelationType = "ALT_PART",
+            ReadinessState = "READY",
+            QueuePosition = 2,
+            AgeSeconds = -5,
+            ExecutionElapsedSeconds = -1
+        };
+        var projected = Assert.Single(PdaOperationalContextPolicy.Project(
+            Data(Slot()) with { ActiveTransportRequests = [request] },
+            Actor(KnownRoleCodes.LineOperator)).ActiveTransportRequests);
+
+        Assert.Equal("ABC-123", projected.PartCode);
+        Assert.Equal("Ön Sol Braket", projected.PartDescription);
+        Assert.Equal("ALT_PART", projected.RelationType);
+        Assert.Equal("READY", projected.ReadinessState);
+        Assert.Equal(2, projected.QueuePosition);
+        Assert.Equal(0, projected.AgeSeconds);
+        Assert.Equal(0, projected.ExecutionElapsedSeconds);
+
+        var unstarted = Assert.Single(PdaOperationalContextPolicy.Project(
+            Data(Slot()) with { ActiveTransportRequests = [request with { ExecutionElapsedSeconds = null }] },
+            Actor(KnownRoleCodes.LineOperator)).ActiveTransportRequests);
+        Assert.Null(unstarted.ExecutionElapsedSeconds);
     }
 
     private static PdaAvailableActionRecord Action(SlotContextDataRecord slot, string role, string operation) =>

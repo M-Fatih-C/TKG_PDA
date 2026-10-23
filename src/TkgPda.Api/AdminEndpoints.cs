@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Npgsql;
 using TkgPda.Application;
 
 namespace TkgPda.Api;
@@ -68,21 +69,38 @@ public static class AdminEndpoints
         admin.MapPut("/containers/{containerId:guid}", UpdateContainerAsync);
 
         admin.MapGet("/data-issues", (AdminConfigurationService service, CancellationToken ct) => service.ListDataIssuesAsync(ct));
-        admin.MapGet("/audit-logs", (int? limit, Guid? actorUserId, string? entityType, AdminConfigurationService service, CancellationToken ct) =>
-            service.ListAuditAsync(limit ?? 100, actorUserId, entityType, ct));
+        admin.MapGet("/audit-logs", (
+            int? limit,
+            Guid? actorUserId,
+            string? entityType,
+            DateTimeOffset? from,
+            DateTimeOffset? to,
+            string? action,
+            Guid? correlationId,
+            string? entityId,
+            string? actor,
+            AdminConfigurationService service,
+            CancellationToken ct) =>
+            service.ListAuditAsync(limit ?? 100, actorUserId, entityType, ct, from, to, action, correlationId, entityId, actor));
+        admin.MapOperationalReports();
 
         admin.MapGet("/rds/status", RdsStatusAsync);
         admin.MapGet("/rds/robots", ListRdsRobotsAsync);
         admin.MapGet("/rds/alarms", ListRdsRobotAlarmsAsync);
+        admin.MapGet("/rds/alarm-history", ListRobotAlarmHistoryAsync);
         admin.MapGet("/rds/navigation-profiles", (RdsIntegrationService service, CancellationToken ct) => service.ListNavigationProfilesAsync(ct));
         admin.MapPost("/rds/worksites/sync", SyncRdsWorkSitesAsync);
         admin.MapGet("/rds/worksites", ListRdsWorkSitesAsync);
+        admin.MapGet("/rds/physical-evidence", (Guid navigationProfileId, IRdsIntegrationStore store, CancellationToken ct) =>
+            store.ListPhysicalDiagnosticsAsync(navigationProfileId, ct));
         admin.MapGet("/rds/slot-mappings", (Guid? layoutId, RdsIntegrationService service, CancellationToken ct) => service.ListSlotMappingsAsync(layoutId, ct));
         admin.MapPut("/layout-slots/{slotId:guid}/rds-mapping", SetRdsMappingAsync);
         admin.MapDelete("/layout-slots/{slotId:guid}/rds-mapping", RemoveRdsMappingAsync);
         admin.MapGet("/rds/task-templates", (IRdsExecutionStore store, CancellationToken ct) => store.ListTaskTemplatesAsync(ct));
         admin.MapPost("/rds/task-templates/validate", ValidateRdsTaskTemplateAsync);
         admin.MapPost("/rds/commissioning/capture", CaptureRdsCommissioningDiscoveryAsync);
+        admin.MapCommissioningActivation();
+        admin.MapOperationalEvidence();
 
         return endpoints;
     }
@@ -100,8 +118,25 @@ public static class AdminEndpoints
         RdsIntegrationService service,
         RdsExecutionCoordinator execution,
         RdsCoreExecutionOptions coreExecution,
+        DemoModeOptions demoOptions,
         CancellationToken ct)
     {
+        if (demoOptions.Enabled)
+        {
+            return new RdsConnectionStatusRecord(
+                Enabled: true,
+                Reachable: true,
+                Stale: false,
+                LastSuccessfulRead: DateTimeOffset.UtcNow,
+                BaseAddressDisplaySafe: "http://127.0.0.1:8080 (Yerel RDS)",
+                BusinessStatus: 0,
+                BusinessMessage: "Yerel simülasyon aktif. Fiziksel robotlara komut gönderilmez.",
+                ErrorCode: null,
+                ErrorMessage: null,
+                DispatchEnabled: false,
+                CoreBaseAddressDisplaySafe: "http://127.0.0.1:8088 (Yerel RDS Core)");
+        }
+
         var status = await service.GetStatusAsync(CorrelationId(context), ct);
         return status with
         {
@@ -110,11 +145,129 @@ public static class AdminEndpoints
         };
     }
 
-    private static Task<IReadOnlyList<RdsRobotAdminRecord>> ListRdsRobotsAsync(HttpContext context, RdsIntegrationService service, CancellationToken ct) =>
-        service.ListRobotsForAdminAsync(CorrelationId(context), ct);
+    private static async Task<IReadOnlyList<RdsRobotAdminRecord>> ListRdsRobotsAsync(
+        HttpContext context,
+        RdsIntegrationService service,
+        DemoModeOptions demoOptions,
+        NpgsqlDataSource dataSource,
+        CancellationToken ct)
+    {
+        if (demoOptions.Enabled)
+        {
+            string? activeRequestNo = null;
+            string? machineCode = null;
+            string? slotCode = null;
 
-    private static Task<IReadOnlyList<RdsRobotAlarmAdminRecord>> ListRdsRobotAlarmsAsync(HttpContext context, RdsIntegrationService service, CancellationToken ct) =>
-        service.ListRobotAlarmsForAdminAsync(CorrelationId(context), ct);
+            try
+            {
+                await using var conn = await dataSource.OpenConnectionAsync(ct);
+                await using var cmd = new NpgsqlCommand(
+                    """
+                    SELECT r.request_no, m.code, COALESCE(ts.slot_code, ss.slot_code)
+                    FROM integration.rds_tasks rt
+                    JOIN ops.transport_requests r ON r.id = rt.transport_request_id
+                    LEFT JOIN ops.transport_batches b ON b.id = r.batch_id
+                    LEFT JOIN master.machines m ON m.id = b.machine_id
+                    LEFT JOIN master.layout_slots ts ON ts.id = r.target_slot_id
+                    LEFT JOIN master.layout_slots ss ON ss.id = r.source_slot_id
+                    WHERE rt.rds_status IN (1001, 1002) AND rt.agv_id = 'DEMO-AGV-01'
+                    ORDER BY rt.updated_at DESC
+                    LIMIT 1;
+                    """, conn);
+                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                if (await reader.ReadAsync(ct))
+                {
+                    activeRequestNo = reader.GetInt64(0).ToString();
+                    machineCode = reader.IsDBNull(1) ? null : reader.GetString(1);
+                    slotCode = reader.IsDBNull(2) ? null : reader.GetString(2);
+                }
+            }
+            catch
+            {
+                // Fallback to idle if db read fails
+            }
+
+            var hasActiveTask = !string.IsNullOrEmpty(activeRequestNo);
+            var currentStation = hasActiveTask
+                ? (machineCode != null ? $"{machineCode} (Hat İstasyonu)" : (slotCode ?? "PAH-01-A (Hat İstasyonu)"))
+                : "PARK-01";
+
+            IReadOnlyList<RdsRobotAdminRecord> demoRobots =
+            [
+                new RdsRobotAdminRecord(
+                    RobotId: "DEMO-AGV-01",
+                    Model: "SEER-AMB-300",
+                    Uuid: "demo-uuid-01",
+                    VehicleId: "DEMO-AGV-01",
+                    Connectivity: "ONLINE",
+                    Dispatch: hasActiveTask ? "DISPATCHED" : "DISPATCHABLE",
+                    UndispatchableReason: null,
+                    Motion: hasActiveTask ? "MOVING" : "STOPPED",
+                    Execution: hasActiveTask ? "RUNNING" : "IDLE",
+                    Control: "TKG",
+                    IsLocked: false,
+                    LockNickName: null,
+                    BatteryLevel: hasActiveTask ? 94.0 : 98.0,
+                    IsCharging: false,
+                    CurrentStation: currentStation,
+                    LastStation: "PARK-01",
+                    CurrentMap: "TKG-FABRIKA-KAT-1",
+                    ActiveOrderId: hasActiveTask ? $"DEMO-{activeRequestNo}" : null,
+                    ActiveOrderState: hasActiveTask ? "RUNNING" : null,
+                    RdsReportedPayloadLoaded: hasActiveTask,
+                    Alarms: RdsRobotAlarmCounts.Empty,
+                    Online: true,
+                    Dispatchable: true),
+                new RdsRobotAdminRecord(
+                    RobotId: "DEMO-AGV-02",
+                    Model: "SEER-AMB-300",
+                    Uuid: "demo-uuid-02",
+                    VehicleId: "DEMO-AGV-02",
+                    Connectivity: "ONLINE",
+                    Dispatch: "DISPATCHABLE",
+                    UndispatchableReason: null,
+                    Motion: "STOPPED",
+                    Execution: "IDLE",
+                    Control: "TKG",
+                    IsLocked: false,
+                    LockNickName: null,
+                    BatteryLevel: 100.0,
+                    IsCharging: true,
+                    CurrentStation: "ŞARJ-01",
+                    LastStation: "ŞARJ-01",
+                    CurrentMap: "TKG-FABRIKA-KAT-1",
+                    ActiveOrderId: null,
+                    ActiveOrderState: null,
+                    RdsReportedPayloadLoaded: false,
+                    Alarms: RdsRobotAlarmCounts.Empty,
+                    Online: true,
+                    Dispatchable: true)
+            ];
+            return demoRobots;
+        }
+
+        return await service.ListRobotsForAdminAsync(CorrelationId(context), ct);
+    }
+
+    private static Task<IReadOnlyList<RdsRobotAlarmAdminRecord>> ListRdsRobotAlarmsAsync(
+        HttpContext context,
+        RdsIntegrationService service,
+        DemoModeOptions demoOptions,
+        CancellationToken ct)
+    {
+        if (demoOptions.Enabled)
+        {
+            return Task.FromResult<IReadOnlyList<RdsRobotAlarmAdminRecord>>([]);
+        }
+
+        return service.ListRobotAlarmsForAdminAsync(CorrelationId(context), ct);
+    }
+
+    private static Task<IReadOnlyList<RobotAlarmObservationRecord>> ListRobotAlarmHistoryAsync(
+        int? limit,
+        IRdsIntegrationStore store,
+        CancellationToken ct) =>
+        store.ListAlarmHistoryAsync(limit ?? 100, ct);
 
     private static async Task<RdsCommissioningCaptureResult> CaptureRdsCommissioningDiscoveryAsync(
         RdsCommissioningCaptureApiRequest request,
@@ -168,12 +321,29 @@ public static class AdminEndpoints
         return result;
     }
 
-    private static Task<RdsWorkSiteSyncRecord> SyncRdsWorkSitesAsync(
+    private static async Task<RdsWorkSiteSyncRecord> SyncRdsWorkSitesAsync(
         SyncRdsWorkSitesRequest request,
         HttpContext context,
         RdsIntegrationService service,
-        CancellationToken ct) =>
-        service.SyncWorkSitesAsync(request.NavigationProfileId, CorrelationId(context), ct);
+        IRdsIntegrationStore store,
+        DemoModeOptions demoOptions,
+        CancellationToken ct)
+    {
+        if (demoOptions.Enabled)
+        {
+            var existing = await store.ListWorkSitesAsync(new RdsWorkSiteFilter(request.NavigationProfileId), ct);
+            return new RdsWorkSiteSyncRecord(
+                request.NavigationProfileId,
+                existing.Count,
+                0,
+                existing.Count,
+                DateTimeOffset.UtcNow,
+                0,
+                "WorkSite senkronizasyonu başarıyla doğrulandı.");
+        }
+
+        return await service.SyncWorkSitesAsync(request.NavigationProfileId, CorrelationId(context), ct);
+    }
 
     private static Task<IReadOnlyList<RdsMirroredWorkSiteRecord>> ListRdsWorkSitesAsync(
         Guid navigationProfileId,
@@ -212,6 +382,7 @@ public static class AdminEndpoints
         HttpContext context,
         IRdsExecutionStore store,
         IRdsExecutionClient client,
+        DemoModeOptions demoOptions,
         CancellationToken cancellationToken)
     {
         var template = (await store.ListTaskTemplatesAsync(cancellationToken))
@@ -237,6 +408,12 @@ public static class AdminEndpoints
                     preview[param.GetString()!] = "TKG_VALIDATION_ONLY";
                 }
             }
+        }
+
+        if (demoOptions.Enabled)
+        {
+            var raw = JsonSerializer.SerializeToElement(new { simulated = true, preview });
+            return new RdsValidationResult(true, true, false, 0, "Görev şablonu başarıyla doğrulandı.", raw);
         }
 
         return await client.ValidateTransportAsync(
@@ -314,13 +491,13 @@ public static class AdminEndpoints
 
     private static async Task<IResult> CreateDeviceAsync(CreateAdminDeviceRequest request, HttpContext context, AdminConfigurationService service, CancellationToken ct)
     {
-        var created = await service.CreateDeviceAsync(new CreateDeviceCommand(request.Code, request.Name, request.Type, request.IsActive, request.Metadata), MutationContext(context), ct);
+        var created = await service.CreateDeviceAsync(new CreateDeviceCommand(request.Code, request.Name, request.Type, request.IsActive, request.Metadata, request.MachineId), MutationContext(context), ct);
         return Created(context, $"/api/v1/admin/devices/{created.Id}", created, created.ConcurrencyToken);
     }
 
     private static async Task<IResult> UpdateDeviceAsync(Guid deviceId, UpdateAdminDeviceRequest request, HttpContext context, AdminConfigurationService service, CancellationToken ct)
     {
-        var updated = await service.UpdateDeviceAsync(deviceId, new UpdateDeviceCommand(request.Name, request.Type, request.IsActive, request.Metadata, Version(context)), MutationContext(context), ct);
+        var updated = await service.UpdateDeviceAsync(deviceId, new UpdateDeviceCommand(request.Name, request.Type, request.IsActive, request.Metadata, Version(context), request.MachineId), MutationContext(context), ct);
         return Versioned(context, updated, updated.ConcurrencyToken);
     }
 

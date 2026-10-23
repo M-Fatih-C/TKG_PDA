@@ -7,6 +7,25 @@ namespace TkgPda.Api.Tests;
 
 public sealed class RdsReadClientTests
 {
+    [Theory]
+    [InlineData("0",0)]
+    [InlineData("1",1)]
+    [InlineData("2",2)]
+    [InlineData("-1",-1)]
+    [InlineData("null",null)]
+    [InlineData("true",null)]
+    [InlineData("0.5",null)]
+    [InlineData("\"0\"",0)]
+    [InlineData("\"1\"",1)]
+    public async Task Filled_and_locked_preserve_numeric_evidence_and_unrecognized_types_as_unknown(string wire,int? expected)
+    {
+        var payload=$$"""{"code":200,"msg":"Success","data":[{"siteId":"ISOLATED","type":1,"filled":{{wire}},"locked":{{wire}}}]}""";
+        var site=Assert.Single((await Client(new RecordingHandler(payload)).GetWorkSitesAsync(Guid.NewGuid())).Data);
+        Assert.Equal(expected,site.Filled);
+        Assert.Equal(expected,site.Locked);
+        Assert.Equal(wire,site.RawState.GetProperty("filled").GetRawText());
+    }
+
     [Fact]
     public async Task Worksite_response_preserves_external_evidence()
     {

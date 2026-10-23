@@ -116,6 +116,7 @@ function Stop-OwnedProcessSafely {
 # 1. Check .runtime/*.pid files
 $pidFiles = @(
     @{ Name = "API"; File = (Join-Path $runtimeDir 'api.pid') },
+    @{ Name = "Demo API"; File = (Join-Path $runtimeDir 'demo_api.pid') },
     @{ Name = "Admin Web"; File = (Join-Path $runtimeDir 'admin.pid') },
     @{ Name = "Operator Web"; File = (Join-Path $runtimeDir 'operator.pid') }
 )

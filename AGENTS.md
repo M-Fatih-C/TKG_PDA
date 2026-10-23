@@ -33,7 +33,8 @@ Clients must never call RDS directly. State mutations must pass through the rele
 - Occupancy states are `VACANT`, `OCCUPIED`, and `UNKNOWN`.
 - Load states are `EMPTY`, `FULL`, and `UNKNOWN`.
 - `RESERVED` is not an occupancy state.
-- Supported transport operations are `BRING_EMPTY`, `REMOVE_FULL`, and `REMOVE_EMPTY`.
+- Supported transport operations are `BRING_EMPTY`, `BRING_FULL`, `REMOVE_FULL`, and `REMOVE_EMPTY`.
+- `BRING_FULL` is warehouse-prepared full-material delivery. It waits for warehouse readiness before robot dispatch.
 
 ## Customer data
 
@@ -50,7 +51,7 @@ Do not guess missing values and do not hard-code customer master data in Flutter
 
 Never invent WorkSite labels, robot mappings, fork heights, pickup/drop geometry, recognition parameters, or production task labels. Do not dispatch a live robot unless the user has explicitly authorized that exact test and scope.
 
-RDS alarms are read-only through `GET /api/agv-report/core`.
+RDS alarms are read-only through `GET /api/agv-report/core`. TKG may store its own observation of a successful snapshot. That history is not an RDS incident log, and a failed read does not clear it. Alarm telemetry never changes occupancy or load.
 
 ## Authentication boundaries
 

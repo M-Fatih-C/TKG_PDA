@@ -9,7 +9,7 @@ test('01 · admin login opens the live dashboard without a device code', async (
     if (header) deviceHeaders.push(header)
   })
   await loginAsAdmin(page)
-  await expect(page.getByText('ADMIN_WEB')).toBeVisible()
+  await expect(page.getByText('TKG PDA / Yönetim Paneli')).toBeVisible()
   expect(deviceHeaders, 'Admin Web must never send X-Device-Code').toHaveLength(0)
 })
 
@@ -55,9 +55,11 @@ test('security · access token lives only in memory — never in web storage, In
 
 test('15 · a full browser reload discards the in-memory session and forces re-login', async ({ page }) => {
   await loginAsAdmin(page)
-  await page.reload()
+  // Production redirects /admin to the canonical trailing-slash URL before
+  // serving the SPA; navigate there directly so Vite exercises the same reload.
+  await page.goto('/admin/')
   await expect(page.getByLabel('Kullanıcı adı')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Genel bakış' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Genel Bakış' })).toHaveCount(0)
   const storage = await dumpWebStorage(page)
   expect(storage.local).toEqual({})
   expect(storage.session).toEqual({})
@@ -69,15 +71,15 @@ test('14 · logout clears authenticated state and protected routes cannot be reo
   await expect(page.getByLabel('Kullanıcı adı')).toBeVisible()
 
   // Attempting a protected route after logout redirects back to the login screen.
-  await page.goto('/users')
+  await page.goto('/admin/users')
   await expect(page.getByLabel('Kullanıcı adı')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Kullanıcılar & yetkiler' })).toHaveCount(0)
 })
 
 test('guard · an unauthenticated protected route redirects to login', async ({ page }) => {
-  await page.goto('/audit')
+  await page.goto('/admin/audit')
   await expect(page.getByLabel('Kullanıcı adı')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Audit geçmişi' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Teknik Denetim Geçmişi' })).toHaveCount(0)
 })
 
 test('401 · a server rejection clears the session and returns the operator to login', async ({ page }) => {
@@ -91,7 +93,7 @@ test('401 · a server rejection clears the session and returns the operator to l
     }))
   // In-app navigation (no reload) to a screen whose query is not yet cached, forcing a fresh
   // authenticated request that the server rejects with 401 — the client must then clear the session.
-  await page.getByRole('link', { name: 'Audit Geçmişi' }).click()
+  await page.getByRole('link', { name: 'Denetim Geçmişi' }).click()
   await expect(page.getByLabel('Kullanıcı adı')).toBeVisible()
   const storage = await dumpWebStorage(page)
   expect(storage.local).toEqual({})

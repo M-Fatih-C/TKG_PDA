@@ -6,7 +6,7 @@ using TkgPda.Domain;
 
 namespace TkgPda.Infrastructure.Postgres;
 
-public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiDataStore, IOperatorTransportQueueStore
+public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysicalAvailabilityPolicy? physicalPolicy = null) : IApiDataStore, IOperatorTransportQueueStore
 {
     private const string AuthUserSelect =
         """
@@ -72,12 +72,46 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
         CancellationToken cancellationToken = default)
     {
         await using var command = dataSource.CreateCommand(
-            "SELECT id, device_code, name, device_type, is_active FROM audit.client_devices WHERE device_code = @device_code");
+            "SELECT id, device_code, name, device_type, is_active, machine_id FROM audit.client_devices WHERE device_code = @device_code");
         command.Parameters.AddWithValue("device_code", deviceCode);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken)
-            ? new DeviceRecord(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetBoolean(4))
+            ? new DeviceRecord(
+                reader.GetGuid(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetBoolean(4),
+                reader.IsDBNull(5) ? null : reader.GetGuid(5))
             : null;
+    }
+
+    public async Task<MachineSummaryRecord?> FindMachineSummaryAsync(
+        Guid machineId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var command = dataSource.CreateCommand(
+            """
+            SELECT m.id,
+                   m.code,
+                   m.display_name,
+                   m.display_order
+            FROM master.machines m
+            WHERE m.id = @machine_id AND m.is_active
+            """);
+        command.Parameters.AddWithValue("machine_id", machineId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new MachineSummaryRecord(
+            reader.GetGuid(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetInt32(3),
+            new MachinePermissionRecord(machineId, CanView: true, CanOperate: true, CanChangeVariant: false, CanManageSlots: false));
     }
 
     public async Task MarkLoginSucceededAsync(Guid userId, CancellationToken cancellationToken = default)
@@ -174,6 +208,7 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
             LEFT JOIN auth.user_machine_permissions perm
               ON perm.machine_id = r.machine_id AND perm.user_id = @user_id
             WHERE r.readiness_state = 'WAITING_PREPARATION'
+              AND r.status IN ('CREATED','VALIDATING','QUEUED')
               AND (@administrator OR COALESCE(perm.can_operate, false))
             ORDER BY r.created_at, r.request_no
             """);
@@ -287,7 +322,19 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
             static _ => new List<MachineRelatedPartRecord>());
         await using (var command = dataSource.CreateCommand(
                          """
-                         SELECT main_part_id, part_id, part_code, description, relation_type
+                         SELECT main_part_id, part_id, part_code, description, relation_type,
+                                NOT EXISTS (
+                                    SELECT 1
+                                    FROM master.product_group_parts missing
+                                    JOIN master.product_groups pgm ON pgm.id = missing.product_group_id AND pgm.is_active
+                                    JOIN master.variants vm ON vm.id = pgm.variant_id AND vm.is_active
+                                    WHERE vm.machine_id = @machine_id
+                                      AND pgm.main_part_id = resolved.main_part_id
+                                      AND missing.part_id = resolved.part_id
+                                      AND missing.relation_type = 'ALT_PART'
+                                      AND missing.is_active
+                                      AND missing.container_type_id IS NULL
+                                ) AS requestable
                          FROM (
                              SELECT DISTINCT ON (pg.main_part_id, gpp.part_id)
                                     pg.main_part_id,
@@ -313,11 +360,14 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 var mainPartId = reader.GetGuid(0);
                 if (relatedByMainPart.TryGetValue(mainPartId, out var related))
                 {
+                    var requestable = reader.GetBoolean(5);
                     related.Add(new MachineRelatedPartRecord(
                         reader.GetGuid(1),
                         reader.GetString(2),
                         NullableString(reader, 3),
-                        reader.GetString(4)));
+                        reader.GetString(4),
+                        requestable,
+                        requestable ? [] : ["CONTAINER_TYPE_MISSING"]));
                 }
             }
         }
@@ -457,13 +507,14 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 LEFT JOIN ops.slot_runtime_state rs ON rs.layout_slot_id = s.id
                 LEFT JOIN master.parts p ON p.id = rs.current_part_id
                 LEFT JOIN master.container_types cct ON cct.id = rs.current_container_type_id
-                LEFT JOIN integration.layout_slot_rds_mapping rmap ON rmap.layout_slot_id = s.id
-                LEFT JOIN integration.rds_worksites rw ON rw.id = rmap.rds_worksite_id
+                LEFT JOIN integration.rds_worksites rw
+                    ON rw.id = integration.resolve_slot_worksite(s.id, @navigation_id)
                 WHERE s.layout_id = @layout_id
                 ORDER BY s.display_order, s.code
                 """,
                 connection);
             command.Parameters.AddWithValue("layout_id", activeLayoutId.Value);
+            AddNullableUuid(command, "navigation_id", activeNavigationId);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
@@ -484,6 +535,11 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                         NullableString(reader, 29),
                         NullableString(reader, 30),
                         NullableDateTimeOffset(reader, 31));
+                var policy = physicalPolicy ?? new RdsPhysicalAvailabilityPolicy();
+                var evidence = new RdsPhysicalEvidence(rdsWorkSite.Type, rdsWorkSite.Filled, rdsWorkSite.Locked,
+                    rdsWorkSite.Disabled, rdsWorkSite.SyncFailed, rdsWorkSite.LastSyncAt);
+                rdsWorkSite = rdsWorkSite with { PhysicalState = policy.State(evidence),
+                    ConsistencyResult = policy.Consistency(reader.GetString(12), evidence) };
                 slots.Add(new SlotContextDataRecord(
                     reader.GetGuid(0),
                     reader.GetString(1),
@@ -620,6 +676,22 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
         var result = new List<ActiveTransportDataRecord>();
         await using var command = new NpgsqlCommand(
             """
+            -- WP-07: queue_position is TKG's deterministic ordering of this machine's
+            -- active requests (same status order as the global operator queue). It is
+            -- not an RDS queue position and says nothing about robot location.
+            WITH ranked AS (
+                SELECT q.id,
+                       (row_number() OVER (
+                           ORDER BY CASE q.status
+                                        WHEN 'RUNNING' THEN 0
+                                        WHEN 'SENT_TO_RDS' THEN 1
+                                        WHEN 'QUEUED' THEN 2
+                                        ELSE 3 END,
+                                    q.created_at, q.request_no))::integer AS queue_position
+                FROM ops.transport_requests q
+                WHERE q.machine_id = @machine_id
+                  AND q.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')
+            )
             SELECT r.id, r.request_no, tt.code, r.status,
                    r.requested_by, u.username,
                    r.source_slot_id, r.destination_slot_id,
@@ -628,10 +700,51 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                    r.correlation_id,
                    rt.id, rt.rds_task_record_id, rt.rds_task_label,
                    rt.out_order_no, rt.agv_id, rt.rds_status, rt.ended_reason,
-                   rt.sent_at, rt.started_at, rt.ended_at, rt.last_sync_at
+                   rt.sent_at, rt.started_at, rt.ended_at, rt.last_sync_at,
+                   p.part_code, p.description,
+                   CASE
+                       WHEN r.part_id IS NULL OR r.product_group_id IS NULL THEN NULL
+                       WHEN pg.main_part_id = r.part_id THEN 'MAIN_PART'
+                       ELSE pgp.relation_type
+                   END AS relation_type,
+                   r.readiness_state,
+                   ranked.queue_position,
+                   GREATEST(0, floor(extract(epoch FROM (clock_timestamp() - r.created_at))))::bigint AS age_seconds,
+                   CASE WHEN rt.started_at IS NULL THEN NULL
+                        ELSE GREATEST(0, floor(extract(epoch FROM (COALESCE(rt.ended_at, clock_timestamp()) - rt.started_at))))::bigint
+                   END AS execution_elapsed_seconds,
+                   CASE
+                       WHEN EXISTS (
+                           SELECT 1
+                           FROM ops.transport_request_dependencies d
+                           JOIN ops.transport_requests pred ON pred.id = d.predecessor_request_id
+                           WHERE d.successor_request_id = r.id
+                             AND pred.status <> 'COMPLETED') THEN 'WAITING_PREDECESSOR'
+                       WHEN r.readiness_state = 'WAITING_PREPARATION'
+                            AND EXISTS (
+                                SELECT 1 FROM ops.transport_request_dependencies d
+                                WHERE d.successor_request_id = r.id) THEN 'PREPARING_SUCCESSOR'
+                       WHEN r.readiness_state = 'WAITING_PREPARATION' THEN 'PREPARING'
+                       WHEN NOT r.machine_slot_reservation_active THEN 'WAITING_MACHINE_SLOT'
+                       WHEN NOT r.store_endpoint_reservation_active THEN 'WAITING_STORE_CAPACITY'
+                       WHEN EXISTS (
+                           SELECT 1
+                           FROM ops.transport_request_dependencies d
+                           WHERE d.predecessor_request_id = r.id) THEN 'REMOVING_EXISTING'
+                       ELSE NULL
+                   END AS chain_state,
+                   EXISTS (
+                       SELECT 1 FROM ops.production_end_run_items pe
+                       WHERE pe.transport_request_id = r.id) AS production_end,
+                   r.machine_slot_reservation_active
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
+            JOIN ranked ON ranked.id = r.id
             LEFT JOIN auth.users u ON u.id = r.requested_by
+            LEFT JOIN master.parts p ON p.id = r.part_id
+            LEFT JOIN master.product_groups pg ON pg.id = r.product_group_id
+            LEFT JOIN master.product_group_parts pgp
+                   ON pgp.product_group_id = r.product_group_id AND pgp.part_id = r.part_id
             LEFT JOIN integration.rds_tasks rt ON rt.transport_request_id = r.id
             WHERE r.machine_id = @machine_id
               AND r.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')
@@ -674,7 +787,17 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 NullableString(reader, 13),
                 NullableString(reader, 14),
                 reader.GetGuid(15),
-                rdsTask));
+                rdsTask,
+                NullableString(reader, 27),
+                NullableString(reader, 28),
+                NullableString(reader, 29),
+                reader.GetString(30),
+                reader.IsDBNull(31) ? null : reader.GetInt32(31),
+                reader.GetInt64(32),
+                reader.IsDBNull(33) ? null : reader.GetInt64(33),
+                NullableString(reader, 34),
+                reader.GetBoolean(35),
+                reader.GetBoolean(36)));
         }
 
         return result;
@@ -882,7 +1005,6 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
             var part = string.IsNullOrWhiteSpace(description)
                 ? partCode ?? "Parça bilgisi yok"
                 : $"{partCode} · {description}";
-            var canCancel = !query.Terminal && TransportStateMachine.CanCancelBeforeExecution(status);
 
             rows.Add(new OperatorQueueItemRecord(
                 queuePosition,
@@ -894,8 +1016,7 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource) : IApiData
                 state,
                 etaProjection.Seconds,
                 etaProjection.State,
-                requestId,
-                canCancel));
+                requestId));
         }
 
         var hasMore = rows.Count > query.Limit;

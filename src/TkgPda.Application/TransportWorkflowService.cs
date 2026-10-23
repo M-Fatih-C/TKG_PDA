@@ -6,25 +6,44 @@ public sealed class TransportWorkflowService(ITransportWorkflowStore store)
 {
     public Task<CreateTransportResult> CreateAsync(
         CreateTransportRequest request,
+        CancellationToken cancellationToken = default) =>
+        CreateAsync(request, null, cancellationToken);
+
+    public Task<CreateTransportResult> CreateAsync(
+        CreateTransportRequest request,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         request.ValidateShape();
-        return store.CreateAndQueueAsync(request, cancellationToken);
+        return store.CreateAndQueueAsync(request, eventContext, cancellationToken);
     }
 
     public Task<TransportBatchResult> CreateBatchAsync(
         CreateTransportBatchRequest request,
+        CancellationToken cancellationToken = default) =>
+        CreateBatchAsync(request, null, cancellationToken);
+
+    public Task<TransportBatchResult> CreateBatchAsync(
+        CreateTransportBatchRequest request,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         request.ValidateShape();
-        return store.CreateBatchAndQueueAsync(request, cancellationToken);
+        return store.CreateBatchAndQueueAsync(request, eventContext, cancellationToken);
     }
 
     public Task<CancelTransportResult> CancelAsync(
         Guid requestId,
         Guid? actorUserId,
+        CancellationToken cancellationToken = default) =>
+        CancelAsync(requestId, actorUserId, null, cancellationToken);
+
+    public Task<CancelTransportResult> CancelAsync(
+        Guid requestId,
+        Guid? actorUserId,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         if (requestId == Guid.Empty)
@@ -32,12 +51,19 @@ public sealed class TransportWorkflowService(ITransportWorkflowStore store)
             throw new WorkflowRuleException("REQUEST_ID_REQUIRED", "A transport request ID is required.");
         }
 
-        return store.CancelAsync(requestId, actorUserId, cancellationToken);
+        return store.CancelAsync(requestId, actorUserId, eventContext, cancellationToken);
     }
 
     public Task<TransportRequestSnapshot> MarkReadyAsync(
         Guid requestId,
         Guid? actorUserId,
+        CancellationToken cancellationToken = default) =>
+        MarkReadyAsync(requestId, actorUserId, null, cancellationToken);
+
+    public Task<TransportRequestSnapshot> MarkReadyAsync(
+        Guid requestId,
+        Guid? actorUserId,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         if (requestId == Guid.Empty)
@@ -45,12 +71,25 @@ public sealed class TransportWorkflowService(ITransportWorkflowStore store)
             throw new WorkflowRuleException("REQUEST_ID_REQUIRED", "A transport request ID is required.");
         }
 
-        return store.MarkReadyAsync(requestId, actorUserId, cancellationToken);
+        return store.MarkReadyAsync(requestId, actorUserId, eventContext, cancellationToken);
     }
+
+    public Task<int> ActivatePreparedPartDemandsAsync(
+        int limit,
+        OperationalEventContext? eventContext,
+        CancellationToken cancellationToken = default) =>
+        store.ActivatePreparedPartDemandsAsync(Math.Clamp(limit, 1, 100), eventContext, cancellationToken);
 
     public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(
         Guid requestId,
         TransportRequestStatus nextStatus,
+        CancellationToken cancellationToken = default) =>
+        RecordExecutionTransitionAsync(requestId, nextStatus, null, cancellationToken);
+
+    public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(
+        Guid requestId,
+        TransportRequestStatus nextStatus,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         if (requestId == Guid.Empty)
@@ -63,12 +102,19 @@ public sealed class TransportWorkflowService(ITransportWorkflowStore store)
             throw new WorkflowRuleException("UNSUPPORTED_EXECUTION_UPDATE", "Phase 03 only records dispatch, running and successful completion transitions.");
         }
 
-        return store.RecordExecutionTransitionAsync(requestId, nextStatus, cancellationToken);
+        return store.RecordExecutionTransitionAsync(requestId, nextStatus, eventContext, cancellationToken);
     }
 
     public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(
         Guid requestId,
         ExecutionOutcome outcome,
+        CancellationToken cancellationToken = default) =>
+        RecordExecutionOutcomeAsync(requestId, outcome, null, cancellationToken);
+
+    public Task<TransportRequestSnapshot> RecordExecutionOutcomeAsync(
+        Guid requestId,
+        ExecutionOutcome outcome,
+        OperationalEventContext? eventContext,
         CancellationToken cancellationToken = default)
     {
         if (requestId == Guid.Empty)
@@ -82,7 +128,7 @@ public sealed class TransportWorkflowService(ITransportWorkflowStore store)
             throw new WorkflowRuleException("UNSUPPORTED_EXECUTION_OUTCOME", "Only executor-confirmed failure and cancellation outcomes are supported.");
         }
 
-        return store.RecordExecutionOutcomeAsync(requestId, outcome, cancellationToken);
+        return store.RecordExecutionOutcomeAsync(requestId, outcome, eventContext, cancellationToken);
     }
 
     public Task<LoadStateUpdateResult> UpdateLoadStateAsync(

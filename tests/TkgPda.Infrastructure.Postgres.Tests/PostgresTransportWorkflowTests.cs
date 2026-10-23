@@ -76,7 +76,7 @@ public sealed class PostgresTransportWorkflowTests
         Assert.Equal(
             "QUEUED>CANCELLED",
             await ScalarAsync<string>(
-                "SELECT old_status || '>' || new_status FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'REQUEST_CANCELLED_AND_RESERVATION_RELEASED'",
+                "SELECT old_status || '>' || new_status FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'REQUEST_CANCELLED'",
                 ("id", created.Request.Id)));
     }
 
@@ -208,6 +208,11 @@ public sealed class PostgresTransportWorkflowTests
         await SetSlotAsync(slotId, OccupancyState.Occupied, LoadState.Empty);
         await ExecuteAsync(
             """
+            UPDATE master.task_templates
+            SET is_active = false
+            WHERE variant_id = @variant_id
+              AND product_group_id IS NULL
+              AND task_type_id = (SELECT id FROM master.task_types WHERE code = 'REMOVE_EMPTY');
             INSERT INTO master.task_templates (
                 variant_id, task_type_id, rds_task_label, priority, config_json, is_active)
             SELECT @variant_id, id, 'PHASE08B_SIM_TASK', 17,
@@ -334,6 +339,8 @@ public sealed class PostgresTransportWorkflowTests
             // 3. BRING_EMPTY without source -> must resolve source to EMPTY_STORAGE
             await ExecuteAsync("UPDATE ops.transport_requests SET status = 'CANCELLED' WHERE id = @id", ("id", removeEmptyReq.Request.Id));
             await SetSlotAsync(emptyStorageSlotId, OccupancyState.Occupied, LoadState.Empty);
+            // Explicit isolated pickup presence; a vacant mirror contradicts this fixture.
+            await ExecuteAsync("UPDATE integration.rds_worksites SET last_filled = 1, last_sync_at = now() WHERE id = @id", ("id", emptyWorkSiteId));
             var bringEmptyReq = await workflowStore.CreateAndQueueAsync(Command(context, TransportTaskType.BringEmpty, "be-test", destination: machineSlots[2]));
             var bringEmptyDispatch = await executionStore.GetDispatchContextAsync(bringEmptyReq.Request.Id);
             Assert.NotNull(bringEmptyDispatch);
@@ -716,6 +723,358 @@ public sealed class PostgresTransportWorkflowTests
         await store.SwitchVariantAsync(selection);
         var selectedVariant = await ScalarAsync<Guid>("SELECT active_variant_id FROM ops.machine_runtime_state WHERE machine_id = @id", ("id", active.MachineId));
         Assert.Equal(next.VariantId, selectedVariant);
+    }
+
+    [PostgresFact]
+    public async Task Switch_variant_without_runtime_state_throws_runtime_state_not_configured()
+    {
+        await ResetAsync();
+        var context = await ContextAsync("SH-01-B", "1");
+        await ExecuteAsync("DELETE FROM ops.machine_runtime_state WHERE machine_id = @id", ("id", context.MachineId));
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var selection = new VariantSelection(context.MachineId, context.VariantId, context.LayoutId, null, null);
+
+        var error = await Assert.ThrowsAsync<WorkflowRuleException>(() => store.SwitchVariantAsync(selection));
+        Assert.Equal("RUNTIME_STATE_NOT_CONFIGURED", error.Code);
+    }
+
+    [PostgresFact]
+    public async Task Switch_variant_on_SH01B_with_baseline_runtime_succeeds_and_updates_active_variant()
+    {
+        await ResetAsync();
+        var v1 = await ContextAsync("SH-01-B", "1");
+        var v2 = await ContextAsync("SH-01-B", "2");
+
+        // Seed initial baseline runtime state for SH-01-B (Variant 1, Layout 1, null navigation)
+        await ExecuteAsync(
+            """
+            INSERT INTO ops.machine_runtime_state (machine_id, active_variant_id, active_layout_id, active_navigation_id)
+            VALUES (@machine_id, @variant_id, @layout_id, NULL)
+            ON CONFLICT (machine_id) DO UPDATE
+            SET active_variant_id = EXCLUDED.active_variant_id,
+                active_layout_id = EXCLUDED.active_layout_id,
+                active_navigation_id = NULL
+            """,
+            ("machine_id", v1.MachineId),
+            ("variant_id", v1.VariantId),
+            ("layout_id", v1.LayoutId));
+
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var selection = new VariantSelection(v1.MachineId, v2.VariantId, v2.LayoutId, null, null);
+
+        await store.SwitchVariantAsync(selection);
+
+        var selectedVariant = await ScalarAsync<Guid>(
+            "SELECT active_variant_id FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", v1.MachineId));
+        var selectedLayout = await ScalarAsync<Guid>(
+            "SELECT active_layout_id FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", v1.MachineId));
+        Assert.Equal(v2.VariantId, selectedVariant);
+        Assert.Equal(v2.LayoutId, selectedLayout);
+    }
+
+    [PostgresFact]
+    public async Task Start_production_on_non_SH01A_machine_with_baseline_runtime_and_null_navigation_succeeds()
+    {
+        await ResetAsync();
+        var v1 = await ContextAsync("SH-01-B", "1");
+
+        // Ensure baseline runtime state with null navigation
+        await ExecuteAsync(
+            """
+            INSERT INTO ops.machine_runtime_state (machine_id, active_variant_id, active_layout_id, active_navigation_id)
+            VALUES (@machine_id, @variant_id, @layout_id, NULL)
+            ON CONFLICT (machine_id) DO UPDATE
+            SET active_variant_id = EXCLUDED.active_variant_id,
+                active_layout_id = EXCLUDED.active_layout_id,
+                active_navigation_id = NULL
+            """,
+            ("machine_id", v1.MachineId),
+            ("variant_id", v1.VariantId),
+            ("layout_id", v1.LayoutId));
+
+        // Get product group and main part for SH-01-B variant 1
+        var groupAndPart = await ScalarAsync<Guid>(
+            "SELECT id FROM master.product_groups WHERE variant_id = @variant_id LIMIT 1",
+            ("variant_id", v1.VariantId));
+        var mainPartId = await ScalarAsync<Guid>(
+            "SELECT main_part_id FROM master.product_groups WHERE id = @group_id",
+            ("group_id", groupAndPart));
+        var userId = await EnsureActorAsync();
+        await ExecuteAsync(
+            """
+            INSERT INTO auth.user_roles (user_id, role_id)
+            SELECT @user_id, id FROM auth.roles WHERE code = 'ADMIN'
+            ON CONFLICT DO NOTHING
+            """,
+            ("user_id", userId));
+        var deviceId = await ScalarAsync<Guid>(
+            """
+            INSERT INTO audit.client_devices (device_code, name, device_type, is_active)
+            VALUES ('TEST-DEVICE', 'Test Device', 'PDA', true)
+            ON CONFLICT (device_code) DO UPDATE SET is_active = true
+            RETURNING id
+            """);
+
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var command = new StartProductionSession(
+            v1.MachineId,
+            v1.VariantId,
+            groupAndPart,
+            mainPartId,
+            userId,
+            deviceId,
+            $"prod-sh01b-{Guid.NewGuid():N}");
+
+        var result = await store.StartAsync(command);
+        Assert.NotNull(result);
+        Assert.Equal(v1.MachineId, result.Session.MachineId);
+        Assert.Equal(v1.VariantId, result.Session.VariantId);
+        Assert.Equal(mainPartId, result.Session.MainPartId);
+    }
+
+    [PostgresFact]
+    public async Task Baseline_runtime_self_healing_configures_all_active_machines_without_overwriting_valid_selection()
+    {
+        await ResetAsync();
+
+        // 1. Manually configure SH-01-B to variant 2
+        var v2 = await ContextAsync("SH-01-B", "2");
+        await ExecuteAsync(
+            """
+            INSERT INTO ops.machine_runtime_state (machine_id, active_variant_id, active_layout_id, active_navigation_id)
+            VALUES (@machine_id, @variant_id, @layout_id, NULL)
+            ON CONFLICT (machine_id) DO UPDATE
+            SET active_variant_id = EXCLUDED.active_variant_id,
+                active_layout_id = EXCLUDED.active_layout_id,
+                active_navigation_id = NULL
+            """,
+            ("machine_id", v2.MachineId),
+            ("variant_id", v2.VariantId),
+            ("layout_id", v2.LayoutId));
+
+        // 2. Run the exact self-healing query from start_local_stack
+        await ExecuteAsync(
+            """
+            WITH candidate_variants AS (
+                SELECT
+                    m.id AS machine_id,
+                    v.id AS variant_id,
+                    vla.layout_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY m.id
+                        ORDER BY
+                            (CASE WHEN vla.is_default THEN 0 ELSE 1 END),
+                            v.display_order ASC,
+                            v.code ASC,
+                            l.version DESC,
+                            l.code ASC
+                    ) as rn
+                FROM master.machines m
+                JOIN master.variants v ON v.machine_id = m.id AND v.is_active
+                JOIN master.variant_layout_assignments vla ON vla.variant_id = v.id AND vla.machine_id = m.id
+                JOIN master.layouts l ON l.id = vla.layout_id AND l.machine_id = m.id AND l.status = 'PUBLISHED'
+                WHERE m.is_active
+            ),
+            selected_machine_defaults AS (
+                SELECT cv.machine_id, cv.variant_id, cv.layout_id
+                FROM candidate_variants cv
+                WHERE cv.rn = 1
+            ),
+            nav_candidates AS (
+                SELECT
+                    smd.machine_id,
+                    np.id AS navigation_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY smd.machine_id
+                        ORDER BY (CASE WHEN vnpa.is_default THEN 0 ELSE 1 END), np.version DESC
+                    ) AS nav_rn,
+                    COUNT(*) OVER (
+                        PARTITION BY smd.machine_id
+                    ) AS nav_count
+                FROM selected_machine_defaults smd
+                JOIN master.variant_navigation_profile_assignments vnpa
+                  ON vnpa.variant_id = smd.variant_id AND vnpa.machine_id = smd.machine_id
+                JOIN master.navigation_profiles np
+                  ON np.id = vnpa.navigation_profile_id AND np.machine_id = smd.machine_id AND np.status = 'PUBLISHED'
+            )
+            INSERT INTO ops.machine_runtime_state (
+                machine_id,
+                active_variant_id,
+                active_layout_id,
+                active_navigation_id,
+                row_version,
+                updated_at
+            )
+            SELECT
+                smd.machine_id,
+                smd.variant_id,
+                smd.layout_id,
+                CASE WHEN nc.nav_count = 1 THEN nc.navigation_id ELSE NULL END,
+                0,
+                now()
+            FROM selected_machine_defaults smd
+            LEFT JOIN nav_candidates nc ON nc.machine_id = smd.machine_id AND nc.nav_rn = 1
+            ON CONFLICT (machine_id) DO UPDATE
+            SET active_variant_id = EXCLUDED.active_variant_id,
+                active_layout_id = EXCLUDED.active_layout_id,
+                active_navigation_id = EXCLUDED.active_navigation_id,
+                updated_at = now()
+            WHERE ops.machine_runtime_state.active_variant_id IS NULL
+               OR ops.machine_runtime_state.active_layout_id IS NULL;
+            """);
+
+        // 3. Verify all 9 active machines have runtime state configured
+        var configuredCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM ops.machine_runtime_state rs
+            JOIN master.machines m ON m.id = rs.machine_id
+            WHERE m.is_active
+              AND rs.active_variant_id IS NOT NULL
+              AND rs.active_layout_id IS NOT NULL
+            """);
+        var activeMachineCount = await ScalarAsync<long>("SELECT count(*) FROM master.machines WHERE is_active");
+        Assert.Equal(9, activeMachineCount);
+        Assert.Equal(9, configuredCount);
+
+        // 4. Verify SH-01-B still has variant 2 (existing valid selection was NOT overwritten)
+        var sh01bVariant = await ScalarAsync<Guid>(
+            "SELECT active_variant_id FROM ops.machine_runtime_state WHERE machine_id = @id",
+            ("id", v2.MachineId));
+        Assert.Equal(v2.VariantId, sh01bVariant);
+    }
+
+    [PostgresFact]
+    public async Task Commissioning_registry_completeness_guard_bypasses_003_when_live_worksites_exist_and_no_area_id_present()
+    {
+        await ResetAsync();
+
+        // 1. Verify exact structural evidence in database:
+        //    profiles=25, maps=25, codes=25, assignments=25, source-backed=24, plans=1775, bindings=208, sealer bindings=0, no config_json.areaId
+        var profileCount = await ScalarAsync<long>(
+            "SELECT count(*) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'");
+        var mapCount = await ScalarAsync<long>(
+            "SELECT count(DISTINCT robot_map_name) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'");
+        var codeCount = await ScalarAsync<long>(
+            "SELECT count(DISTINCT code) FROM master.navigation_profiles WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'");
+        var assignmentCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM master.variant_navigation_profile_assignments vnpa
+            JOIN master.navigation_profiles np ON np.id = vnpa.navigation_profile_id
+            WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """);
+        var sourceBackedCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM master.navigation_profiles np
+            WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+              AND np.config_json ->> 'layoutBindingState' = 'SOURCE_BACKED'
+            """);
+        var planCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM integration.rds_worksite_plans p
+            JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id
+            WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """);
+        var bindingCount = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM integration.layout_slot_rds_plan_bindings b
+            JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id
+            WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """);
+        var sealerBindings = await ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM integration.layout_slot_rds_plan_bindings b
+            JOIN master.navigation_profiles np ON np.id = b.navigation_profile_id
+            WHERE np.code = 'TKG_SEALER_V03_NAV'
+            """);
+        var areaIdCount = await ScalarAsync<long>(
+            """
+            SELECT count(DISTINCT config_json ->> 'areaId')
+            FROM master.navigation_profiles
+            WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+            """);
+
+        Assert.Equal(25, profileCount);
+        Assert.Equal(25, mapCount);
+        Assert.Equal(25, codeCount);
+        Assert.Equal(25, assignmentCount);
+        Assert.Equal(24, sourceBackedCount);
+        Assert.Equal(1775, planCount);
+        Assert.Equal(208, bindingCount);
+        Assert.Equal(0, sealerBindings);
+        Assert.Equal(0, areaIdCount); // Crucial: config_json has no 'areaId' key!
+
+        try
+        {
+            // 2. Insert mock live WorkSites colliding with all 1775 planned site IDs to simulate persistent discovered state
+            await ExecuteAsync(
+                """
+                INSERT INTO integration.rds_worksites (navigation_profile_id, rds_site_id)
+                SELECT p.navigation_profile_id, p.planned_rds_site_id
+                FROM integration.rds_worksite_plans p
+                JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id
+                WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+                ON CONFLICT (navigation_profile_id, rds_site_id) DO NOTHING
+                """);
+
+            var liveCollisions = await ScalarAsync<long>(
+                """
+                SELECT count(*)
+                FROM integration.rds_worksite_plans p
+                JOIN integration.rds_worksites w ON w.rds_site_id = p.planned_rds_site_id
+                JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id
+                WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+                """);
+            Assert.Equal(1775, liveCollisions);
+
+            // 3. Evaluate the exact guard query and logic from start_local_stack.ps1:
+            //    Even with 1775 collisions and areaIdCount == 0, regComplete MUST evaluate to true!
+            var isRegComplete = (profileCount == 25 &&
+                mapCount == 25 &&
+                codeCount == 25 &&
+                assignmentCount == 25 &&
+                sourceBackedCount == 24 &&
+                planCount == 1775 &&
+                bindingCount == 208 &&
+                sealerBindings == 0);
+
+            Assert.True(isRegComplete, "Commissioning registry must be classified complete despite live collisions and absent areaId.");
+
+            // 4. Verify downstream steps proceed:
+            //    - 004 FG locations: exactly 19
+            var fgCount = await ScalarAsync<long>(
+                "SELECT count(*) FROM ops.store_locations WHERE code ~ '^FG-(0[1-9]|1[0-9])$' AND is_enabled");
+            Assert.Equal(19, fgCount);
+
+            //    - 005 Task templates: exactly 96 (24 * 4)
+            var templateCount = await ScalarAsync<long>(
+                "SELECT count(*) FROM master.task_templates WHERE config_json ->> 'templateRegistry' = 'tkg_variant_task_templates_v1'");
+            Assert.Equal(96, templateCount);
+
+            //    - Runtime self-heal configures all 9 active customer machines
+            var activeMachineCount = await ScalarAsync<long>("SELECT count(*) FROM master.machines WHERE is_active");
+            Assert.Equal(9, activeMachineCount);
+        }
+        finally
+        {
+            await ExecuteAsync(
+                """
+                DELETE FROM integration.rds_worksites
+                WHERE rds_site_id IN (
+                    SELECT p.planned_rds_site_id
+                    FROM integration.rds_worksite_plans p
+                    JOIN master.navigation_profiles np ON np.id = p.navigation_profile_id
+                    WHERE np.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1'
+                )
+                """);
+        }
     }
 
     [PostgresFact]

@@ -14,14 +14,38 @@ public static class RoleCodes
     public const string Supervisor = KnownRoleCodes.Supervisor;
     public const string LineOperator = KnownRoleCodes.LineOperator;
     public const string WarehouseOperator = KnownRoleCodes.WarehouseOperator;
+    public const string SemiFinishedWarehouseOperator = KnownRoleCodes.SemiFinishedWarehouseOperator;
+    public const string FinishedGoodsWarehouseOperator = KnownRoleCodes.FinishedGoodsWarehouseOperator;
 
-    public static readonly string[] OperatorRoles = [Admin, Supervisor, LineOperator, WarehouseOperator];
+    public static readonly string[] OperatorRoles =
+    [
+        Admin,
+        Supervisor,
+        LineOperator,
+        WarehouseOperator,
+        SemiFinishedWarehouseOperator,
+        FinishedGoodsWarehouseOperator
+    ];
     public static readonly string[] VariantManagerRoles = [Admin, Supervisor];
 
-    // WP-05A: marking a request READY is a warehouse preparation action, not
-    // an ordinary line-operator transport action. LineOperator is deliberately
-    // excluded here.
-    public static readonly string[] WarehousePreparationRoles = [Admin, Supervisor, WarehouseOperator];
+    public static readonly string[] SemiFinishedWarehouseRoles =
+    [
+        Admin,
+        Supervisor,
+        SemiFinishedWarehouseOperator,
+        WarehouseOperator
+    ];
+
+    public static readonly string[] FinishedGoodsWarehouseRoles =
+    [
+        Admin,
+        Supervisor,
+        FinishedGoodsWarehouseOperator,
+        WarehouseOperator
+    ];
+
+    // Kept for backward compatibility
+    public static readonly string[] WarehousePreparationRoles = SemiFinishedWarehouseRoles;
 }
 
 public static class PolicyNames
@@ -30,6 +54,8 @@ public static class PolicyNames
     public const string VariantManager = "variant-manager";
     public const string Administrator = "administrator";
     public const string WarehousePreparation = "warehouse-preparation";
+    public const string SemiFinishedWarehouse = "semi-finished-warehouse";
+    public const string FinishedGoodsWarehouse = "finished-goods-warehouse";
     public const string ProductionOperator = "production-operator";
 }
 
@@ -39,12 +65,36 @@ public static class ApiClaimNames
     public const string DeviceCode = "device_code";
     public const string FullName = "full_name";
     public const string ClientType = "client_type";
+    public const string SessionId = "session_id";
 }
 
 public static class ClientTypes
 {
     public const string DeviceBound = "DEVICE_BOUND";
     public const string AdminWeb = "ADMIN_WEB";
+}
+
+public sealed record FieldSessionOptions(
+    int LeaseSeconds = 120,
+    int HeartbeatSeconds = 30)
+{
+    public void Validate()
+    {
+        if (LeaseSeconds is < 60 or > 86400)
+        {
+            throw new InvalidOperationException("FieldSession:LeaseSeconds must be between 60 and 86400 seconds.");
+        }
+
+        if (HeartbeatSeconds is < 10 or > 3600)
+        {
+            throw new InvalidOperationException("FieldSession:HeartbeatSeconds must be between 10 and 3600 seconds.");
+        }
+
+        if (HeartbeatSeconds >= LeaseSeconds)
+        {
+            throw new InvalidOperationException("FieldSession:HeartbeatSeconds must be strictly less than LeaseSeconds.");
+        }
+    }
 }
 
 public sealed record JwtOptions(
@@ -82,13 +132,13 @@ public sealed record AccessTokenResult(string Token, DateTimeOffset ExpiresAt);
 
 public sealed class JwtTokenService(JwtOptions options, TimeProvider timeProvider)
 {
-    public AccessTokenResult Issue(AuthUserRecord user, DeviceRecord device) =>
-        Issue(user, ClientTypes.DeviceBound, device);
+    public AccessTokenResult Issue(AuthUserRecord user, DeviceRecord device, Guid sessionId) =>
+        Issue(user, ClientTypes.DeviceBound, device, sessionId);
 
     public AccessTokenResult IssueAdmin(AuthUserRecord user) =>
-        Issue(user, ClientTypes.AdminWeb, device: null);
+        Issue(user, ClientTypes.AdminWeb, device: null, sessionId: null);
 
-    private AccessTokenResult Issue(AuthUserRecord user, string clientType, DeviceRecord? device)
+    private AccessTokenResult Issue(AuthUserRecord user, string clientType, DeviceRecord? device, Guid? sessionId)
     {
         var issuedAt = timeProvider.GetUtcNow();
         var expiresAt = issuedAt.AddMinutes(options.ExpiryMinutes);
@@ -104,6 +154,11 @@ public sealed class JwtTokenService(JwtOptions options, TimeProvider timeProvide
         {
             claims.Add(new Claim(ApiClaimNames.DeviceId, device.Id.ToString()));
             claims.Add(new Claim(ApiClaimNames.DeviceCode, device.Code));
+        }
+
+        if (sessionId.HasValue)
+        {
+            claims.Add(new Claim(ApiClaimNames.SessionId, sessionId.Value.ToString()));
         }
 
         claims.AddRange(user.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
@@ -240,30 +295,194 @@ public static class PrincipalExtensions
 
 public sealed class MachineAccessService(IApiDataStore dataStore)
 {
-    public async Task<MachinePermissionRecord> EnsureAsync(
-        ClaimsPrincipal principal,
+    public Task<MachinePermissionRecord> EnsureAsync(
+        HttpContext context,
         Guid machineId,
         MachineAccessKind access,
         CancellationToken cancellationToken)
     {
-        if (principal.IsAdministrator())
+        var device = context.Items.TryGetValue(ApiContextKeys.Device, out var value) && value is DeviceRecord d ? d : null;
+        return EnsureAsync(context.User, device, machineId, access, cancellationToken);
+    }
+
+    public Task<MachinePermissionRecord> EnsureAsync(
+        ClaimsPrincipal principal,
+        Guid machineId,
+        MachineAccessKind access,
+        CancellationToken cancellationToken) =>
+        EnsureAsync(principal, null, machineId, access, cancellationToken);
+
+    public async Task<MachinePermissionRecord> EnsureAsync(
+        ClaimsPrincipal principal,
+        DeviceRecord? device,
+        Guid machineId,
+        MachineAccessKind access,
+        CancellationToken cancellationToken)
+    {
+        // 1. Role Safety (WP-03 Section 18):
+        // Machine View/Operate business roles are strictly ADMIN, SUPERVISOR, LINE_OPERATOR.
+        // Warehouse operators cannot access machine operations even if the device is bound.
+        var isAdmin = principal.IsAdministrator();
+        var isSupervisor = principal.IsInRole(RoleCodes.Supervisor);
+        var isLineOperator = principal.IsInRole(RoleCodes.LineOperator);
+
+        if (!isAdmin && !isSupervisor && !isLineOperator)
+        {
+            throw new ApiException(
+                StatusCodes.Status403Forbidden,
+                "ROLE_NOT_AUTHORIZED",
+                "Kullanıcı bu makine işlemi için yetkili bir role sahip değil.");
+        }
+
+        // 2. Admin Web (device-independent):
+        if (principal.IsAdminWeb())
+        {
+            if (!isAdmin)
+            {
+                throw new ApiException(
+                    StatusCodes.Status403Forbidden,
+                    "ADMIN_WEB_ROLE_REQUIRED",
+                    "Admin Web tokens require the ADMIN role.");
+            }
+
+            return new MachinePermissionRecord(machineId, true, true, true, true);
+        }
+
+        // 3. Device-bound context:
+        if (principal.IsDeviceBound())
+        {
+            if (device is null)
+            {
+                throw new ApiException(
+                    StatusCodes.Status401Unauthorized,
+                    "DEVICE_CONTEXT_REQUIRED",
+                    "An authenticated request must include its token-bound device code.");
+            }
+
+            // A: LINE_OPERATOR (normal field operator)
+            if (isLineOperator && !isAdmin && !isSupervisor)
+            {
+                if (device.MachineId is null)
+                {
+                    // Section 16 & 30D: Unbound line terminal fails closed
+                    throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "DEVICE_MACHINE_BINDING_REQUIRED",
+                        "Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.");
+                }
+
+                if (device.MachineId.Value != machineId)
+                {
+                    // Section 15 & 30B: Cross-machine scope mismatch
+                    throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "DEVICE_MACHINE_SCOPE_MISMATCH",
+                        "Bu cihaz başka bir makineye atanmıştır.");
+                }
+
+                // Section 7 & 17:
+                // Normal field LINE_OPERATOR machine View/Operate scope is determined by Device Machine Binding.
+                // If a legacy user_machine_permissions row exists, respect its explicit restrictions.
+                // If no row exists, grant View and Operate for the bound machine.
+                var legacyPermission = await dataStore.FindMachinePermissionAsync(principal.UserId(), machineId, cancellationToken);
+                if (legacyPermission is not null)
+                {
+                    var allowed = access switch
+                    {
+                        MachineAccessKind.View => legacyPermission.CanView,
+                        MachineAccessKind.Operate => legacyPermission.CanOperate,
+                        MachineAccessKind.ChangeVariant => legacyPermission.CanChangeVariant,
+                        MachineAccessKind.ManageSlots => legacyPermission.CanManageSlots,
+                        _ => false
+                    };
+
+                    return allowed
+                        ? legacyPermission
+                        : throw new ApiException(
+                            StatusCodes.Status403Forbidden,
+                            "MACHINE_ACCESS_DENIED",
+                            "The user does not have the required permission for this machine.");
+                }
+
+                return access switch
+                {
+                    MachineAccessKind.View => new MachinePermissionRecord(machineId, true, true, false, false),
+                    MachineAccessKind.Operate => new MachinePermissionRecord(machineId, true, true, false, false),
+                    _ => throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "MACHINE_ACCESS_DENIED",
+                        "The user does not have the required permission for this machine.")
+                };
+            }
+
+            // B: SUPERVISOR
+            if (isSupervisor)
+            {
+                // Section 25: Device-bound saha uygulamasında ADMIN/SUPERVISOR kullanılıyorsa
+                // machine-specific operation server-side device scope dışına çıkmamalıdır.
+                if (device.MachineId.HasValue && device.MachineId.Value != machineId)
+                {
+                    throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "DEVICE_MACHINE_SCOPE_MISMATCH",
+                        "Bu cihaz başka bir makineye atanmıştır.");
+                }
+
+                var permission = await dataStore.FindMachinePermissionAsync(principal.UserId(), machineId, cancellationToken);
+                var allowed = permission is not null && access switch
+                {
+                    MachineAccessKind.View => permission.CanView,
+                    MachineAccessKind.Operate => permission.CanOperate,
+                    MachineAccessKind.ChangeVariant => permission.CanChangeVariant,
+                    MachineAccessKind.ManageSlots => permission.CanManageSlots,
+                    _ => false
+                };
+
+                return allowed
+                    ? permission!
+                    : throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "MACHINE_ACCESS_DENIED",
+                        "The user does not have the required permission for this machine.");
+            }
+
+            // C: ADMIN on device
+            if (isAdmin)
+            {
+                if (device.MachineId.HasValue && device.MachineId.Value != machineId)
+                {
+                    throw new ApiException(
+                        StatusCodes.Status403Forbidden,
+                        "DEVICE_MACHINE_SCOPE_MISMATCH",
+                        "Bu cihaz başka bir makineye atanmıştır.");
+                }
+
+                return new MachinePermissionRecord(machineId, true, true, true, true);
+            }
+        }
+
+        // Fallback for non-device-bound:
+        if (isAdmin)
         {
             return new MachinePermissionRecord(machineId, true, true, true, true);
         }
 
-        var permission = await dataStore.FindMachinePermissionAsync(principal.UserId(), machineId, cancellationToken);
-        var allowed = permission is not null && access switch
+        var fallbackPermission = await dataStore.FindMachinePermissionAsync(principal.UserId(), machineId, cancellationToken);
+        var fallbackAllowed = fallbackPermission is not null && access switch
         {
-            MachineAccessKind.View => permission.CanView,
-            MachineAccessKind.Operate => permission.CanOperate,
-            MachineAccessKind.ChangeVariant => permission.CanChangeVariant,
-            MachineAccessKind.ManageSlots => permission.CanManageSlots,
+            MachineAccessKind.View => fallbackPermission.CanView,
+            MachineAccessKind.Operate => fallbackPermission.CanOperate,
+            MachineAccessKind.ChangeVariant => fallbackPermission.CanChangeVariant,
+            MachineAccessKind.ManageSlots => fallbackPermission.CanManageSlots,
             _ => false
         };
 
-        return allowed
-            ? permission!
-            : throw new ApiException(StatusCodes.Status403Forbidden, "MACHINE_ACCESS_DENIED", "The user does not have the required permission for this machine.");
+        return fallbackAllowed
+            ? fallbackPermission!
+            : throw new ApiException(
+                StatusCodes.Status403Forbidden,
+                "MACHINE_ACCESS_DENIED",
+                "The user does not have the required permission for this machine.");
     }
 }
 
@@ -316,16 +535,72 @@ public sealed class DeviceContextMiddleware(RequestDelegate next)
     }
 }
 
+public sealed class FieldSessionValidationMiddleware(RequestDelegate next)
+{
+    public async Task InvokeAsync(
+        HttpContext context,
+        IFieldSessionStore sessionStore,
+        TimeProvider timeProvider)
+    {
+        if (context.User.Identity?.IsAuthenticated != true)
+        {
+            await next(context);
+            return;
+        }
+
+        if (context.User.IsAdminWeb())
+        {
+            await next(context);
+            return;
+        }
+
+        if (!context.User.IsDeviceBound())
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "INVALID_CLIENT_CONTEXT", "The access token has no supported client context.");
+        }
+
+        var sessionIdStr = context.User.FindFirstValue(ApiClaimNames.SessionId);
+        if (string.IsNullOrWhiteSpace(sessionIdStr) || !Guid.TryParse(sessionIdStr, out var sessionId))
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_NOT_ACTIVE", "The access token has no valid session identifier.");
+        }
+
+        var device = context.Items.TryGetValue(ApiContextKeys.Device, out var devVal) && devVal is DeviceRecord d ? d : null;
+        if (device is null)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "DEVICE_CONTEXT_REQUIRED", "An authenticated request must include its token-bound device code.");
+        }
+
+        var userId = context.User.UserId();
+        var session = await sessionStore.FindActiveSessionAsync(sessionId, context.RequestAborted);
+        if (session is null || session.RevokedAt.HasValue || session.UserId != userId || session.DeviceId != device.Id)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_NOT_ACTIVE", "Oturum aktif değil veya sonlandırılmış.");
+        }
+
+        var now = timeProvider.GetUtcNow();
+        if (session.TokenExpiresAt <= now || session.LeaseExpiresAt <= now)
+        {
+            throw new ApiException(StatusCodes.Status401Unauthorized, "SESSION_EXPIRED", "Oturum süresi doldu.");
+        }
+
+        context.Items[ApiContextKeys.Session] = session;
+        await next(context);
+    }
+}
+
 public static class ApiHeaders
 {
     public const string DeviceCode = "X-Device-Code";
     public const string CorrelationId = "X-Correlation-ID";
     public const string IdempotencyKey = "Idempotency-Key";
+    public const string NotificationCredential = "X-TKG-Notification-Credential";
     public const string IdempotencyReplayed = "Idempotency-Replayed";
 }
 
 public static class ApiContextKeys
 {
     public const string Device = "tkg.device";
+    public const string Session = "tkg.session";
     public const string CorrelationId = "tkg.correlation-id";
 }

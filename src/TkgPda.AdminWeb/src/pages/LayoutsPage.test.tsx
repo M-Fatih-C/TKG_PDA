@@ -60,7 +60,7 @@ describe('LayoutsPage lifecycle and pre-publish validation gate', () => {
       if (/\/layouts\/[^/]+\/slots$/.test(url)) return Promise.resolve(jsonResponse(slots))
       // Both slots have parts assigned
       if (url.includes('/parts')) {
-        return Promise.resolve(jsonResponse([{ id: 'p-1', partCode: '71550BN000', description: 'Parça' }]))
+        return Promise.resolve(jsonResponse([{ partId: 'p-1', partCode: '71550BN000', description: 'Parça' }]))
       }
       // Both slots have RDS WorkSite mapped
       if (url.includes('/rds/slot-mappings')) {
@@ -98,5 +98,41 @@ describe('LayoutsPage lifecycle and pre-publish validation gate', () => {
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(true)
     })
+  })
+
+  it('treats OTHER slot role as operational logistics location and validates its routing', async () => {
+    // A layout whose operational slot is role OTHER (e.g. customer operational logistics buffer/station)
+    const otherSlots = [
+      { ...slots[0], role: 'OTHER' as const, code: 'SLOT-LOGISTICS-OTHER' },
+    ]
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/layouts')) return Promise.resolve(jsonResponse(layouts))
+      if (url.endsWith('/machines')) return Promise.resolve(jsonResponse(machines))
+      if (/\/layouts\/[^/]+\/slots$/.test(url)) return Promise.resolve(jsonResponse(otherSlots))
+      // Empty parts -> OTHER slot missing routing
+      if (url.includes('/parts')) return Promise.resolve(jsonResponse([]))
+      if (url.includes('/rds/slot-mappings')) return Promise.resolve(jsonResponse([]))
+      return Promise.resolve(jsonResponse([]))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderAuthenticated(
+      <Routes>
+        <Route path="/layouts" element={<LayoutsPage />} />
+      </Routes>,
+      '/layouts',
+    )
+
+    const publishButton = await screen.findByRole('button', { name: /Yayınla/ })
+    await userEvent.click(publishButton)
+
+    const dialog = await screen.findByRole('dialog', { name: /Layout sürümünü yayınla/ })
+    expect(dialog).toBeVisible()
+
+    // Should recognize the OTHER slot as operational, and fail because it has no parts assigned
+    expect(await within(dialog).findByText(/Parça eşlemesi olmayan 1 operasyonel slot var/)).toBeVisible()
+    expect(within(dialog).getByText(/SLOT-LOGISTICS-OTHER/)).toBeVisible()
+    expect(within(dialog).getByRole('button', { name: 'Yayınla' })).toBeDisabled()
   })
 })

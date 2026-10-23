@@ -24,6 +24,15 @@ import type {
   RdsWorkSite,
   RdsTaskTemplate,
   RdsTaskTemplateValidation,
+  ProductionEndPriority,
+  ProductionEndAreaPriority,
+  TransportEvidence,
+  TaskReportPage,
+  VariantOperationReadiness,
+  TaskReportDetail,
+  SessionReportPage,
+  OperationsSummary,
+  ReportWindow,
   Slot,
   SlotDraft,
   SlotPartRecord,
@@ -186,11 +195,17 @@ export const createAdminApi = (token: string) => ({
     (await request<ContainerType>(`/api/v1/admin/containers/${container.id}`, { method: 'PUT', token, ifMatch: container.concurrencyToken, body: draft })).data,
 
   dataIssues: async (signal?: AbortSignal) => (await request<DataIssue[]>('/api/v1/admin/data-issues', { token, signal })).data,
-  audit: async (filters?: { limit?: number; actorUserId?: string; entityType?: string }, signal?: AbortSignal) => {
+  audit: async (filters?: { limit?: number; actorUserId?: string; entityType?: string; from?: string; to?: string; action?: string; correlationId?: string; entityId?: string; actor?: string }, signal?: AbortSignal) => {
     const search = new URLSearchParams()
     if (filters?.limit) search.set('limit', String(filters.limit))
     if (filters?.actorUserId) search.set('actorUserId', filters.actorUserId)
     if (filters?.entityType) search.set('entityType', filters.entityType)
+    if (filters?.from) search.set('from', filters.from)
+    if (filters?.to) search.set('to', filters.to)
+    if (filters?.action) search.set('action', filters.action)
+    if (filters?.correlationId) search.set('correlationId', filters.correlationId)
+    if (filters?.entityId) search.set('entityId', filters.entityId)
+    if (filters?.actor) search.set('actor', filters.actor)
     return (await request<AuditRecord[]>(`/api/v1/admin/audit-logs?${search}`, { token, signal })).data
   },
 
@@ -215,6 +230,52 @@ export const createAdminApi = (token: string) => ({
     (await request<RdsTaskTemplate[]>('/api/v1/admin/rds/task-templates', { token, signal })).data,
   validateRdsTaskTemplate: async (taskTemplateId: string) =>
     (await request<RdsTaskTemplateValidation>('/api/v1/admin/rds/task-templates/validate', { method: 'POST', token, body: { taskTemplateId } })).data,
+  productionEndPriorities: async (signal?: AbortSignal) =>
+    (await request<ProductionEndPriority[]>('/api/v1/admin/production-end-priorities', { token, signal })).data,
+  setProductionEndPriority: async (operationCode: string, priority: number | null) =>
+    (await request<ProductionEndPriority[]>('/api/v1/admin/production-end-priorities', { method: 'PUT', token, body: { operationCode, priority } })).data,
+  productionEndAreaPriorities: async (signal?: AbortSignal) =>
+    (await request<ProductionEndAreaPriority[]>('/api/v1/admin/production-end-area-priorities', { token, signal })).data,
+  setProductionEndAreaPriority: async (productGroupId: string, layoutSlotId: string, partId: string, priority: number | null) =>
+    (await request<ProductionEndAreaPriority[]>('/api/v1/admin/production-end-area-priorities', {
+      method: 'PUT',
+      token,
+      body: { productGroupId, layoutSlotId, partId, priority },
+    })).data,
+  transportEvidence: async (requestId: string, signal?: AbortSignal) =>
+    (await request<TransportEvidence>(`/api/v1/admin/transport-requests/${requestId}/evidence`, { token, signal })).data,
+  reportTasks: async (filters: ReportWindow, signal?: AbortSignal) =>
+    (await request<TaskReportPage>(`/api/v1/admin/reports/tasks?${reportSearch(filters)}`, { token, signal })).data,
+  reportTask: async (requestId: string, signal?: AbortSignal) =>
+    (await request<TaskReportDetail>(`/api/v1/admin/reports/tasks/${requestId}`, { token, signal })).data,
+  reportSessions: async (filters: ReportWindow, signal?: AbortSignal) =>
+    (await request<SessionReportPage>(`/api/v1/admin/reports/sessions?${reportSearch(filters)}`, { token, signal })).data,
+  reportSummary: async (filters: ReportWindow, signal?: AbortSignal) =>
+    (await request<OperationsSummary>(`/api/v1/admin/reports/summary?${reportSearch(filters)}`, { token, signal })).data,
+  downloadReport: async (kind: 'tasks' | 'sessions', filters: ReportWindow, fileName: string) => {
+    const response = await fetch(`/api/v1/admin/reports/${kind}/export.xlsx?${reportSearch(filters)}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+    })
+    if (!response.ok) throw new ApiProblem({ status: response.status, title: 'Rapor indirilemedi', detail: 'Excel raporu oluşturulamadı.', code: 'REPORT_EXPORT_FAILED' })
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = fileName
+    anchor.click()
+    URL.revokeObjectURL(url)
+  },
+
+  commissioningReadiness: async (signal?: AbortSignal) =>
+    (await request<VariantOperationReadiness[]>('/api/v1/admin/rds/commissioning/report', { token, signal })).data,
 })
+
+const reportSearch = (filters: ReportWindow) => {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '' && value !== false) search.set(key, String(value))
+  }
+  return search
+}
 
 export type AdminApi = ReturnType<typeof createAdminApi>

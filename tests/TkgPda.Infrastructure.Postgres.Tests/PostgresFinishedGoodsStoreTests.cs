@@ -68,6 +68,9 @@ public sealed class PostgresFinishedGoodsStoreTests
 
         var locations = await store.ListLocationsAsync();
         Assert.Single(Assert.Single(locations, candidate => candidate.Id == locationId).Units);
+        Assert.Equal(1, await ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_events WHERE store_location_id = @id AND event_type = 'UNIT_DELIVERED'",
+            ("id", locationId)));
     }
 
     [PostgresFact]
@@ -91,6 +94,107 @@ public sealed class PostgresFinishedGoodsStoreTests
 
         var locations = await store.ListLocationsAsync();
         Assert.Empty(Assert.Single(locations, candidate => candidate.Id == locationId).Units);
+    }
+
+    [PostgresFact]
+    public async Task Completing_non_remove_full_operations_never_creates_a_store_unit()
+    {
+        await ResetAsync();
+        var context = await ConfigureAsync();
+        var locationId = await CreateStoreLocationAsync(capacity: 5);
+        var dropSlotId = await LayoutDropAsync(context.LayoutId);
+        await LinkDeliverySlotAsync(dropSlotId, locationId);
+
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var service = new TransportWorkflowService(store);
+
+        var bringDest = await LogisticsSlotAsync(context.LayoutId, "TEST-FG-BE-DEST");
+        await SetSlotAsync(bringDest, OccupancyState.Vacant, LoadState.Unknown);
+        var bringBuffer = await CreateSlotAsync(context.LayoutId, "TEST-FG-BE-BUF", "EMPTY_STORAGE");
+        await SetSlotAsync(bringBuffer, OccupancyState.Occupied, LoadState.Empty);
+        var bringEmpty = await service.CreateAsync(
+            Command(context, TransportTaskType.BringEmpty, "fg-be", source: bringBuffer, destination: bringDest));
+        await CompleteAsync(service, bringEmpty.Request.Id);
+
+        var bringFullDest = await LogisticsSlotAsync(context.LayoutId, "TEST-FG-BF-DEST");
+        await SetSlotAsync(bringFullDest, OccupancyState.Vacant, LoadState.Unknown);
+        var bringFull = await service.CreateAsync(
+            Command(context, TransportTaskType.BringFull, "fg-bf", destination: bringFullDest));
+        await CompleteAsync(service, bringFull.Request.Id);
+
+        var removeSource = await LogisticsSlotAsync(context.LayoutId, "TEST-FG-RE-SRC");
+        await SetSlotAsync(removeSource, OccupancyState.Occupied, LoadState.Empty);
+        var removeBuffer = await CreateSlotAsync(context.LayoutId, "TEST-FG-RE-BUF", "EMPTY_STORAGE");
+        await SetSlotAsync(removeBuffer, OccupancyState.Vacant, LoadState.Unknown);
+        var removeEmpty = await service.CreateAsync(
+            Command(context, TransportTaskType.RemoveEmpty, "fg-re", source: removeSource, destination: removeBuffer));
+        await CompleteAsync(service, removeEmpty.Request.Id);
+
+        Assert.Equal(0, await ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0, await ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_events WHERE event_type = 'UNIT_DELIVERED'"));
+    }
+
+    [PostgresFact]
+    public async Task Machine_side_remove_full_without_a_mapped_destination_is_refused_before_insert()
+    {
+        await ResetAsync();
+        var context = await ConfigureAsync();
+        var machineSlotId = await LogisticsSlotAsync(context.LayoutId);
+        await SetSlotAsync(machineSlotId, OccupancyState.Occupied, LoadState.Full);
+
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var error = await Assert.ThrowsAsync<WorkflowRuleException>(() =>
+            store.CreateAndQueueAsync(RemoveFull(context, "fg-unmapped-create", machineSlotId, destination: null)
+                with { RequiresFinishedGoodsDestination = true }));
+
+        Assert.Equal("FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", error.Code);
+        Assert.Contains("yapılandırılmamış", error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, await ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal("FULL", await ScalarAsync<string>(
+            "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", machineSlotId)));
+    }
+
+    [PostgresFact]
+    public async Task Machine_side_remove_full_stores_the_resolved_mapped_drop()
+    {
+        await ResetAsync();
+        var context = await ConfigureAsync();
+        var machineSlotId = await LogisticsSlotAsync(context.LayoutId);
+        await SetSlotAsync(machineSlotId, OccupancyState.Occupied, LoadState.Full);
+        var dropSlotId = await LayoutDropAsync(context.LayoutId);
+        var locationId = await CreateStoreLocationAsync(capacity: 5);
+        await LinkDeliverySlotAsync(dropSlotId, locationId);
+
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var created = await store.CreateAndQueueAsync(
+            RemoveFull(context, "fg-mapped-create", machineSlotId, destination: null)
+                with { RequiresFinishedGoodsDestination = true });
+
+        Assert.Equal(dropSlotId, created.Request.DestinationSlotId);
+        Assert.Equal(TransportTaskType.RemoveFull, created.Request.TaskType);
+    }
+
+    [PostgresFact]
+    public async Task A_disabled_store_location_is_not_a_valid_finished_goods_destination()
+    {
+        await ResetAsync();
+        var context = await ConfigureAsync();
+        var machineSlotId = await LogisticsSlotAsync(context.LayoutId);
+        await SetSlotAsync(machineSlotId, OccupancyState.Occupied, LoadState.Full);
+        var dropSlotId = await LayoutDropAsync(context.LayoutId);
+        var locationId = await CreateStoreLocationAsync(capacity: 5);
+        await LinkDeliverySlotAsync(dropSlotId, locationId);
+        await ExecuteAsync("UPDATE ops.store_locations SET is_enabled = false WHERE id = @id", ("id", locationId));
+
+        await using var store = new PostgresTransportWorkflowStore(_connectionString);
+        var error = await Assert.ThrowsAsync<WorkflowRuleException>(() =>
+            store.CreateAndQueueAsync(RemoveFull(context, "fg-disabled-create", machineSlotId, destination: null)
+                with { RequiresFinishedGoodsDestination = true }));
+
+        Assert.Equal("FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", error.Code);
+        Assert.Equal(0, await ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
     [PostgresFact]
@@ -187,8 +291,8 @@ public sealed class PostgresFinishedGoodsStoreTests
 
     private Task<Guid> CreateStoreLocationAsync(int? capacity) => ScalarAsync<Guid>(
         """
-        INSERT INTO ops.store_locations (code, display_name, capacity)
-        VALUES ('TEST-STORE-LOC', 'Test Store Location', @capacity)
+        INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose, is_operator_visible)
+        VALUES ('TEST-STORE-LOC', 'Test Store Location', @capacity, 'DELIVERY', true)
         RETURNING id
         """,
         ("capacity", capacity));
@@ -201,13 +305,101 @@ public sealed class PostgresFinishedGoodsStoreTests
         ("slot", slotId), ("location", locationId));
 
     private Task<Guid> EnsureActorAsync() => ScalarAsync<Guid>(
-        "SELECT id FROM auth.users WHERE is_active ORDER BY created_at LIMIT 1");
+        """
+        WITH actor AS (
+            INSERT INTO auth.users (username, password_hash, full_name, employee_no, is_active)
+            VALUES ('phase03-store-actor', 'test-only-hash', 'Phase 03 Store Actor', 'PHASE03-ACTOR', true)
+            ON CONFLICT (username) DO UPDATE SET is_active = true
+            RETURNING id
+        )
+        INSERT INTO auth.user_roles (user_id, role_id)
+        SELECT actor.id, roles.id
+        FROM actor
+        JOIN auth.roles AS roles ON roles.code = 'WAREHOUSE_OPERATOR'
+        ON CONFLICT DO NOTHING
+        RETURNING user_id
+        """);
 
     private Task<Guid> EnsureDeviceAsync() => ScalarAsync<Guid>(
-        "SELECT id FROM audit.client_devices WHERE is_active ORDER BY device_code LIMIT 1");
+        """
+        INSERT INTO audit.client_devices (device_code, name, device_type, is_active)
+        VALUES ('PHASE03-STORE', 'Phase 03 store device', 'PDA', true)
+        ON CONFLICT (device_code) DO UPDATE SET is_active = true
+        RETURNING id
+        """);
+
+    private async Task<Guid> LayoutDropAsync(Guid layoutId)
+    {
+        await ExecuteAsync(
+            """
+            INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
+            SELECT @layout, 'TEST-FG-DROP', 'Test Finished Goods Drop', 'DROP', 9001
+            WHERE NOT EXISTS (
+                SELECT 1 FROM master.layout_slots
+                WHERE layout_id = @layout AND slot_role = 'DROP');
+            INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+            SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
+            WHERE layout_id = @layout AND slot_role = 'DROP'
+            ON CONFLICT (layout_slot_id) DO NOTHING;
+            """,
+            ("layout", layoutId));
+        return await ScalarAsync<Guid>(
+            """
+            SELECT id FROM master.layout_slots
+            WHERE layout_id = @layout AND slot_role = 'DROP' AND is_enabled
+            ORDER BY display_order, id
+            LIMIT 1
+            """,
+            ("layout", layoutId));
+    }
+
+    private async Task<Guid> CreateSlotAsync(Guid layoutId, string code, string role)
+    {
+        var slotId = await ScalarAsync<Guid>(
+            """
+            INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
+            VALUES (@layout, @code, @code, @role, 910)
+            RETURNING id
+            """,
+            ("layout", layoutId), ("code", code), ("role", role));
+        await ExecuteAsync(
+            """
+            INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+            VALUES (@slot, 'VACANT', 'UNKNOWN') ON CONFLICT (layout_slot_id) DO NOTHING
+            """,
+            ("slot", slotId));
+        return slotId;
+    }
+
+    private static async Task CompleteAsync(TransportWorkflowService service, Guid requestId)
+    {
+        await service.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds);
+        await service.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running);
+        await service.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Completed);
+    }
+
+    private static CreateTransportRequest Command(
+        LayoutContext context,
+        TransportTaskType type,
+        string key,
+        Guid? source = null,
+        Guid? destination = null) => new(
+        key,
+        RequestOrigin.LineOperator,
+        null,
+        context.MachineId,
+        context.VariantId,
+        context.LayoutId,
+        null,
+        null,
+        null,
+        null,
+        type,
+        source,
+        destination);
 
     private static CreateTransportRequest RemoveFull(
-        LayoutContext context, string key, Guid source, Guid destination) => new(
+        LayoutContext context, string key, Guid source, Guid? destination) => new(
         key,
         RequestOrigin.LineOperator,
         null,

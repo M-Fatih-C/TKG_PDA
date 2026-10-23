@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../app/app_controller.dart';
 import '../../core/errors/api_problem.dart';
 import '../../data/models/pda_models.dart';
 
@@ -33,21 +34,36 @@ class ProblemBanner extends StatelessWidget {
   final ApiProblem problem;
 
   @override
-  Widget build(BuildContext context) => Container(
-    key: const Key('problem-banner'),
-    width: double.infinity,
-    color: Theme.of(context).colorScheme.errorContainer,
-    padding: const EdgeInsets.all(12),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          problem.operatorMessage,
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const Key('problem-banner'),
+      width: double.infinity,
+      color: theme.colorScheme.errorContainer,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.error_outline_rounded,
+            color: theme.colorScheme.onErrorContainer,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              problem.operatorMessage,
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: theme.colorScheme.onErrorContainer,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Customer Monitoring — Robot Alarm Visibility. A coarse, non-technical
@@ -134,16 +150,111 @@ class RobotAlarmBanner extends StatelessWidget {
 }
 
 class NoticeBanner extends StatelessWidget {
-  const NoticeBanner({required this.message, super.key});
+  const NoticeBanner({required this.notice, super.key});
 
-  final String message;
+  final UiNotice notice;
 
   @override
-  Widget build(BuildContext context) => Container(
-    key: const Key('notice-banner'),
-    width: double.infinity,
-    color: const Color(0xFFDBEAFE),
-    padding: const EdgeInsets.all(12),
-    child: Text(message, style: const TextStyle(fontWeight: FontWeight.w700)),
-  );
+  Widget build(BuildContext context) {
+    final (bgColor, fgColor, icon) = switch (notice.severity) {
+      UiNoticeSeverity.error => (
+        const Color(0xFFFEE2E2),
+        const Color(0xFF991B1B),
+        Icons.error_outline_rounded,
+      ),
+      UiNoticeSeverity.warning => (
+        const Color(0xFFFFEDD5),
+        const Color(0xFF9A3412),
+        Icons.warning_amber_rounded,
+      ),
+      UiNoticeSeverity.info => (
+        const Color(0xFFDBEAFE),
+        const Color(0xFF1E40AF),
+        Icons.info_outline_rounded,
+      ),
+      UiNoticeSeverity.success => (
+        const Color(0xFFDCFCE7),
+        const Color(0xFF14532D),
+        Icons.check_circle_outline_rounded,
+      ),
+    };
+
+    return Container(
+      key: const Key('notice-banner'),
+      width: double.infinity,
+      color: bgColor,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Icon(icon, color: fgColor, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              notice.message,
+              style: TextStyle(
+                color: fgColor,
+                fontWeight: FontWeight.w700,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Success and ordinary information leave the top of the screen. Warnings and
+/// errors stay until the operator's next action clears them.
+class TransientNoticeHost extends StatefulWidget {
+  const TransientNoticeHost({
+    required this.controller,
+    required this.child,
+    super.key,
+  });
+
+  final AppController controller;
+  final Widget child;
+
+  @override
+  State<TransientNoticeHost> createState() => _TransientNoticeHostState();
+}
+
+class _TransientNoticeHostState extends State<TransientNoticeHost> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_present);
+  }
+
+  @override
+  void didUpdateWidget(TransientNoticeHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_present);
+      widget.controller.addListener(_present);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_present);
+    super.dispose();
+  }
+
+  void _present() {
+    final notice = widget.controller.uiNotice;
+    if (notice == null || notice.persistent) return;
+    final message = notice.message;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+      );
+      widget.controller.acknowledgeTransientNotice();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

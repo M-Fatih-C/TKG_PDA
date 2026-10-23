@@ -25,13 +25,15 @@ public sealed record CreateAdminDeviceRequest(
     string Name,
     string Type,
     bool IsActive,
-    JsonElement Metadata);
+    JsonElement Metadata,
+    Guid? MachineId = null);
 
 public sealed record UpdateAdminDeviceRequest(
     string Name,
     string Type,
     bool IsActive,
-    JsonElement Metadata);
+    JsonElement Metadata,
+    Guid? MachineId = null);
 
 public sealed record UpdateAdminMachineRequest(string DisplayName, int DisplayOrder, bool IsActive);
 

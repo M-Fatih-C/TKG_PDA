@@ -47,12 +47,24 @@ public sealed class ProductionSessionServiceTests
         Assert.Equal(cancellation.Token, store.Token);
     }
 
+    [Theory]
+    [InlineData(0, "IDEMPOTENCY_KEY_REQUIRED")]
+    [InlineData(201, "IDEMPOTENCY_KEY_TOO_LONG")]
+    public async Task Invalid_end_key_never_reaches_store(int length, string code)
+    {
+        var store = new RecordingStore();
+        var error = await Assert.ThrowsAsync<WorkflowRuleException>(() => new ProductionSessionService(store)
+            .EndAsync(new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), new string('k', length))));
+        Assert.Equal(code, error.Code);
+        Assert.Equal(0, store.Calls);
+    }
+
     [Fact]
     public async Task End_requires_an_exact_session_identity()
     {
         var store = new RecordingStore();
         var error = await Assert.ThrowsAsync<WorkflowRuleException>(() => new ProductionSessionService(store)
-            .EndAsync(new(Guid.NewGuid(), Guid.Empty, Guid.NewGuid(), Guid.NewGuid())));
+            .EndAsync(new(Guid.NewGuid(), Guid.Empty, Guid.NewGuid(), Guid.NewGuid(), "key")));
         Assert.Equal("ID_REQUIRED", error.Code);
         Assert.Equal(0, store.Calls);
     }
@@ -62,7 +74,7 @@ public sealed class ProductionSessionServiceTests
     {
         var store = new RecordingStore();
         var service = new ProductionSessionService(store);
-        var command = new EndProductionSession(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var command = new EndProductionSession(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "key");
         await service.EndAsync(command);
         await service.FindActiveAsync(command.MachineId);
         Assert.Same(command, store.EndCommand);

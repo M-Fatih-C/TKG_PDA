@@ -31,6 +31,11 @@ public static class TransportRules
                 "EMPTY_STORAGE is reserved for backend buffer allocation and cannot be used as the machine-side transport slot.");
         }
 
+        if (request.AllowsDependentMachineOccupancy && request.TaskType == TransportTaskType.BringFull)
+        {
+            return;
+        }
+
         var expected = request.TaskType switch
         {
             // Both inbound operations need the machine position already clear:
@@ -52,6 +57,46 @@ public static class TransportRules
         }
 
         ValidateAssociations(request, reservedSlot);
+    }
+
+    /// <summary>
+    /// Validates the intended machine endpoint of a queued operator intent.
+    /// Current occupancy and current pallet identity are deliberately excluded:
+    /// they govern later physical dispatch, not whether an operator may order
+    /// a separately prepared pallet.
+    /// </summary>
+    public static void ValidateDeferredMachineEndpoint(CreateTransportRequest request, SlotSnapshot destination)
+    {
+        ValidateSuppliedSlot(request, destination);
+        if (!request.DefersMachineSlotReservation)
+        {
+            throw new WorkflowRuleException(
+                "DEFERRED_SLOT_RESERVATION_NOT_SUPPORTED",
+                "The request does not declare a deferred machine endpoint.");
+        }
+
+        if (destination.Role == SlotRole.EmptyStorage)
+        {
+            throw new WorkflowRuleException(
+                "EMPTY_STORAGE_MACHINE_SLOT_FORBIDDEN",
+                "EMPTY_STORAGE is reserved for backend buffer allocation and cannot be used as the machine-side transport slot.");
+        }
+
+        if (!request.PartId.HasValue || !destination.KnownPartIds.Contains(request.PartId.Value))
+        {
+            throw new WorkflowRuleException(
+                "PART_SLOT_NOT_CONFIGURED",
+                "Bu parça için makine alanı tanımlı değil.");
+        }
+
+        if (request.ContainerTypeId.HasValue
+            && destination.DefaultContainerTypeId.HasValue
+            && destination.DefaultContainerTypeId != request.ContainerTypeId)
+        {
+            throw new WorkflowRuleException(
+                "CONTAINER_CONFLICT",
+                "Talep edilen kasa tipi konumun kaynak verideki kasa tipiyle uyumlu değil.");
+        }
     }
 
     public static SlotState CancellationState(TransportTaskType taskType, SlotState current) => taskType switch
