@@ -57,10 +57,10 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task Restart_alt_chain_preserves_dependency_and_releases_successor_once()
+    public async Task Restart_empty_pallet_chain_preserves_dependency_and_releases_successor_once()
     {
         await using var api = new RestartApiProcess(fixture.ConnectionString);
-        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
         await api.StartAsync();
         using var client = await api.LoginAsync(setup.Operator);
         await StartProductionAsync(client, setup);
@@ -93,16 +93,14 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task Concurrent_alt_clicks_create_one_demand_and_reject_the_second()
+    public async Task Concurrent_alt_orders_with_distinct_keys_create_independent_queued_pallet_demands()
     {
         var setup = await SetupAsync();
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         var responses = await Task.WhenAll(DemandAsync(client, setup, setup.AltPart, "click-a"), DemandAsync(client, setup, setup.AltPart, "click-b"));
-        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Created);
-        var conflict = Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Conflict);
-        Assert.Equal("PART_REQUEST_ALREADY_ACTIVE", await ApiTestFixture.ErrorCodeAsync(conflict));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.All(responses, response => Assert.Equal(HttpStatusCode.Created, response.StatusCode));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
     [Fact]
@@ -163,7 +161,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task A_new_key_does_not_create_a_second_request_while_one_is_active()
+    public async Task A_new_key_creates_another_independent_pallet_demand_while_one_is_active()
     {
         var setup = await SetupAsync();
         using var client = await fixture.LoginClientAsync(setup.Operator);
@@ -172,13 +170,43 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
 
         var duplicate = await DemandAsync(client, setup, setup.AltPart, "active-second");
 
-        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
-        Assert.Equal("PART_REQUEST_ALREADY_ACTIVE", await ApiTestFixture.ErrorCodeAsync(duplicate));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(HttpStatusCode.Created, duplicate.StatusCode);
+        Assert.False((await ReadDemandAsync(duplicate)).IdempotentReplay);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
     [Fact]
-    public async Task Occupied_full_area_creates_remove_full_then_dependent_bring_full()
+    public async Task Batch_order_creates_its_own_pallet_demand_when_the_same_part_is_already_queued()
+    {
+        var setup = await SetupAsync();
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        await DemandAsync(client, setup, setup.AltPart, "single-before-batch");
+
+        var created = await ReadBatchAsync(await BatchAsync(
+            client,
+            setup,
+            [setup.AltPart],
+            "batch-after-single"));
+
+        Assert.Single(created.Items);
+        Assert.False(created.IdempotentReplay);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE batch_id IS NOT NULL"));
+
+        var replay = await ReadBatchAsync(await BatchAsync(
+            client,
+            setup,
+            [setup.AltPart],
+            "batch-after-single"));
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(created.Items.Single().RequestNo, replay.Items.Single().RequestNo);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Occupied_full_area_keeps_the_new_order_queued_until_the_current_pallet_is_empty()
     {
         var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
         using var client = await fixture.LoginClientAsync(setup.Operator);
@@ -192,11 +220,18 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         Assert.Equal("WAITING_PREPARATION", body.Readiness);
         Assert.False(await ReservationActiveAsync(successorId));
         await MarkPreparedAsync(setup, successorId);
+        Assert.Equal(0, await ActivatePreparedAsync());
+        Assert.False(await ReservationActiveAsync(successorId));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+
+        await fixture.ExecuteAsync(
+            "UPDATE ops.slot_runtime_state SET load_state = 'EMPTY', row_version = row_version + 1 WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot));
         Assert.Equal(1, await ActivatePreparedAsync());
         var predecessorId = await PredecessorIdAsync(successorId);
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
-        Assert.Equal("REMOVE_FULL", await TaskTypeAsync(predecessorId));
+        Assert.Equal("REMOVE_EMPTY", await TaskTypeAsync(predecessorId));
         Assert.True(await ReservationActiveAsync(successorId));
     }
 
@@ -221,7 +256,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     [Fact]
     public async Task Dependent_bring_full_waits_for_predecessor_completion_and_warehouse_readiness()
     {
-        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "chain-gate"));
@@ -240,7 +275,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     [Fact]
     public async Task Unprepared_demand_does_not_claim_the_machine_slot_or_create_a_predecessor()
     {
-        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "not-ready"));
@@ -465,7 +500,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     [Fact]
     public async Task Completed_alt_part_removal_does_not_enter_finished_goods_or_notify()
     {
-        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "not-finished-goods"));
@@ -474,8 +509,13 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         Assert.Equal(1, await ActivatePreparedAsync());
         var predecessorId = await PredecessorIdAsync(successorId);
 
-        Assert.True(await fixture.ScalarAsync<bool>(
-            "SELECT destination_slot_id IS NULL FROM ops.transport_requests WHERE id = @id",
+        Assert.Equal("EMPTY_STORAGE", await fixture.ScalarAsync<string>(
+            """
+            SELECT ls.slot_role
+            FROM ops.transport_requests r
+            JOIN master.layout_slots ls ON ls.id = r.destination_slot_id
+            WHERE r.id = @id
+            """,
             ("id", predecessorId)));
         await CompleteAsync(predecessorId);
 
@@ -487,7 +527,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     [Fact]
     public async Task Cancelling_the_predecessor_cancels_the_successor_without_changing_the_slot()
     {
-        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "cancel-chain"));
@@ -506,7 +546,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         Assert.Equal(setup.AltPart, await fixture.ScalarAsync<Guid>(
             "SELECT current_part_id FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
             ("slot", setup.Slot)));
-        Assert.Equal("FULL", await fixture.ScalarAsync<string>(
+        Assert.Equal("EMPTY", await fixture.ScalarAsync<string>(
             "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
             ("slot", setup.Slot)));
     }
@@ -514,7 +554,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     [Fact]
     public async Task Cancelling_a_prepared_successor_waiting_for_removal_does_not_clear_the_occupied_slot()
     {
-        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "cancel-successor"));
@@ -533,7 +573,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         Assert.Equal("OCCUPIED", await fixture.ScalarAsync<string>(
             "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
             ("slot", setup.Slot)));
-        Assert.Equal("FULL", await fixture.ScalarAsync<string>(
+        Assert.Equal("EMPTY", await fixture.ScalarAsync<string>(
             "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
             ("slot", setup.Slot)));
         Assert.Equal(setup.AltPart, await fixture.ScalarAsync<Guid>(
@@ -544,7 +584,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     [Fact]
     public async Task Failing_the_predecessor_cancels_the_successor_once()
     {
-        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
+        var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "fail-chain"));
@@ -819,6 +859,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
           AND status = 'QUEUED'
           AND readiness_state <> 'WAITING_PREPARATION'
           AND machine_slot_reservation_active
+          AND store_endpoint_reservation_active
           AND NOT EXISTS (
               SELECT 1
               FROM ops.transport_request_dependencies d

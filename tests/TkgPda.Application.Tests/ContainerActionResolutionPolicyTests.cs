@@ -7,49 +7,48 @@ namespace TkgPda.Application.Tests;
 public sealed class ContainerActionResolutionPolicyTests
 {
     // ---------------------------------------------------------------------
-    // Rejection reasons must be specific and actionable. A VACANT slot is only
-    // ever stored with LoadState.Unknown, so the broad unknown-state arm used to
-    // shadow the VACANT arm entirely and operators saw a generic message.
+    // Transient physical state never discards operator intent. The policy keeps
+    // the requested operation and marks its machine reservation as deferred.
     // ---------------------------------------------------------------------
 
     [Fact]
-    public void Full_on_a_vacant_position_reports_that_a_container_is_required()
+    public void Full_on_a_vacant_position_is_deferred_until_a_container_exists()
     {
-        var error = Assert.Throws<WorkflowRuleException>(() =>
-            ContainerActionResolutionPolicy.ResolveSingle(
-                OperatorContainerAction.Full,
-                OccupancyState.Vacant,
-                LoadState.Unknown));
+        var result = ContainerActionResolutionPolicy.ResolveSingle(
+            OperatorContainerAction.Full,
+            OccupancyState.Vacant,
+            LoadState.Unknown);
 
-        Assert.Equal("OCCUPIED_CONTAINER_REQUIRED", error.Code);
+        Assert.Equal(TransportTaskType.RemoveFull, result.Operation);
+        Assert.True(result.DefersMachineSlotReservation);
+        Assert.False(result.MarkFullBeforeCreate);
     }
 
     [Fact]
-    public void Full_on_an_occupied_position_with_unknown_load_still_reports_insufficient_state()
+    public void Full_on_an_occupied_position_with_unknown_load_is_deferred()
     {
-        // Occupied but with an unproven load is genuinely not enough information,
-        // so this must keep the generic reason rather than borrow the VACANT one.
-        var error = Assert.Throws<WorkflowRuleException>(() =>
-            ContainerActionResolutionPolicy.ResolveSingle(
-                OperatorContainerAction.Full,
-                OccupancyState.Occupied,
-                LoadState.Unknown));
+        var result = ContainerActionResolutionPolicy.ResolveSingle(
+            OperatorContainerAction.Full,
+            OccupancyState.Occupied,
+            LoadState.Unknown);
 
-        Assert.Equal("BUSINESS_RULE_NOT_CONFIGURED", error.Code);
+        Assert.Equal(TransportTaskType.RemoveFull, result.Operation);
+        Assert.True(result.DefersMachineSlotReservation);
     }
 
     [Fact]
-    public void Unknown_occupancy_still_reports_insufficient_state_for_both_actions()
+    public void Unknown_occupancy_defers_both_actions_without_inference()
     {
-        var full = Assert.Throws<WorkflowRuleException>(() =>
-            ContainerActionResolutionPolicy.ResolveSingle(
-                OperatorContainerAction.Full, OccupancyState.Unknown, LoadState.Unknown));
-        var empty = Assert.Throws<WorkflowRuleException>(() =>
-            ContainerActionResolutionPolicy.ResolveSingle(
-                OperatorContainerAction.Empty, OccupancyState.Unknown, LoadState.Unknown));
+        var full = ContainerActionResolutionPolicy.ResolveSingle(
+            OperatorContainerAction.Full, OccupancyState.Unknown, LoadState.Unknown);
+        var empty = ContainerActionResolutionPolicy.ResolveSingle(
+            OperatorContainerAction.Empty, OccupancyState.Unknown, LoadState.Unknown);
 
-        Assert.Equal("BUSINESS_RULE_NOT_CONFIGURED", full.Code);
-        Assert.Equal("BUSINESS_RULE_NOT_CONFIGURED", empty.Code);
+        Assert.Equal(TransportTaskType.RemoveFull, full.Operation);
+        Assert.True(full.DefersMachineSlotReservation);
+        Assert.Equal(TransportTaskType.BringEmpty, empty.Operation);
+        Assert.True(empty.DefersMachineSlotReservation);
+        Assert.True(empty.RequiresPreparation);
     }
 
     [Fact]
@@ -61,21 +60,24 @@ public sealed class ContainerActionResolutionPolicyTests
         Assert.Equal(TransportTaskType.RemoveFull, markFull.Operation);
         Assert.True(markFull.MarkFullBeforeCreate);
         Assert.False(markFull.RequiresPreparation);
+        Assert.False(markFull.DefersMachineSlotReservation);
 
         var alreadyFull = ContainerActionResolutionPolicy.ResolveSingle(
             OperatorContainerAction.Full, OccupancyState.Occupied, LoadState.Full);
         Assert.Equal(TransportTaskType.RemoveFull, alreadyFull.Operation);
         Assert.False(alreadyFull.MarkFullBeforeCreate);
+        Assert.False(alreadyFull.DefersMachineSlotReservation);
 
         var bringEmpty = ContainerActionResolutionPolicy.ResolveSingle(
             OperatorContainerAction.Empty, OccupancyState.Vacant, LoadState.Unknown);
         Assert.Equal(TransportTaskType.BringEmpty, bringEmpty.Operation);
         Assert.True(bringEmpty.RequiresPreparation);
+        Assert.False(bringEmpty.DefersMachineSlotReservation);
 
-        var occupied = Assert.Throws<WorkflowRuleException>(() =>
-            ContainerActionResolutionPolicy.ResolveSingle(
-                OperatorContainerAction.Empty, OccupancyState.Occupied, LoadState.Full));
-        Assert.Equal("CONTAINER_POSITION_OCCUPIED", occupied.Code);
+        var occupied = ContainerActionResolutionPolicy.ResolveSingle(
+            OperatorContainerAction.Empty, OccupancyState.Occupied, LoadState.Full);
+        Assert.Equal(TransportTaskType.BringEmpty, occupied.Operation);
+        Assert.True(occupied.DefersMachineSlotReservation);
     }
 
     [Theory]
@@ -118,12 +120,15 @@ public sealed class ContainerActionResolutionPolicyTests
     [Theory]
     [InlineData(OccupancyState.Vacant, LoadState.Unknown)]
     [InlineData(OccupancyState.Unknown, LoadState.Unknown)]
-    public void Kasa_doldu_fails_closed_without_an_occupied_container(
+    public void Kasa_doldu_waits_without_an_occupied_container(
         OccupancyState occupancy,
         LoadState load)
     {
-        Assert.Throws<WorkflowRuleException>(() =>
-            ContainerActionResolutionPolicy.ResolveSingle(OperatorContainerAction.Full, occupancy, load));
+        var result = ContainerActionResolutionPolicy.ResolveSingle(
+            OperatorContainerAction.Full, occupancy, load);
+
+        Assert.Equal(TransportTaskType.RemoveFull, result.Operation);
+        Assert.True(result.DefersMachineSlotReservation);
     }
 
     [Fact]
@@ -142,15 +147,16 @@ public sealed class ContainerActionResolutionPolicyTests
     [Theory]
     [InlineData(LoadState.Empty)]
     [InlineData(LoadState.Full)]
-    public void Kasa_bos_rejects_occupied_positions(LoadState load)
+    public void Kasa_bos_waits_for_occupied_positions_to_become_vacant(LoadState load)
     {
-        var error = Assert.Throws<WorkflowRuleException>(() =>
-            ContainerActionResolutionPolicy.ResolveSingle(
-                OperatorContainerAction.Empty,
-                OccupancyState.Occupied,
-                load));
+        var result = ContainerActionResolutionPolicy.ResolveSingle(
+            OperatorContainerAction.Empty,
+            OccupancyState.Occupied,
+            load);
 
-        Assert.Equal("CONTAINER_POSITION_OCCUPIED", error.Code);
+        Assert.Equal(TransportTaskType.BringEmpty, result.Operation);
+        Assert.True(result.RequiresPreparation);
+        Assert.True(result.DefersMachineSlotReservation);
     }
 
     [Theory]

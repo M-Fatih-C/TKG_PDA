@@ -234,7 +234,7 @@ public sealed class PartDemandRulesTests
             DefersMachineSlotReservation = true
         };
 
-        TransportRules.ValidateDeferredMachineDestination(request, slot);
+        TransportRules.ValidateDeferredMachineEndpoint(request, slot);
     }
 
     [Fact]
@@ -271,7 +271,7 @@ public sealed class PartDemandRulesTests
         };
 
         var error = Assert.Throws<WorkflowRuleException>(
-            () => TransportRules.ValidateDeferredMachineDestination(request, slot));
+            () => TransportRules.ValidateDeferredMachineEndpoint(request, slot));
 
         Assert.Equal("PART_SLOT_NOT_CONFIGURED", error.Code);
     }

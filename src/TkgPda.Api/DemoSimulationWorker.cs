@@ -132,6 +132,7 @@ public sealed class DemoSimulationWorker(
             r.status = 'QUEUED'
               AND r.readiness_state <> 'WAITING_PREPARATION'
               AND r.machine_slot_reservation_active
+              AND r.store_endpoint_reservation_active
               AND NOT EXISTS (
                   SELECT 1
                   FROM ops.transport_request_dependencies dependency

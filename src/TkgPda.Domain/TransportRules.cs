@@ -60,19 +60,19 @@ public static class TransportRules
     }
 
     /// <summary>
-    /// Validates the intended destination of a warehouse preparation demand.
+    /// Validates the intended machine endpoint of a queued operator intent.
     /// Current occupancy and current pallet identity are deliberately excluded:
     /// they govern later physical dispatch, not whether an operator may order
     /// a separately prepared pallet.
     /// </summary>
-    public static void ValidateDeferredMachineDestination(CreateTransportRequest request, SlotSnapshot destination)
+    public static void ValidateDeferredMachineEndpoint(CreateTransportRequest request, SlotSnapshot destination)
     {
         ValidateSuppliedSlot(request, destination);
-        if (request.TaskType != TransportTaskType.BringFull || !request.DefersMachineSlotReservation)
+        if (!request.DefersMachineSlotReservation)
         {
             throw new WorkflowRuleException(
                 "DEFERRED_SLOT_RESERVATION_NOT_SUPPORTED",
-                "Deferred machine destinations are only valid for BRING_FULL preparation demands.");
+                "The request does not declare a deferred machine endpoint.");
         }
 
         if (destination.Role == SlotRole.EmptyStorage)
@@ -86,7 +86,7 @@ public static class TransportRules
         {
             throw new WorkflowRuleException(
                 "PART_SLOT_NOT_CONFIGURED",
-                "Bu alt parça için makine alanı tanımlı değil.");
+                "Bu parça için makine alanı tanımlı değil.");
         }
 
         if (request.ContainerTypeId.HasValue

@@ -232,6 +232,18 @@ void main() {
       expect(find.text('Makine alanı bekleniyor'), findsOneWidget);
     });
 
+    testWidgets('queued request waiting for warehouse capacity has a clear label', (
+      tester,
+    ) async {
+      await _pump(tester, [
+        _request(chainState: 'WAITING_STORE_CAPACITY'),
+      ]);
+      await tester.tap(find.byKey(const Key('transport-detail-req-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Depo alanı bekleniyor'), findsOneWidget);
+    });
+
     testWidgets('part fallbacks never print an id or an empty placeholder', (
       tester,
     ) async {

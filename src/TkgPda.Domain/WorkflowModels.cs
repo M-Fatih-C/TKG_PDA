@@ -72,13 +72,19 @@ public sealed record CreateTransportRequest(
     public bool AllowsDependentMachineOccupancy { get; init; }
 
     /// <summary>
-    /// Alt-part orders first create one independent warehouse preparation
-    /// demand per selected part.  While this flag is set, the mapped machine
-    /// position is an intended destination rather than an active physical
-    /// reservation.  The reservation is activated only after that request's
-    /// pallet is ready and the position can be used safely.
+    /// The operator intent may be queued before its mapped machine position can
+    /// be used. While this flag is set the position is an intended endpoint,
+    /// not an active physical reservation. The workflow worker activates it
+    /// only after earlier work and the required slot state are both satisfied.
     /// </summary>
     public bool DefersMachineSlotReservation { get; init; }
+
+    /// <summary>
+    /// Operator-originated production intent is persisted when a currently
+    /// occupied slot, shared endpoint or physical WorkSite prevents immediate
+    /// execution. Permanent master-data/configuration gaps remain errors.
+    /// </summary>
+    public bool QueuesWhenResourcesUnavailable { get; init; }
 
     /// <summary>
     /// A requested empty container is prepared against the demand in one of
@@ -139,12 +145,9 @@ public sealed record CreateTransportRequest(
             throw new WorkflowRuleException("SAME_SOURCE_DESTINATION", "Source and destination slots must be different.");
         }
 
-        if (DefersMachineSlotReservation && TaskType != TransportTaskType.BringFull)
-        {
-            throw new WorkflowRuleException(
-                "DEFERRED_SLOT_RESERVATION_NOT_SUPPORTED",
-                "Only warehouse-prepared BRING_FULL demands may defer their machine-slot reservation.");
-        }
+        // Every supported transport operation has one machine-side endpoint.
+        // Deferral changes only when that endpoint is reserved; it never makes
+        // the endpoint optional or changes the operation's physical meaning.
     }
 }
 

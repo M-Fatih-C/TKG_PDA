@@ -26,7 +26,11 @@ public static class OperatorContainerActionCode
     };
 }
 
-public sealed record ContainerActionResolution(TransportTaskType Operation, bool MarkFullBeforeCreate, bool RequiresPreparation = false);
+public sealed record ContainerActionResolution(
+    TransportTaskType Operation,
+    bool MarkFullBeforeCreate,
+    bool RequiresPreparation = false,
+    bool DefersMachineSlotReservation = false);
 
 /// <summary>
 /// WP-33 customer business-event policy. It consumes only TKG runtime state;
@@ -43,21 +47,15 @@ public static class ContainerActionResolutionPolicy
             new(TransportTaskType.RemoveFull, MarkFullBeforeCreate: true, RequiresPreparation: false),
         OperatorContainerAction.Full when occupancy == OccupancyState.Occupied && load == LoadState.Full =>
             new(TransportTaskType.RemoveFull, MarkFullBeforeCreate: false, RequiresPreparation: false),
+        OperatorContainerAction.Full =>
+            new(TransportTaskType.RemoveFull, MarkFullBeforeCreate: false,
+                RequiresPreparation: false, DefersMachineSlotReservation: true),
         OperatorContainerAction.Empty when occupancy == OccupancyState.Vacant && load == LoadState.Unknown =>
             new(TransportTaskType.BringEmpty, MarkFullBeforeCreate: false, RequiresPreparation: true),
-        OperatorContainerAction.Empty when occupancy == OccupancyState.Occupied =>
-            throw new WorkflowRuleException("CONTAINER_POSITION_OCCUPIED", "Bu konumda zaten bir kasa bulunuyor."),
-        // A VACANT position is only ever stored with LoadState.Unknown (enforced by
-        // ck_slot_load_requires_occupancy), so this arm must be evaluated BEFORE the
-        // broad unknown-state arm below. Otherwise "Kasa Doldu" on an empty position
-        // reports the generic BUSINESS_RULE_NOT_CONFIGURED instead of the specific,
-        // actionable reason, and this arm is unreachable for every DB-valid state.
-        // Rejection itself is unchanged — only the reason becomes accurate.
-        OperatorContainerAction.Full when occupancy == OccupancyState.Vacant =>
-            throw new WorkflowRuleException("OCCUPIED_CONTAINER_REQUIRED", "Dolu bildirimi için konumda bir kasa bulunmalıdır."),
-        _ when occupancy == OccupancyState.Unknown || load == LoadState.Unknown =>
-            throw new WorkflowRuleException("BUSINESS_RULE_NOT_CONFIGURED", "Kasa konumunun mevcut durumu güvenli bir işlem seçmek için yeterli değildir."),
-        _ => throw new WorkflowRuleException("CONTAINER_STATE_CONFLICT", "Kasa konumunun mevcut durumu bu işlemle uyumlu değildir.")
+        OperatorContainerAction.Empty =>
+            new(TransportTaskType.BringEmpty, MarkFullBeforeCreate: false,
+                RequiresPreparation: true, DefersMachineSlotReservation: true),
+        _ => throw new ArgumentOutOfRangeException(nameof(action), action, null)
     };
 
     public static TransportTaskType? ResolveRemoveAll(OccupancyState occupancy, LoadState load) =>

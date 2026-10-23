@@ -60,24 +60,6 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
         {
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartAsync(client, setup);
-        var repeated = await client.SendAsync(Demand(setup, setup.AltPart, "align-repeat"));
-        Assert.Equal(HttpStatusCode.Created, repeated.StatusCode);
-        var body = await repeated.Content.ReadFromJsonAsync<PartDemandHttpResponse>();
-        Assert.Null(body!.PredecessorTaskType);
-        var repeatedId = await fixture.ScalarAsync<Guid>(
-            "SELECT id FROM ops.transport_requests WHERE request_no = @no",
-            ("no", body.RequestNo));
-        await ReadyAndActivateAsync(repeatedId);
-        var predecessor = await fixture.ScalarAsync<string>("""
-            SELECT destination_business_code FROM ops.transport_requests r
-            JOIN master.task_types tt ON tt.id = r.task_type_id
-            WHERE tt.code = 'REMOVE_FULL'
-            """);
-        Assert.Equal("RETURN-01", predecessor);
-        Assert.DoesNotContain("FG-", predecessor, StringComparison.Ordinal);
-
-        await fixture.ExecuteAsync("DELETE FROM ops.transport_request_dependencies");
-        await fixture.ExecuteAsync("DELETE FROM ops.transport_requests");
         await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "EMPTY", setup.AltPart);
         var empty = await client.SendAsync(Demand(setup, setup.AltPart, "align-empty"));
         Assert.Equal(HttpStatusCode.Created, empty.StatusCode);

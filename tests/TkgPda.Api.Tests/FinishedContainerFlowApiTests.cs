@@ -9,9 +9,9 @@ namespace TkgPda.Api.Tests;
 
 /// <summary>
 /// WP-08 — Mamul Kasa: "Kasa Doldu" (REMOVE_FULL) and "Kasa Boş" (BRING_EMPTY).
-/// Kasa Doldu must resolve a finished-goods destination on the server, refuse to
-/// exist without an enabled store-location mapping, and stay atomic with the
-/// load-state change. Delivery on completion is covered by
+/// Kasa Doldu must validate a finished-goods destination configuration on the
+/// server, queue behind transient slot/capacity conditions, and stay atomic
+/// with any immediate load-state change. Delivery on completion is covered by
 /// PostgresFinishedGoodsStoreTests.
 /// </summary>
 public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
@@ -66,7 +66,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
     }
 
     [Fact]
-    public async Task Kasa_doldu_double_submit_with_the_same_key_reuses_the_same_request_and_destination()
+    public async Task Kasa_doldu_reuses_the_same_key_but_queues_a_distinct_operator_order()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -80,12 +80,13 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
 
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
         Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
-        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
     }
 
     [Fact]
-    public async Task Kasa_doldu_on_a_vacant_position_is_rejected_without_a_transport()
+    public async Task Kasa_doldu_on_a_vacant_position_is_queued_without_mutating_the_slot()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -95,17 +96,22 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
 
         var response = await SendActionAsync(client, context, mapped, "FULL", "wp08-vacant");
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("OCCUPIED_CONTAINER_REQUIRED", problem.RootElement.GetProperty("code").GetString());
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            """
+            SELECT count(*) FROM ops.transport_requests
+            WHERE idempotency_key = 'wp08-vacant'
+              AND status = 'QUEUED'
+              AND NOT machine_slot_reservation_active
+              AND NOT store_endpoint_reservation_active
+            """));
         Assert.Equal("UNKNOWN", await LoadAsync(mapped.SlotId));
     }
 
     [Theory]
     [InlineData("UNKNOWN", "UNKNOWN")]
     [InlineData("OCCUPIED", "UNKNOWN")]
-    public async Task Kasa_doldu_does_not_infer_empty_or_full_from_unknown_state(string occupancy, string load)
+    public async Task Kasa_doldu_keeps_unknown_state_unchanged_while_the_request_waits(string occupancy, string load)
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -115,10 +121,15 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
 
         var response = await SendActionAsync(client, context, mapped, "FULL", $"wp08-unk-{occupancy}-{load}");
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        using var problem = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        Assert.Equal("BUSINESS_RULE_NOT_CONFIGURED", problem.RootElement.GetProperty("code").GetString());
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            """
+            SELECT count(*) FROM ops.transport_requests
+            WHERE idempotency_key = @key
+              AND status = 'QUEUED'
+              AND NOT machine_slot_reservation_active
+            """,
+            ("key", $"wp08-unk-{occupancy}-{load}")));
         Assert.Equal(load, await LoadAsync(mapped.SlotId));
         Assert.Equal(occupancy, await fixture.ScalarAsync<string>(
             "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",

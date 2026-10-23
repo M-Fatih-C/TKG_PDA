@@ -106,25 +106,56 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         await LockAndValidateRuntimeContextAsync(connection, transaction, request, cancellationToken);
         await ValidateProductionTransportContextAsync(connection, transaction, request, cancellationToken);
         var taskTypeId = await ResolveAndValidateMasterDataAsync(connection, transaction, request, cancellationToken);
+        // A removal reported before its machine-side pallet physically exists
+        // must not consume scarce warehouse/return capacity.  Claim the
+        // machine source first; the deferred worker acquires the other endpoint
+        // on a later cycle once that source is proven.
+        var storeEndpointReservationActive = !(
+            request.DefersMachineSlotReservation
+            && !TransportRules.DeliversToMachine(request.TaskType));
 
         var registryProfile = await IsCommissioningRegistryProfileAsync(connection, transaction, request.NavigationProfileId, cancellationToken);
         if (registryProfile && !request.DefersStoreSourceReservation)
         {
-            request = await AssignRegistrySharedEndpointAsync(connection, transaction, request, cancellationToken);
+            try
+            {
+                var assigned = await AssignRegistrySharedEndpointAsync(
+                    connection, transaction, request, cancellationToken);
+                if (storeEndpointReservationActive)
+                {
+                    request = assigned;
+                }
+            }
+            catch (WorkflowRuleException error) when (
+                request.QueuesWhenResourcesUnavailable
+                && IsDeferrableStoreEndpointFailure(error.Code))
+            {
+                storeEndpointReservationActive = false;
+            }
         }
 
         // Layout EMPTY_STORAGE remains the buffer only when this request is not
         // on a commissioning navigation profile. Registry requests resolve
         // EMPTY_SOURCE / EMPTY_RETURN through profile_shared_endpoint_bindings.
-        if (!registryProfile
+        if (storeEndpointReservationActive
+            && !registryProfile
             && !request.DefersStoreSourceReservation
             && TransportRules.RequiresBufferSlot(request.TaskType)
             && TransportRules.BufferSlotId(request.TaskType, request.SourceSlotId, request.DestinationSlotId) is null)
         {
-            var allocatedBufferSlotId = await AllocateBufferSlotAsync(connection, transaction, request, cancellationToken);
-            request = request.TaskType == TransportTaskType.BringEmpty
-                ? request with { SourceSlotId = allocatedBufferSlotId }
-                : request with { DestinationSlotId = allocatedBufferSlotId };
+            try
+            {
+                var allocatedBufferSlotId = await AllocateBufferSlotAsync(connection, transaction, request, cancellationToken);
+                request = request.TaskType == TransportTaskType.BringEmpty
+                    ? request with { SourceSlotId = allocatedBufferSlotId }
+                    : request with { DestinationSlotId = allocatedBufferSlotId };
+            }
+            catch (WorkflowRuleException error) when (
+                request.QueuesWhenResourcesUnavailable
+                && error.Code == "EMPTY_BUFFER_UNAVAILABLE")
+            {
+                storeEndpointReservationActive = false;
+            }
         }
 
         // Customer UX — Automatic Machine Slot Resolution: when the operator
@@ -165,9 +196,36 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             slots.Add(slotId, slot);
         }
 
+        // A fresh operator command is durable even when the latest physical
+        // WorkSite sample temporarily disagrees with TKG state. Convert that
+        // command to a deferred machine reservation; dispatch remains closed
+        // until the normal physical gate becomes healthy again.
+        if (!request.DefersMachineSlotReservation)
+        {
+            try
+            {
+                await RequireSlotPhysicalConsistencyAsync(
+                    connection,
+                    transaction,
+                    slots[request.ReservedSlotId],
+                    request.NavigationProfileId,
+                    cancellationToken);
+            }
+            catch (WorkflowRuleException error) when (
+                request.QueuesWhenResourcesUnavailable
+                && IsDeferrablePhysicalFailure(error.Code))
+            {
+                request = request with { DefersMachineSlotReservation = true };
+                if (!TransportRules.DeliversToMachine(request.TaskType))
+                {
+                    storeEndpointReservationActive = false;
+                }
+            }
+        }
+
         if (request.DefersMachineSlotReservation)
         {
-            TransportRules.ValidateDeferredMachineDestination(request, slots[request.ReservedSlotId]);
+            TransportRules.ValidateDeferredMachineEndpoint(request, slots[request.ReservedSlotId]);
         }
         else
         {
@@ -186,17 +244,51 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         // on the request, so dispatch and completion use exactly what was
         // validated. It is deliberately not part of the slot reservation above:
         // many machines and positions share one drop position.
-        if (request.EnforcesFinishedGoodsDestination && request.DestinationBusinessCode is null)
+        if (storeEndpointReservationActive
+            && !registryProfile
+            && request.EnforcesFinishedGoodsDestination
+            && request.DestinationBusinessCode is null)
         {
-            request = request with
+            try
             {
-                DestinationSlotId = await ResolveFinishedGoodsDestinationAsync(connection, transaction, request, cancellationToken)
-            };
+                request = request with
+                {
+                    DestinationSlotId = await ResolveFinishedGoodsDestinationAsync(connection, transaction, request, cancellationToken)
+                };
+            }
+            catch (WorkflowRuleException error) when (
+                request.QueuesWhenResourcesUnavailable
+                && IsDeferrableStoreEndpointFailure(error.Code))
+            {
+                storeEndpointReservationActive = false;
+            }
+        }
+        else if (!storeEndpointReservationActive
+                 && !registryProfile
+                 && request.EnforcesFinishedGoodsDestination
+                 && request.DestinationBusinessCode is null)
+        {
+            var configuredSlotId = await ResolveFinishedGoodsDestinationSlotAsync(
+                connection,
+                transaction,
+                request.LayoutId,
+                request.VariantId,
+                request.ProductGroupId,
+                requireAvailableCapacity: false,
+                cancellationToken);
+            if (configuredSlotId is null)
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED",
+                    FinishedGoodsDestinationNotConfiguredMessage);
+            }
         }
 
         foreach (var slotId in new[] { request.SourceSlotId, request.DestinationSlotId }.OfType<Guid>().Distinct().Order())
         {
-            if (request.DefersMachineSlotReservation && slotId == request.DestinationSlotId)
+            // The machine endpoint was either verified above or deliberately
+            // deferred after a transient physical conflict.
+            if (slotId == request.ReservedSlotId)
             {
                 continue;
             }
@@ -206,8 +298,10 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             await RequireSlotPhysicalConsistencyAsync(connection, transaction, slot, request.NavigationProfileId, cancellationToken);
         }
 
-        var created = await InsertRequestAsync(connection, transaction, request, taskTypeId, batchId, cancellationToken);
-        if (!request.DefersStoreSourceReservation)
+        var created = await InsertRequestAsync(
+            connection, transaction, request, taskTypeId, batchId,
+            storeEndpointReservationActive, cancellationToken);
+        if (!request.DefersStoreSourceReservation && storeEndpointReservationActive)
         {
             await ReserveStoreEndpointAsync(
                 connection,
@@ -257,7 +351,9 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             created,
             TransportRequestStatus.Queued,
             request.RequestedBy,
-            request.DefersMachineSlotReservation ? "PREPARATION_DEMAND_QUEUED" : "SLOT_RESERVED_AND_QUEUED",
+            request.DefersMachineSlotReservation || !storeEndpointReservationActive
+                ? "OPERATOR_INTENT_QUEUED"
+                : "SLOT_RESERVED_AND_QUEUED",
             cancellationToken,
             new
             {
@@ -267,7 +363,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                     : TransportRules.DeliversToMachine(request.TaskType) ? "DESTINATION" : "SOURCE",
                 machine_slot_id = request.ReservedSlotId,
                 empty_storage_slot_id = bufferSlotId,
-                machine_slot_reservation_active = !request.DefersMachineSlotReservation
+                machine_slot_reservation_active = !request.DefersMachineSlotReservation,
+                store_endpoint_reservation_active = storeEndpointReservationActive
             },
             eventContext: eventContext);
 
@@ -1277,6 +1374,28 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
     /// Ordering by the slot's own configured display order keeps the choice
     /// deterministic.
     /// </summary>
+    private static bool IsDeferrableStoreEndpointFailure(string code) => code is
+        "EMPTY_BUFFER_UNAVAILABLE" or
+        "FINISHED_GOODS_STORE_FULL" or
+        "FINISHED_GOODS_CAPACITY_UNAVAILABLE" or
+        "NON_FINISHED_RETURN_CAPACITY_UNAVAILABLE" or
+        "EMPTY_RETURN_CAPACITY_UNAVAILABLE" or
+        "SHARED_ENDPOINT_CAPACITY_UNAVAILABLE" or
+        "RDS_WORKSITE_STALE" or
+        "RDS_WORKSITE_DISABLED" or
+        "RDS_WORKSITE_LOCKED" or
+        "RDS_WORKSITE_SYNC_FAILED" or
+        "RDS_WORKSITE_STATE_UNKNOWN" or
+        "RDS_WORKSITE_OCCUPANCY_CONFLICT";
+
+    private static bool IsDeferrablePhysicalFailure(string code) => code is
+        "RDS_WORKSITE_STALE" or
+        "RDS_WORKSITE_DISABLED" or
+        "RDS_WORKSITE_LOCKED" or
+        "RDS_WORKSITE_SYNC_FAILED" or
+        "RDS_WORKSITE_STATE_UNKNOWN" or
+        "RDS_WORKSITE_OCCUPANCY_CONFLICT";
+
     private static async Task<Guid> AllocateBufferSlotAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -1409,6 +1528,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         CreateTransportRequest request,
         Guid taskTypeId,
         Guid? batchId,
+        bool storeEndpointReservationActive,
         CancellationToken cancellationToken)
     {
         var id = Guid.NewGuid();
@@ -1419,7 +1539,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 machine_id, variant_id, layout_id, navigation_id,
                 product_group_id, part_id, container_type_id, task_type_id,
                 source_slot_id, destination_slot_id, destination_business_code, source_business_code, status, priority, batch_id,
-                readiness_state, production_session_id, machine_slot_reservation_active)
+                readiness_state, production_session_id, machine_slot_reservation_active,
+                store_endpoint_reservation_active)
             VALUES (
                 @id, @idempotency_key, @request_origin, @requested_by,
                 @machine_id, @variant_id, @layout_id, @navigation_id,
@@ -1427,7 +1548,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 @source_slot_id, @destination_slot_id, @destination_business_code, @source_business_code, 'CREATED', @priority, @batch_id,
                 @readiness_state,
                 (SELECT id FROM ops.production_sessions WHERE machine_id = @machine_id AND ended_at IS NULL),
-                @machine_slot_reservation_active)
+                @machine_slot_reservation_active, @store_endpoint_reservation_active)
             RETURNING request_no
             """,
             connection,
@@ -1452,6 +1573,7 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         AddNullableUuid(command, "batch_id", batchId);
         command.Parameters.AddWithValue("readiness_state", request.InitialReadinessState.ToDatabase());
         command.Parameters.AddWithValue("machine_slot_reservation_active", !request.DefersMachineSlotReservation);
+        command.Parameters.AddWithValue("store_endpoint_reservation_active", storeEndpointReservationActive);
         var requestNo = (long)(await command.ExecuteScalarAsync(cancellationToken)
             ?? throw new InvalidOperationException("Request insert did not return a request number."));
 

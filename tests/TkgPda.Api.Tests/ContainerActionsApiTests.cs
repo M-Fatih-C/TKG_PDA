@@ -4,6 +4,7 @@ using System.Text.Json;
 using Npgsql;
 using TkgPda.Api;
 using TkgPda.Application;
+using TkgPda.Domain;
 using TkgPda.Infrastructure.Postgres;
 using Xunit;
 
@@ -85,7 +86,7 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     [Theory]
     [InlineData("VACANT", "UNKNOWN")]
     [InlineData("UNKNOWN", "UNKNOWN")]
-    public async Task Kasa_doldu_rejects_unproven_container_state(string occupancy, string load)
+    public async Task Kasa_doldu_persists_operator_intent_until_container_state_is_proven(string occupancy, string load)
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -96,9 +97,18 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
 
         var response = await SendActionAsync(client, context, mapped, "FULL", $"wp33-full-{occupancy}");
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.transport_requests WHERE idempotency_key = @key",
+            ("key", $"wp33-full-{occupancy}")));
+        Assert.False(await fixture.ScalarAsync<bool>(
+            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE idempotency_key = @key",
+            ("key", $"wp33-full-{occupancy}")));
+        Assert.False(await fixture.ScalarAsync<bool>(
+            "SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE idempotency_key = @key",
+            ("key", $"wp33-full-{occupancy}")));
+        Assert.Equal("QUEUED", await fixture.ScalarAsync<string>(
+            "SELECT status FROM ops.transport_requests WHERE idempotency_key = @key",
             ("key", $"wp33-full-{occupancy}")));
     }
 
@@ -152,7 +162,7 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     }
 
     [Fact]
-    public async Task Kasa_bos_from_vacant_creates_bring_empty_but_occupied_is_rejected()
+    public async Task Kasa_bos_is_queued_for_each_position_even_when_the_position_is_still_occupied()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -166,12 +176,12 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
         using var client = await fixture.LoginClientAsync(identity);
 
         var created = await SendActionAsync(client, context, vacant, "EMPTY", "wp33-empty-vacant");
-        var rejectedEmpty = await SendActionAsync(client, context, occupiedEmpty, "EMPTY", "wp33-empty-occupied-empty");
-        var rejectedFull = await SendActionAsync(client, context, occupiedFull, "EMPTY", "wp33-empty-occupied-full");
+        var queuedBehindEmpty = await SendActionAsync(client, context, occupiedEmpty, "EMPTY", "wp33-empty-occupied-empty");
+        var queuedBehindFull = await SendActionAsync(client, context, occupiedFull, "EMPTY", "wp33-empty-occupied-full");
 
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, rejectedEmpty.StatusCode);
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, rejectedFull.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, queuedBehindEmpty.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, queuedBehindFull.StatusCode);
         Assert.Equal("BRING_EMPTY", await fixture.ScalarAsync<string>(
             """
             SELECT tt.code FROM ops.transport_requests r
@@ -183,8 +193,127 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
             SELECT readiness_state FROM ops.transport_requests
             WHERE idempotency_key = 'wp33-empty-vacant'
             """));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>(
+            """
+            SELECT count(*) FROM ops.transport_requests
+            WHERE idempotency_key IN ('wp33-empty-occupied-empty', 'wp33-empty-occupied-full')
+              AND status = 'QUEUED'
+              AND NOT machine_slot_reservation_active
+            """));
         Assert.Equal(0L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.store_reservations WHERE released_at IS NULL"));
+    }
+
+    [Fact]
+    public async Task Full_finished_goods_store_keeps_kasa_doldu_queued_until_capacity_is_released()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var mapped = await SeedMappedPositionAsync(context, "FULL-WAITING-CAPACITY");
+        await SetPositionAsync(mapped.SlotId, mapped.PartId, "OCCUPIED", "EMPTY");
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO ops.store_units (store_location_id, part_id, machine_id, load_state)
+            SELECT location.id, @part, @machine, 'FULL'
+            FROM ops.store_locations location
+            WHERE location.is_enabled AND location.area_purpose = 'DELIVERY'
+            ON CONFLICT DO NOTHING
+            """,
+            ("part", mapped.PartId),
+            ("machine", context.MachineId));
+        using var client = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(machineCode: "SH-01-A"));
+
+        var response = await SendActionAsync(
+            client, context, mapped, "FULL", "wp33-full-waiting-capacity");
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var requestId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp33-full-waiting-capacity'");
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE id = @id",
+            ("id", requestId)));
+        Assert.False(await fixture.ScalarAsync<bool>(
+            "SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE id = @id",
+            ("id", requestId)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM integration.rds_tasks WHERE transport_request_id = @id",
+            ("id", requestId)));
+
+        await fixture.ExecuteAsync(
+            """
+            DELETE FROM ops.store_units
+            WHERE store_location_id IN (
+                SELECT delivery.store_location_id
+                FROM ops.store_location_delivery_slots delivery
+                JOIN master.layout_slots slot ON slot.id = delivery.layout_slot_id
+                WHERE slot.layout_id = @layout)
+            """,
+            ("layout", context.LayoutId));
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        Assert.Equal(1, await store.ActivatePreparedPartDemandsAsync(100, null));
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE id = @id",
+            ("id", requestId)));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_reservations WHERE transport_request_id = @id AND released_at IS NULL",
+            ("id", requestId)));
+    }
+
+    [Fact]
+    public async Task Kasa_doldu_then_bos_kasa_getir_are_serialized_without_blocking_the_operator()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var mapped = await SeedMappedPositionAsync(context, "FULL-THEN-EMPTY");
+        await SetPositionAsync(mapped.SlotId, mapped.PartId, "OCCUPIED", "EMPTY");
+        using var client = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(machineCode: "SH-01-A"));
+
+        var removeResponse = await SendActionAsync(
+            client, context, mapped, "FULL", "wp33-full-then-empty-remove");
+        var bringResponse = await SendActionAsync(
+            client, context, mapped, "EMPTY", "wp33-full-then-empty-bring");
+
+        Assert.Equal(HttpStatusCode.Created, removeResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, bringResponse.StatusCode);
+        var removeId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp33-full-then-empty-remove'");
+        var bringId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp33-full-then-empty-bring'");
+        Assert.False(await fixture.ScalarAsync<bool>(
+            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE id = @id",
+            ("id", bringId)));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            """
+            SELECT count(*) FROM ops.transport_request_dependencies
+            WHERE predecessor_request_id = @predecessor AND successor_request_id = @successor
+            """,
+            ("predecessor", removeId),
+            ("successor", bringId)));
+
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        await store.RecordExecutionTransitionAsync(removeId, TransportRequestStatus.SentToRds);
+        await store.RecordExecutionTransitionAsync(removeId, TransportRequestStatus.Running);
+        await store.RecordExecutionTransitionAsync(removeId, TransportRequestStatus.Completed);
+        await fixture.ExecuteAsync(
+            """
+            UPDATE ops.transport_requests
+            SET readiness_state = 'READY', ready_at = clock_timestamp(), updated_at = now()
+            WHERE id = @id
+            """,
+            ("id", bringId));
+
+        Assert.Equal(1, await store.ActivatePreparedPartDemandsAsync(100, null));
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE id = @id",
+            ("id", bringId)));
+        Assert.Equal("VACANT|UNKNOWN", await fixture.ScalarAsync<string>(
+            """
+            SELECT occupancy_state || '|' || load_state
+            FROM ops.slot_runtime_state WHERE layout_slot_id = @slot
+            """,
+            ("slot", mapped.SlotId)));
     }
 
     [Fact]
@@ -582,7 +711,7 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     }
 
     [Fact]
-    public async Task Concurrent_container_actions_create_only_one_reservation()
+    public async Task Concurrent_identical_container_orders_with_distinct_keys_are_both_queued()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -595,10 +724,69 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
             SendActionAsync(client, context, mapped, "FULL", "wp33-concurrent-a"),
             SendActionAsync(client, context, mapped, "FULL", "wp33-concurrent-b"));
 
-        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.Created));
-        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.Conflict));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+        Assert.All(responses, response => Assert.Equal(HttpStatusCode.Created, response.StatusCode));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.transport_requests WHERE idempotency_key LIKE 'wp33-concurrent-%'"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_request_dependencies"));
+
+        var positions = await client.GetFromJsonAsync<ContainerPositionRecord[]>(
+            $"/api/v1/machines/{context.MachineId}/container-positions" +
+            $"?variantId={context.VariantId}&layoutId={context.LayoutId}" +
+            $"&productGroupId={mapped.ProductGroupId}&partId={mapped.PartId}");
+        var projected = Assert.Single(positions!);
+        Assert.True(projected.FullAction.Enabled);
+        Assert.True(projected.EmptyAction.Enabled);
+    }
+
+    [Fact]
+    public async Task A_new_production_job_queues_behind_an_active_request_from_the_previous_job()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var mapped = await SeedMappedPositionAsync(context, "CROSS-SESSION");
+        await SetPositionAsync(mapped.SlotId, mapped.PartId, "OCCUPIED", "FULL");
+        var identity = await fixture.SeedIdentityAsync(machineCode: "SH-01-A");
+        using var client = await fixture.LoginClientAsync(identity);
+
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await SendActionAsync(client, context, mapped, "FULL", "wp33-old-job")).StatusCode);
+        var oldSession = await fixture.ScalarAsync<Guid>(
+            """
+            INSERT INTO ops.production_sessions (
+                machine_id, variant_id, product_group_id, main_part_id,
+                start_key, started_by, started_device_id,
+                ended_at, ended_by, ended_device_id, status)
+            VALUES (
+                @machine, @variant, @group, @part,
+                @key, @user, @device,
+                clock_timestamp(), @user, @device, 'ENDED')
+            RETURNING id
+            """,
+            ("machine", context.MachineId),
+            ("variant", context.VariantId),
+            ("group", mapped.ProductGroupId),
+            ("part", mapped.PartId),
+            ("key", $"ended-{Guid.NewGuid():N}"),
+            ("user", identity.UserId),
+            ("device", identity.DeviceId));
+        await fixture.ExecuteAsync(
+            "UPDATE ops.transport_requests SET production_session_id = @session WHERE idempotency_key = 'wp33-old-job'",
+            ("session", oldSession));
+
+        var response = await SendActionAsync(client, context, mapped, "FULL", "wp33-new-job");
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM ops.transport_request_dependencies d
+            JOIN ops.transport_requests predecessor ON predecessor.id = d.predecessor_request_id
+            JOIN ops.transport_requests successor ON successor.id = d.successor_request_id
+            WHERE predecessor.idempotency_key = 'wp33-old-job'
+              AND successor.idempotency_key = 'wp33-new-job'
+            """));
     }
 
     [Fact]
@@ -624,6 +812,31 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
             "SELECT count(*) FROM ops.transport_batches WHERE idempotency_key = 'wp33-batch-reuse'"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.transport_requests WHERE batch_id IS NOT NULL"));
+    }
+
+    [Fact]
+    public async Task Container_action_batch_persists_an_empty_request_while_its_position_is_occupied()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var mapped = await SeedMappedPositionAsync(context, "BATCH-DEFERRED-EMPTY");
+        await SetPositionAsync(mapped.SlotId, mapped.PartId, "OCCUPIED", "EMPTY");
+        using var client = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(machineCode: "SH-01-A"));
+
+        var response = await SendActionBatchAsync(
+            client, context, mapped, "EMPTY", "wp33-batch-deferred-empty");
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            """
+            SELECT count(*)
+            FROM ops.transport_requests request
+            JOIN ops.transport_batches batch ON batch.id = request.batch_id
+            WHERE batch.idempotency_key = 'wp33-batch-deferred-empty'
+              AND request.status = 'QUEUED'
+              AND NOT request.machine_slot_reservation_active
+            """));
     }
 
     [Fact]

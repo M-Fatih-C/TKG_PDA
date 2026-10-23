@@ -720,17 +720,17 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
                            JOIN ops.transport_requests pred ON pred.id = d.predecessor_request_id
                            WHERE d.successor_request_id = r.id
                              AND pred.status <> 'COMPLETED') THEN 'WAITING_PREDECESSOR'
-                       WHEN NOT r.machine_slot_reservation_active
-                            AND r.readiness_state = 'READY' THEN 'WAITING_MACHINE_SLOT'
-                       WHEN EXISTS (
-                           SELECT 1
-                           FROM ops.transport_request_dependencies d
-                           WHERE d.predecessor_request_id = r.id) THEN 'REMOVING_EXISTING'
                        WHEN r.readiness_state = 'WAITING_PREPARATION'
                             AND EXISTS (
                                 SELECT 1 FROM ops.transport_request_dependencies d
                                 WHERE d.successor_request_id = r.id) THEN 'PREPARING_SUCCESSOR'
                        WHEN r.readiness_state = 'WAITING_PREPARATION' THEN 'PREPARING'
+                       WHEN NOT r.machine_slot_reservation_active THEN 'WAITING_MACHINE_SLOT'
+                       WHEN NOT r.store_endpoint_reservation_active THEN 'WAITING_STORE_CAPACITY'
+                       WHEN EXISTS (
+                           SELECT 1
+                           FROM ops.transport_request_dependencies d
+                           WHERE d.predecessor_request_id = r.id) THEN 'REMOVING_EXISTING'
                        ELSE NULL
                    END AS chain_state,
                    EXISTS (
