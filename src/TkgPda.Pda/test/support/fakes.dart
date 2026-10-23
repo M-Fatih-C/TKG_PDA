@@ -1399,6 +1399,9 @@ WarehouseDemand fakeDemand({
   String requestId = '',
   String machineCode = 'SH-01-A',
   String? partCode = '67185BN050-40',
+  String? variantCode,
+  String? variantName,
+  String? containerCode = '4311',
   String requestedLoad = 'FULL',
   DateTime? requestedAt,
   int? claimedByAreaNumber,
@@ -1410,7 +1413,7 @@ WarehouseDemand fakeDemand({
   partId: 'part-1',
   partCode: partCode,
   containerTypeId: 'container-1',
-  containerCode: '4311',
+  containerCode: containerCode,
   operation: requestedLoad == 'FULL' ? 'BRING_FULL' : 'BRING_EMPTY',
   requestedLoad: requestedLoad,
   requestedAt: requestedAt,
@@ -1418,6 +1421,8 @@ WarehouseDemand fakeDemand({
       ? null
       : 'area-$claimedByAreaNumber',
   claimedByAreaNumber: claimedByAreaNumber,
+  variantCode: variantCode,
+  variantName: variantName,
 );
 
 StoreUnit fakeStoreUnit({

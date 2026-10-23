@@ -169,7 +169,9 @@ class _LocationList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (coordinator.locations.isEmpty && coordinator.preparationAreas.isEmpty) {
+    if (coordinator.locations.isEmpty &&
+        coordinator.preparationAreas.isEmpty &&
+        coordinator.emptyContainerDemands.isEmpty) {
       return Center(
         key: const Key('store-empty'),
         child: Padding(
@@ -189,82 +191,282 @@ class _LocationList extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final gutter = PdaScale.gutter(context);
-        final deliveryColumns = (constraints.maxWidth / 450).floor().clamp(
-          1,
-          2,
-        );
-        final preparationColumns = (constraints.maxWidth / 360).floor().clamp(
-          1,
-          3,
-        );
-        return CustomScrollView(
-          key: const Key('store-location-list'),
-          slivers: [
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(gutter, gutter, gutter, gutter / 2),
-              sliver: const SliverToBoxAdapter(
-                child: _SectionTitle(
-                  title: 'Mamul Teslim Alanları',
-                  subtitle:
-                      'Robotun bitmiş ürün kasalarını bıraktığı 2 sabit alan',
-                  icon: Icons.inventory_2_outlined,
-                ),
+        if (constraints.maxWidth >= PdaScale.compactBreakpoint) {
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(child: _StoreAreaList(coordinator: coordinator)),
+              SizedBox(
+                width: constraints.maxWidth >= 1400 ? 390 : 340,
+                child: _FinishedGoodsDemandList(coordinator: coordinator),
               ),
-            ),
-            SliverPadding(
-              padding: EdgeInsets.symmetric(horizontal: gutter),
-              sliver: SliverGrid.builder(
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: deliveryColumns,
-                  crossAxisSpacing: gutter,
-                  mainAxisSpacing: gutter,
-                  mainAxisExtent: 250,
-                ),
-                itemCount: coordinator.locations.length,
-                itemBuilder: (context, index) => _LocationCard(
-                  coordinator: coordinator,
-                  location: coordinator.locations[index],
-                ),
-              ),
-            ),
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(
-                gutter,
-                gutter * 1.5,
-                gutter,
-                gutter / 2,
-              ),
-              sliver: SliverToBoxAdapter(
-                child: _SectionTitle(
-                  title: 'Boş Kasa Hazırlık Alanları',
-                  subtitle:
-                      '${coordinator.emptyContainerDemands.length} bekleyen talep · Her alanda en fazla 1 palet',
-                  icon: Icons.inbox_outlined,
-                ),
-              ),
-            ),
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(gutter, 0, gutter, gutter),
-              sliver: SliverGrid.builder(
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: preparationColumns,
-                  crossAxisSpacing: gutter,
-                  mainAxisSpacing: gutter,
-                  mainAxisExtent: 285,
-                ),
-                itemCount: coordinator.preparationAreas.length,
-                itemBuilder: (context, index) => _EmptyPreparationCard(
-                  coordinator: coordinator,
-                  area: coordinator.preparationAreas[index],
-                ),
-              ),
+            ],
+          );
+        }
+        return Column(
+          children: [
+            Expanded(flex: 3, child: _StoreAreaList(coordinator: coordinator)),
+            const Divider(height: 1),
+            Expanded(
+              flex: 2,
+              child: _FinishedGoodsDemandList(coordinator: coordinator),
             ),
           ],
         );
       },
     );
   }
+}
+
+class _StoreAreaList extends StatelessWidget {
+  const _StoreAreaList({required this.coordinator});
+
+  final StoreCoordinator coordinator;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final gutter = PdaScale.gutter(context);
+      final deliveryColumns = (constraints.maxWidth / 330).floor().clamp(1, 2);
+      final preparationColumns = (constraints.maxWidth / 300).floor().clamp(
+        1,
+        3,
+      );
+      return CustomScrollView(
+        key: const Key('store-location-list'),
+        slivers: [
+          SliverPadding(
+            padding: EdgeInsets.fromLTRB(gutter, gutter, gutter, gutter / 2),
+            sliver: const SliverToBoxAdapter(
+              child: _SectionTitle(
+                title: 'Mamul Teslim Alanları',
+                subtitle:
+                    'Robotun bitmiş ürün kasalarını bıraktığı 2 sabit alan',
+                icon: Icons.inventory_2_outlined,
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: EdgeInsets.symmetric(horizontal: gutter),
+            sliver: SliverGrid.builder(
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: deliveryColumns,
+                crossAxisSpacing: gutter,
+                mainAxisSpacing: gutter,
+                mainAxisExtent: 270,
+              ),
+              itemCount: coordinator.locations.length,
+              itemBuilder: (context, index) => _LocationCard(
+                coordinator: coordinator,
+                location: coordinator.locations[index],
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: EdgeInsets.fromLTRB(
+              gutter,
+              gutter * 1.5,
+              gutter,
+              gutter / 2,
+            ),
+            sliver: SliverToBoxAdapter(
+              child: _SectionTitle(
+                title: 'Boş Kasa Hazırlık Alanları',
+                subtitle:
+                    '${coordinator.emptyContainerDemands.length} bekleyen talep · Her alanda en fazla 1 palet',
+                icon: Icons.inbox_outlined,
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: EdgeInsets.fromLTRB(gutter, 0, gutter, gutter),
+            sliver: SliverGrid.builder(
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: preparationColumns,
+                crossAxisSpacing: gutter,
+                mainAxisSpacing: gutter,
+                mainAxisExtent: 285,
+              ),
+              itemCount: coordinator.preparationAreas.length,
+              itemBuilder: (context, index) => _EmptyPreparationCard(
+                coordinator: coordinator,
+                area: coordinator.preparationAreas[index],
+              ),
+            ),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+class _FinishedGoodsDemandList extends StatelessWidget {
+  const _FinishedGoodsDemandList({required this.coordinator});
+
+  final StoreCoordinator coordinator;
+
+  @override
+  Widget build(BuildContext context) {
+    final demands = coordinator.emptyContainerDemands;
+    return Container(
+      key: const Key('finished-goods-demand-panel'),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: const Border(left: BorderSide(color: Color(0xFFE2E8F0))),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: EdgeInsets.all(PdaScale.gutter(context)),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Gelen Talepler',
+                        style: TextStyle(
+                          fontSize: PdaScale.title(context),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        '${demands.length} bekleyen boş kasa talebi',
+                        style: TextStyle(
+                          fontSize: PdaScale.caption(context),
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (coordinator.hasUnseenDemands)
+                  TextButton(
+                    key: const Key('acknowledge-finished-goods-demands'),
+                    onPressed: coordinator.acknowledgeDemands,
+                    child: Text('${coordinator.unseenDemandIds.length} yeni'),
+                  ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: demands.isEmpty
+                ? const PdaEmptyState(
+                    icon: Icons.checklist_rtl_rounded,
+                    title: 'Bekleyen talep yok.',
+                    subtitle:
+                        'Makine boş kasa talepleri geldiğinde burada listelenecektir.',
+                    textKey: Key('finished-goods-demand-list-empty'),
+                  )
+                : ListView.separated(
+                    key: const Key('finished-goods-demand-list'),
+                    itemCount: demands.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) =>
+                        _FinishedGoodsDemandTile(demand: demands[index]),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FinishedGoodsDemandTile extends StatelessWidget {
+  const _FinishedGoodsDemandTile({required this.demand});
+
+  final WarehouseDemand demand;
+
+  @override
+  Widget build(BuildContext context) {
+    final variant = demand.variantName ?? demand.variantCode;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: ListTile(
+        key: Key('finished-goods-demand-${demand.requestNo}'),
+        dense: true,
+        title: Text(
+          demand.partCode ?? 'Parça bilinmiyor',
+          style: TextStyle(
+            fontSize: PdaScale.body(context),
+            fontWeight: FontWeight.w800,
+            color: const Color(0xFF0F172A),
+          ),
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 2),
+            Text(
+              '${demand.machineCode} · Talep #${demand.requestNo}',
+              style: TextStyle(
+                fontSize: PdaScale.caption(context),
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF475569),
+              ),
+            ),
+            if (variant != null && variant.isNotEmpty)
+              Text(
+                'Varyant: $variant',
+                style: TextStyle(fontSize: PdaScale.caption(context)),
+              ),
+            Text(
+              'Palet/Kasa: ${demand.containerCode ?? 'Tanımsız'}',
+              style: TextStyle(fontSize: PdaScale.caption(context)),
+            ),
+            Text(
+              _demandWaitedLabel(demand.requestedAt),
+              style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+            ),
+            if (demand.claimedByAreaNumber case final number?)
+              Text(
+                'Hazırlık Alanı $number hazırlıyor',
+                style: TextStyle(
+                  color: const Color(0xFF2F6FED),
+                  fontWeight: FontWeight.w700,
+                  fontSize: PdaScale.caption(context),
+                ),
+              ),
+          ],
+        ),
+        trailing: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0B4F6C).withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Text(
+            'Boş Kasa',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF0B4F6C),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _demandWaitedLabel(DateTime? requestedAt) {
+  if (requestedAt == null) return 'İstenme zamanı bilinmiyor';
+  final waited = DateTime.now().difference(requestedAt);
+  final clock = DateFormat('HH:mm').format(requestedAt);
+  if (waited.isNegative) return 'İstendi: $clock';
+  if (waited.inMinutes < 1) return 'İstendi: $clock · az önce';
+  if (waited.inMinutes < 60) {
+    return 'İstendi: $clock · ${waited.inMinutes} dk';
+  }
+  return 'İstendi: $clock · ${waited.inHours} sa ${waited.inMinutes % 60} dk';
 }
 
 class _SectionTitle extends StatelessWidget {

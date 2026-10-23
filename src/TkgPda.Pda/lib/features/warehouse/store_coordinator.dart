@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../app/app_controller.dart' show AppStage;
 import '../../core/errors/api_problem.dart';
 import '../../data/models/preparation_area.dart';
 import '../../data/models/store_location.dart';
@@ -38,6 +39,11 @@ class StoreCoordinator extends ChangeNotifier {
   /// explicit acknowledgement, so a later poll cannot swallow one.
   Set<String> unseenUnitIds = const {};
 
+  /// Empty-container preparation demands that arrived after the first load.
+  /// They stay marked until the warehouse operator explicitly acknowledges
+  /// them, matching the semi-finished preparation screen.
+  Set<String> unseenDemandIds = const {};
+
   Timer? _timer;
   bool _disposed = false;
   bool _primed = false;
@@ -46,6 +52,7 @@ class StoreCoordinator extends ChangeNotifier {
 
   bool isBusy(String id) => _busy.contains(id);
   bool get hasUnseenUnits => unseenUnitIds.isNotEmpty;
+  bool get hasUnseenDemands => unseenDemandIds.isNotEmpty;
 
   int get totalUnits =>
       locations.fold(0, (sum, location) => sum + location.unitCount);
@@ -76,6 +83,7 @@ class StoreCoordinator extends ChangeNotifier {
     preparationAreas = const [];
     emptyContainerDemands = const [];
     unseenUnitIds = const {};
+    unseenDemandIds = const {};
     _primed = false;
     error = null;
     _notify();
@@ -131,6 +139,33 @@ class StoreCoordinator extends ChangeNotifier {
             _alert();
           }
         }
+
+        final knownDemands = emptyContainerDemands
+            .map((demand) => demand.requestId)
+            .toSet();
+        final arrivedDemands = loadedDemands
+            .where((demand) => !knownDemands.contains(demand.requestId))
+            .toList(growable: false);
+        if (arrivedDemands.isNotEmpty) {
+          unseenDemandIds = {
+            ...unseenDemandIds,
+            ...arrivedDemands.map((demand) => demand.requestId),
+          };
+          if (notificationCoordinator != null) {
+            for (final demand in arrivedDemands) {
+              notificationCoordinator!.notifyDemand(
+                requestId: demand.requestId,
+                machineCode: demand.machineCode,
+                partCode: demand.partCode ?? 'Parça',
+                needsMaterial: demand.needsMaterial,
+                requestNo: demand.requestNo,
+                targetStage: AppStage.finishedGoodsStore,
+              );
+            }
+          } else {
+            _alert();
+          }
+        }
       }
 
       locations = loaded;
@@ -151,6 +186,10 @@ class StoreCoordinator extends ChangeNotifier {
       }
 
       unseenUnitIds = unseenUnitIds.intersection(live);
+      final liveDemandIds = loadedDemands
+          .map((demand) => demand.requestId)
+          .toSet();
+      unseenDemandIds = unseenDemandIds.intersection(liveDemandIds);
       _primed = true;
       if (!keepError) error = null;
     } on ConnectivityException {
@@ -170,6 +209,12 @@ class StoreCoordinator extends ChangeNotifier {
   void acknowledgeArrivals() {
     if (unseenUnitIds.isEmpty) return;
     unseenUnitIds = const {};
+    _notify();
+  }
+
+  void acknowledgeDemands() {
+    if (unseenDemandIds.isEmpty) return;
+    unseenDemandIds = const {};
     _notify();
   }
 

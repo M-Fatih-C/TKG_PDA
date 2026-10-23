@@ -354,6 +354,75 @@ void main() {
     expect(repository.placedPallets.single['load'], 'EMPTY');
   });
 
+  testWidgets(
+    'incoming empty-container demands show machine variant part and preparation state',
+    (tester) async {
+      repository.storeLocationsValue = [
+        fakeStoreLocation(code: 'FG-01'),
+        fakeStoreLocation(code: 'FG-02'),
+      ];
+      repository.finishedGoodsPreparationAreasValue = [
+        for (var number = 1; number <= 6; number++) fakeArea(number: number),
+      ];
+      repository.finishedGoodsPreparationDemandsValue = [
+        fakeDemand(
+          requestNo: 91,
+          requestedLoad: 'EMPTY',
+          variantName: 'Varyant 4',
+          containerCode: '4322',
+          claimedByAreaNumber: 3,
+          requestedAt: DateTime.now().subtract(const Duration(minutes: 7)),
+        ),
+      ];
+
+      await pump(tester);
+
+      expect(
+        find.byKey(const Key('finished-goods-demand-panel')),
+        findsOneWidget,
+      );
+      expect(find.text('Gelen Talepler'), findsOneWidget);
+      expect(find.byKey(const Key('finished-goods-demand-91')), findsOneWidget);
+      expect(find.text('67185BN050-40'), findsOneWidget);
+      expect(find.text('SH-01-A · Talep #91'), findsOneWidget);
+      expect(find.text('Varyant: Varyant 4'), findsOneWidget);
+      expect(find.text('Palet/Kasa: 4322'), findsOneWidget);
+      expect(find.text('Hazırlık Alanı 3 hazırlıyor'), findsOneWidget);
+      expect(find.textContaining('7 dk'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'a demand arriving between polls stays marked until acknowledged',
+    (tester) async {
+      repository.storeLocationsValue = [fakeStoreLocation(code: 'FG-01')];
+      repository.finishedGoodsPreparationAreasValue = [fakeArea(number: 1)];
+      await pump(tester);
+
+      repository.finishedGoodsPreparationDemandsValue = [
+        fakeDemand(requestNo: 92, requestedLoad: 'EMPTY'),
+      ];
+      await coordinator.refresh(silent: true);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('acknowledge-finished-goods-demands')),
+        findsOneWidget,
+      );
+      expect(find.text('1 yeni'), findsOneWidget);
+
+      await tester.tap(
+        find.byKey(const Key('acknowledge-finished-goods-demands')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('acknowledge-finished-goods-demands')),
+        findsNothing,
+      );
+    },
+  );
+
   testWidgets('store states use words and icons, not color alone', (
     tester,
   ) async {
