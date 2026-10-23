@@ -194,9 +194,6 @@ class AppController extends ChangeNotifier {
           _resolvedCompatibleVariant?.productGroupId ==
               production.active!.productGroupId);
   String? get productionContextError => _productionContextError;
-  bool get _hasNonProductionEndActiveTransports =>
-      _context?.activeTransportRequests.any((r) => !r.productionEnd) ?? false;
-
   bool get canStartProduction =>
       usesProductionWorkflow &&
       mutationEnabled &&
@@ -205,7 +202,7 @@ class AppController extends ChangeNotifier {
       !production.hasPending &&
       partSelectionReady &&
       (_context?.machine.permissions.canOperate ?? false) &&
-      !_hasNonProductionEndActiveTransports &&
+      (_context?.activeTransportRequests.isEmpty ?? false) &&
       _batchCart.isEmpty &&
       !hasAmbiguousSubmission &&
       !hasAmbiguousBatchSubmission;
@@ -219,7 +216,7 @@ class AppController extends ChangeNotifier {
       production.active != null &&
       !production.hasPending &&
       (_context?.machine.permissions.canOperate ?? false) &&
-      !_hasNonProductionEndActiveTransports &&
+      (_context?.activeTransportRequests.isEmpty ?? false) &&
       _batchCart.isEmpty &&
       !hasAmbiguousSubmission &&
       !hasAmbiguousBatchSubmission;
@@ -2328,7 +2325,7 @@ class AppController extends ChangeNotifier {
         : UiNotice(
             production.active?.isEnding == true
                 ? 'Üretim bitiriliyor. Paletler sırayla kaldırılacak.'
-                : 'Üretim bitirildi. Kaldırma görevleri arka planda yürütülüyor.',
+                : 'Üretim durumu güncellendi.',
             UiNoticeSeverity.success,
           );
     notifyListeners();

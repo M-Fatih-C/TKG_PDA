@@ -1208,11 +1208,10 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
     }
 
     [Theory]
-    [InlineData(0, false, "RDS_WORKSITE_OCCUPANCY_CONFLICT")]
-    [InlineData(1, true, null)]
-    [InlineData(null, false, "RDS_WORKSITE_STATE_UNKNOWN")]
-    public async Task Empty_source_requires_the_selected_physical_pallet_to_be_present(
-        int? filled, bool succeeds, string? expectedError)
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(null)]
+    public async Task Empty_request_queues_preparation_before_source_physical_evidence_is_relevant(int? filled)
     {
         var setup=await PrepareTwoMachineScenesAsync(includeFg02:false);
         var scene=setup.SceneA;
@@ -1225,36 +1224,19 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         { Content=JsonContent.Create(new CreateContainerActionHttpRequest(scene.VariantId,scene.LayoutId,null,scene.Group,scene.MainPart,scene.Position,"EMPTY")) };
         action.Headers.Add(ApiHeaders.IdempotencyKey,"pool-source");
         var response=await client.SendAsync(action);
-        var body = await response.Content.ReadAsStringAsync();
-        Assert.Equal(succeeds, response.IsSuccessStatusCode);
-        if (!succeeds)
-        {
-            Assert.Contains(expectedError!, body);
-            Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-            return;
-        }
-
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         Assert.Equal("BRING_EMPTY",await fixture.ScalarAsync<string>("SELECT tt.code FROM ops.transport_requests r JOIN master.task_types tt ON tt.id=r.task_type_id"));
-        Assert.Equal("EMPTY-01", await fixture.ScalarAsync<string>("SELECT source_business_code FROM ops.transport_requests"));
-        Assert.Equal("TEST-FG-EMPTY", await fixture.ScalarAsync<string>("""
-            SELECT sl.code FROM ops.store_reservations sr
-            JOIN ops.store_locations sl ON sl.id = sr.store_location_id
-            WHERE sr.released_at IS NULL AND sr.reservation_type = 'PICKUP'
-            """));
-
-        var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
-        await using var workflow = new PostgresTransportWorkflowStore(fixture.ConnectionString);
-        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds);
-        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running);
-        await workflow.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Completed);
-        Assert.Equal("ROBOT", await fixture.ScalarAsync<string>(
-            "SELECT removal_source FROM ops.store_units WHERE transport_request_id IS NULL AND removed_at IS NOT NULL ORDER BY removed_at DESC LIMIT 1"));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
-            "SELECT count(*) FROM ops.store_units WHERE removal_source = 'ROBOT' AND removed_by IS NULL AND removed_device_id IS NULL"));
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
+            "SELECT readiness_state FROM ops.transport_requests"));
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT source_business_code IS NULL FROM ops.transport_requests"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_reservations WHERE released_at IS NULL"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
     }
 
     [Fact]
-    public async Task Empty_request_is_rejected_when_the_selected_physical_source_has_no_registered_pallet()
+    public async Task Empty_request_without_a_registered_pallet_creates_one_finished_goods_preparation_demand()
     {
         var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
         var scene = setup.SceneA;
@@ -1278,13 +1260,21 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         action.Headers.Add(ApiHeaders.IdempotencyKey, "missing-selected-empty-pallet");
 
         var response = await client.SendAsync(action);
-        var body = await response.Content.ReadAsStringAsync();
-
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        Assert.Contains("FINISHED_GOODS_NO_EMPTY_CONTAINER", body);
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var requestId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'missing-selected-empty-pallet'");
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
+            "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
         Assert.Equal(0L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.store_reservations WHERE released_at IS NULL"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
+        using var warehouseClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(
+                role: RoleCodes.FinishedGoodsWarehouseOperator,
+                machineCode: "SH-01-A"));
+        var demands = await warehouseClient.GetFromJsonAsync<List<WarehouseDemandRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/demands");
+        Assert.Single(demands!, demand => demand.RequestId == requestId);
         Assert.True(await fixture.ScalarAsync<long>("""
             SELECT count(*) FROM ops.store_units u
             JOIN ops.store_locations sl ON sl.id = u.store_location_id
@@ -1293,7 +1283,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
     }
 
     [Fact]
-    public async Task Mixed_disabled_filled_and_reserved_destinations_select_next_free_business_code_deterministically()
+    public async Task Disabled_first_static_delivery_area_selects_the_second_area_deterministically()
     {
         try
         {
@@ -1301,22 +1291,14 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         var scene=setup.SceneA;
         await fixture.ExecuteAsync("""
             UPDATE integration.rds_worksites w SET last_disabled=CASE WHEN b.business_code='FG-01' THEN 1 ELSE 0 END,
-                last_filled=CASE WHEN b.business_code='FG-02' THEN 1 ELSE 0 END
+                last_filled=0
             FROM integration.profile_shared_endpoint_bindings b WHERE w.id=b.rds_worksite_id AND b.navigation_profile_id=@nav AND b.endpoint_class='FINISHED_GOODS';
-            INSERT INTO integration.rds_worksites(navigation_profile_id,rds_site_id,rds_type,last_filled,last_locked,last_disabled,last_sync_failed,last_sync_at,raw_state_json)
-            VALUES(@nav,'ISOLATED-FG03',1,0,0,0,0,now(),'{"filled":0}'::jsonb),(@nav,'ISOLATED-FG04',1,0,0,0,0,now(),'{"filled":0}'::jsonb);
-            INSERT INTO integration.profile_shared_endpoint_bindings(navigation_profile_id,endpoint_class,business_code,rds_worksite_id,store_location_id)
-            SELECT @nav,'FINISHED_GOODS',l.code,w.id,l.id FROM integration.rds_worksites w CROSS JOIN ops.store_locations l
-            WHERE w.navigation_profile_id=@nav AND ((w.rds_site_id='ISOLATED-FG03' AND l.code='FG-03') OR (w.rds_site_id='ISOLATED-FG04' AND l.code='FG-04'));
-            INSERT INTO ops.transport_requests(request_origin,requested_by,machine_id,variant_id,layout_id,navigation_id,task_type_id,status,priority,destination_business_code)
-            SELECT 'API',@user,@machine,@variant,@layout,@otherNav,id,'QUEUED',10,'FG-03' FROM master.task_types WHERE code='REMOVE_FULL';
-            """,("nav",scene.NavigationId),("user",setup.SceneB.Operator.UserId),("machine",setup.SceneB.MachineId),
-            ("variant",setup.SceneB.VariantId),("layout",setup.SceneB.LayoutId),("otherNav",setup.SceneB.NavigationId));
+            """,("nav",scene.NavigationId));
         using var client=await fixture.LoginClientAsync(scene.Operator);
         await StartAsync(client,scene);
         var response=await client.SendAsync(CreateFullContainerActionRequest(scene,"mixed-physical"));
         Assert.True(response.IsSuccessStatusCode,await response.Content.ReadAsStringAsync());
-        Assert.Equal("FG-04",await fixture.ScalarAsync<string>("SELECT destination_business_code FROM ops.transport_requests WHERE machine_id=@m",("m",scene.MachineId)));
+        Assert.Equal("FG-02",await fixture.ScalarAsync<string>("SELECT destination_business_code FROM ops.transport_requests WHERE machine_id=@m",("m",scene.MachineId)));
         }
         finally { await RemoveIsolatedPhysicalFixturesAsync(); }
     }

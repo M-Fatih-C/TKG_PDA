@@ -80,27 +80,15 @@ public sealed class DemoSimulationWorker(
         await using (var command = new NpgsqlCommand(
             """
             SELECT r.id, r.request_no, tt.code AS task_type, r.status, r.readiness_state,
-                   r.machine_slot_reservation_active,
                    r.created_at, r.ready_at,
                    t.rds_status, t.sent_at, t.started_at
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
             LEFT JOIN integration.rds_tasks t ON t.transport_request_id = r.id
             WHERE (r.status = 'QUEUED' AND r.readiness_state = 'WAITING_PREPARATION')
-               OR (r.status = 'QUEUED' AND r.readiness_state = 'READY' AND NOT r.machine_slot_reservation_active)
-               OR (
-                   r.status = 'QUEUED'
-                   AND r.machine_slot_reservation_active
-                   AND NOT EXISTS (
-                       SELECT 1
-                       FROM ops.transport_request_dependencies d
-                       JOIN ops.transport_requests pred ON pred.id = d.predecessor_request_id
-                       WHERE d.successor_request_id = r.id
-                         AND pred.status <> 'COMPLETED'
-                   )
-               )
+               OR (r.status = 'QUEUED' AND r.machine_slot_reservation_active)
                OR r.status IN ('SENT_TO_RDS', 'RUNNING')
-            ORDER BY r.priority ASC, r.created_at ASC
+            ORDER BY r.created_at ASC
             LIMIT 20;
             """, connection))
         {
@@ -113,12 +101,11 @@ public sealed class DemoSimulationWorker(
                     reader.GetString(2),
                     reader.GetString(3),
                     reader.GetString(4),
-                    reader.GetBoolean(5),
-                    reader.GetFieldValue<DateTimeOffset>(6),
-                    reader.IsDBNull(7) ? null : reader.GetFieldValue<DateTimeOffset>(7),
-                    reader.IsDBNull(8) ? null : reader.GetInt32(8),
-                    reader.IsDBNull(9) ? null : reader.GetFieldValue<DateTimeOffset>(9),
-                    reader.IsDBNull(10) ? null : reader.GetFieldValue<DateTimeOffset>(10)));
+                    reader.GetFieldValue<DateTimeOffset>(5),
+                    reader.IsDBNull(6) ? null : reader.GetFieldValue<DateTimeOffset>(6),
+                    reader.IsDBNull(7) ? null : reader.GetInt32(7),
+                    reader.IsDBNull(8) ? null : reader.GetFieldValue<DateTimeOffset>(8),
+                    reader.IsDBNull(9) ? null : reader.GetFieldValue<DateTimeOffset>(9)));
             }
         }
 
@@ -157,43 +144,6 @@ public sealed class DemoSimulationWorker(
 
             await using var prepCmd = new NpgsqlCommand(
                 """
-                WITH vacant_area AS (
-                    SELECT pa.id
-                    FROM ops.preparation_areas pa
-                    WHERE pa.is_enabled
-                      AND pa.warehouse_scope = CASE WHEN @task_type = 'BRING_EMPTY' THEN 'FINISHED_GOODS' ELSE 'SEMI_FINISHED' END
-                      AND NOT EXISTS (
-                          SELECT 1 FROM ops.preparation_pallets pp
-                          WHERE pp.preparation_area_id = pa.id AND pp.released_at IS NULL
-                      )
-                    ORDER BY pa.area_number
-                    LIMIT 1
-                ),
-                inserted_pallet AS (
-                    INSERT INTO ops.preparation_pallets (
-                        preparation_area_id, container_type_id, load_state, part_id,
-                        transport_request_id, placed_by, placed_device_id, placed_at,
-                        ready_at, ready_by, row_version
-                    )
-                    SELECT v.id,
-                           COALESCE(r.container_type_id, (SELECT id FROM master.container_types ORDER BY code LIMIT 1)),
-                           CASE WHEN @task_type = 'BRING_EMPTY' THEN 'EMPTY' ELSE 'FULL' END,
-                           CASE WHEN @task_type = 'BRING_EMPTY' THEN NULL ELSE r.part_id END,
-                           r.id,
-                           COALESCE(r.requested_by, (SELECT id FROM auth.users WHERE is_active ORDER BY id LIMIT 1)),
-                           (SELECT id FROM audit.client_devices WHERE is_active ORDER BY id LIMIT 1),
-                           @ready_at,
-                           @ready_at,
-                           COALESCE(r.requested_by, (SELECT id FROM auth.users WHERE is_active ORDER BY id LIMIT 1)),
-                           1
-                    FROM vacant_area v
-                    JOIN ops.transport_requests r ON r.id = @id
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM ops.preparation_pallets existing
-                        WHERE existing.transport_request_id = @id AND existing.released_at IS NULL
-                    )
-                    RETURNING id
-                )
                 UPDATE ops.transport_requests
                 SET readiness_state = 'READY',
                     ready_at = @ready_at,
@@ -201,38 +151,17 @@ public sealed class DemoSimulationWorker(
                     updated_at = now()
                 WHERE id = @id
                   AND status = 'QUEUED'
-                  AND readiness_state = 'WAITING_PREPARATION'
-                  AND (
-                      EXISTS (SELECT 1 FROM inserted_pallet)
-                      OR EXISTS (
-                          SELECT 1 FROM ops.preparation_pallets existing
-                          WHERE existing.transport_request_id = @id AND existing.released_at IS NULL
-                      )
-                  );
+                  AND readiness_state = 'WAITING_PREPARATION';
                 """, connection);
             prepCmd.Parameters.AddWithValue("id", req.Id);
-            prepCmd.Parameters.AddWithValue("task_type", req.TaskType);
             prepCmd.Parameters.AddWithValue("ready_at", now);
             await prepCmd.ExecuteNonQueryAsync(cancellationToken);
 
             logger.LogInformation("Demo simulation: Auto-prepared warehouse demand for request {RequestNo}.", req.RequestNo);
-
-            // Immediately trigger slot activation so it does not wait an extra worker cycle
-            await workflowStore.ActivatePreparedPartDemandsAsync(
-                100,
-                OperationalEventContext.System(Guid.NewGuid()),
-                cancellationToken);
             return;
         }
 
-        // 2. Machine Slot Reservation Guard:
-        // A QUEUED request cannot be dispatched until its slot reservation is active.
-        if (req.Status == "QUEUED" && !req.MachineSlotReservationActive)
-        {
-            return;
-        }
-
-        // 3. Queued -> SentToRds
+        // 2. Queued -> SentToRds
         if (req.Status == "QUEUED")
         {
             var effectiveStart = req.ReadyAt ?? req.CreatedAt;
@@ -571,7 +500,6 @@ public sealed class DemoSimulationWorker(
         NpgsqlConnection connection,
         CancellationToken cancellationToken)
     {
-        // 1. Keep layout EMPTY_STORAGE buffer slots replenished (if any layout configures them)
         await using var replenishCmd = new NpgsqlCommand(
             """
             UPDATE ops.slot_runtime_state rs
@@ -589,111 +517,6 @@ public sealed class DemoSimulationWorker(
               );
             """, connection);
         await replenishCmd.ExecuteNonQueryAsync(cancellationToken);
-
-        // 2. In demo simulation, recycle oldest delivered store units when delivery locations are near capacity
-        // so that repeated REMOVE_FULL operations never fail due to store exhaustion.
-        await using var recycleCmd = new NpgsqlCommand(
-            """
-            UPDATE ops.store_units
-            SET removed_at = now(),
-                removal_source = 'ROBOT',
-                row_version = row_version + 1
-            WHERE id IN (
-                SELECT u.id
-                FROM ops.store_units u
-                JOIN ops.store_locations sl ON sl.id = u.store_location_id
-                WHERE u.removed_at IS NULL
-                  AND u.load_state = 'FULL'
-                  AND sl.area_purpose = 'DELIVERY'
-                ORDER BY u.delivered_at ASC
-                LIMIT 1
-            )
-            AND (
-                (
-                    SELECT count(*)
-                    FROM ops.store_units u2
-                    JOIN ops.store_locations sl2 ON sl2.id = u2.store_location_id
-                    WHERE u2.removed_at IS NULL AND u2.load_state = 'FULL' AND sl2.area_purpose = 'DELIVERY'
-                ) >= 2
-                OR EXISTS (
-                    SELECT 1
-                    FROM ops.store_units u3
-                    JOIN ops.store_locations sl3 ON sl3.id = u3.store_location_id
-                    WHERE u3.removed_at IS NULL AND u3.load_state = 'FULL' AND sl3.area_purpose = 'DELIVERY'
-                      AND now() - u3.delivered_at > interval '20 seconds'
-                )
-            );
-            """, connection);
-        await recycleCmd.ExecuteNonQueryAsync(cancellationToken);
-
-        // 3. In demo simulation, release any active preparation pallets linked to cancelled or failed requests
-        // so that preparation areas immediately become vacant and reusable.
-        await using var cleanPalletsCmd = new NpgsqlCommand(
-            """
-            WITH cancelled_pallets AS (
-                UPDATE ops.preparation_pallets pp
-                SET released_at = now(),
-                    released_by = COALESCE(pp.ready_by, pp.placed_by),
-                    released_reason = 'REQUEST_CANCELLED',
-                    row_version = row_version + 1
-                WHERE pp.released_at IS NULL
-                  AND EXISTS (
-                      SELECT 1 FROM ops.transport_requests r
-                      WHERE r.id = pp.transport_request_id AND r.status IN ('CANCELLED', 'FAILED')
-                  )
-                RETURNING pp.id, pp.preparation_area_id, pp.part_id, pp.container_type_id, pp.transport_request_id, COALESCE(pp.ready_by, pp.placed_by) AS actor, pp.placed_device_id
-            )
-            INSERT INTO ops.preparation_events (
-                preparation_area_id, preparation_pallet_id, event_type, part_id, container_type_id,
-                transport_request_id, actor_user_id, device_id, occurred_at, data_json
-            )
-            SELECT c.preparation_area_id, c.id, 'PALLET_RELEASED', c.part_id, c.container_type_id,
-                   c.transport_request_id, c.actor, c.placed_device_id, now(), '{"reason":"REQUEST_CANCELLED","simulated":true}'::jsonb
-            FROM cancelled_pallets c;
-            """, connection);
-        await cleanPalletsCmd.ExecuteNonQueryAsync(cancellationToken);
-
-        // 4. In demo simulation, if all preparation areas of a scope are occupied and any request is waiting preparation,
-        // recycle the oldest pallet so preparation areas never deadlock.
-        await using var recyclePalletsCmd = new NpgsqlCommand(
-            """
-            WITH recycled_pallets AS (
-                UPDATE ops.preparation_pallets pp
-                SET released_at = now(),
-                    released_by = COALESCE(pp.ready_by, pp.placed_by),
-                    released_reason = 'AUTO_DEMO_RECYCLED',
-                    row_version = row_version + 1
-                WHERE pp.id IN (
-                    SELECT oldest.id
-                    FROM (
-                        SELECT p.id,
-                               ROW_NUMBER() OVER (PARTITION BY pa.warehouse_scope ORDER BY p.placed_at ASC) as rn
-                        FROM ops.preparation_pallets p
-                        JOIN ops.preparation_areas pa ON pa.id = p.preparation_area_id
-                        WHERE p.released_at IS NULL
-                          AND NOT EXISTS (
-                              SELECT 1 FROM ops.preparation_areas free_pa
-                              WHERE free_pa.is_enabled
-                                AND free_pa.warehouse_scope = pa.warehouse_scope
-                                AND NOT EXISTS (
-                                    SELECT 1 FROM ops.preparation_pallets free_pp
-                                    WHERE free_pp.preparation_area_id = free_pa.id AND free_pp.released_at IS NULL
-                                )
-                          )
-                    ) oldest
-                    WHERE oldest.rn = 1
-                )
-                RETURNING pp.id, pp.preparation_area_id, pp.part_id, pp.container_type_id, pp.transport_request_id, COALESCE(pp.ready_by, pp.placed_by) AS actor, pp.placed_device_id
-            )
-            INSERT INTO ops.preparation_events (
-                preparation_area_id, preparation_pallet_id, event_type, part_id, container_type_id,
-                transport_request_id, actor_user_id, device_id, occurred_at, data_json
-            )
-            SELECT r.preparation_area_id, r.id, 'PALLET_RELEASED', r.part_id, r.container_type_id,
-                   r.transport_request_id, r.actor, r.placed_device_id, now(), '{"reason":"AUTO_DEMO_RECYCLED","simulated":true}'::jsonb
-            FROM recycled_pallets r;
-            """, connection);
-        await recyclePalletsCmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private sealed record DemoCandidateRequest(
@@ -702,7 +525,6 @@ public sealed class DemoSimulationWorker(
         string TaskType,
         string Status,
         string ReadinessState,
-        bool MachineSlotReservationActive,
         DateTimeOffset CreatedAt,
         DateTimeOffset? ReadyAt,
         int? RdsStatus,

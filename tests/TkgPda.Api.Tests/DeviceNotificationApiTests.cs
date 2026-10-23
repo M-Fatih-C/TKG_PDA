@@ -13,12 +13,12 @@ namespace TkgPda.Api.Tests;
 public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
-    public async Task Nineteen_internal_locations_survive_seed_and_migration_replay()
+    public async Task Two_delivery_locations_and_six_preparation_areas_survive_seed_and_migration_replay()
     {
         await fixture.ResetAsync();
         var worksitesBefore = await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_worksites");
         await fixture.ExecuteScriptAsync(SeedFile("004_finished_goods_internal_locations.sql"));
-        await AssertProductionLocationsAsync();
+        await AssertFinishedGoodsLayoutAsync();
         var identity = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.store_locations WHERE code = 'FG-01'");
 
         await fixture.ExecuteAsync(
@@ -27,9 +27,9 @@ public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassF
         await fixture.ExecuteScriptAsync(MigrationFile("016_finished_goods_areas.sql"));
         await fixture.ExecuteScriptAsync(SeedFile("004_finished_goods_internal_locations.sql"));
 
-        await AssertProductionLocationsAsync();
+        await AssertFinishedGoodsLayoutAsync();
         Assert.Equal(identity, await fixture.ScalarAsync<Guid>("SELECT id FROM ops.store_locations WHERE code = 'FG-01'"));
-        Assert.Equal("TEST-DISPLAY-KEEP", await fixture.ScalarAsync<string>(
+        Assert.Equal("Mamul Teslim Alanı 1", await fixture.ScalarAsync<string>(
             "SELECT display_name FROM ops.store_locations WHERE code = 'FG-01'"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.store_locations WHERE code LIKE 'FG_AREA_%'"));
@@ -44,7 +44,7 @@ public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassF
     }
 
     [Fact]
-    public async Task Finished_goods_operator_sees_nineteen_locations_and_empty_record_is_not_a_delivery()
+    public async Task Finished_goods_operator_sees_two_delivery_locations_and_empty_record_is_not_a_delivery()
     {
         await fixture.ResetAsync();
         await fixture.ExecuteScriptAsync(SeedFile("004_finished_goods_internal_locations.sql"));
@@ -56,8 +56,8 @@ public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassF
         var listed = await client.GetFromJsonAsync<StoreLocationProbe[]>("/api/v1/warehouse/store/locations");
         var production = listed!.Where(location => System.Text.RegularExpressions.Regex.IsMatch(location.Code, "^FG-[0-9]{2}$")).ToArray();
 
-        Assert.Equal(19, production.Length);
-        Assert.Equal(Enumerable.Range(1, 19).Select(index => $"FG-{index:00}"), production.Select(location => location.Code).OrderBy(code => code));
+        Assert.Equal(2, production.Length);
+        Assert.Equal(new[] { "FG-01", "FG-02" }, production.Select(location => location.Code).OrderBy(code => code));
         Assert.All(production, location =>
         {
             Assert.True(location.IsEnabled);
@@ -65,7 +65,7 @@ public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassF
             Assert.Empty(location.Units);
         });
 
-        var target = production.Single(location => location.Code == "FG-19");
+        var target = production.Single(location => location.Code == "FG-02");
         var transportsBefore = await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests");
         var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/warehouse/store/locations/{target.Id}/empty-container");
         request.Headers.Add(ApiHeaders.IdempotencyKey, "fg-empty-" + Guid.NewGuid());
@@ -100,13 +100,13 @@ public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassF
         Assert.Equal(transportsBefore, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
-    private async Task AssertProductionLocationsAsync()
+    private async Task AssertFinishedGoodsLayoutAsync()
     {
-        Assert.Equal(19L, await fixture.ScalarAsync<long>(
+        Assert.Equal(2L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.store_locations WHERE code ~ '^FG-[0-9]{2}$'"));
-        Assert.Equal(19L, await fixture.ScalarAsync<long>(
+        Assert.Equal(2L, await fixture.ScalarAsync<long>(
             "SELECT count(DISTINCT code) FROM ops.store_locations WHERE code ~ '^FG-[0-9]{2}$'"));
-        for (var index = 1; index <= 19; index++)
+        for (var index = 1; index <= 2; index++)
         {
             var code = $"FG-{index:00}";
             Assert.True(await fixture.ScalarAsync<bool>(
@@ -115,9 +115,16 @@ public sealed class FinishedGoodsAreasApiTests(ApiTestFixture fixture) : IClassF
             Assert.True(await fixture.ScalarAsync<bool>(
                 "SELECT is_enabled FROM ops.store_locations WHERE code = @code",
                 ("code", code)));
+            Assert.True(await fixture.ScalarAsync<bool>(
+                "SELECT area_purpose = 'DELIVERY' AND is_operator_visible FROM ops.store_locations WHERE code = @code",
+                ("code", code)));
         }
 
-        Assert.Equal("FG-02", await fixture.ScalarAsync<string>(
+        Assert.Equal(6L, await fixture.ScalarAsync<long>("""
+            SELECT count(*) FROM ops.preparation_areas
+            WHERE warehouse_scope = 'FINISHED_GOODS' AND area_number BETWEEN 5 AND 10 AND is_enabled
+            """));
+        Assert.Equal("Mamul Teslim Alanı 2", await fixture.ScalarAsync<string>(
             "SELECT display_name FROM ops.store_locations WHERE code = 'FG-02'"));
     }
 

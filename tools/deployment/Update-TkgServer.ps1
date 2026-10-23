@@ -255,12 +255,12 @@ try {
 
         & $setProp $rawConfig.DemoMode 'SimulationDelaySeconds' 3
         & $setProp $rawConfig.DemoMode 'RunningDurationSeconds' 30
-        & $setProp $rawConfig.DemoMode 'AutoPrepareWarehouseDemands' $true
+        & $setProp $rawConfig.DemoMode 'AutoPrepareWarehouseDemands' $false
         if (-not $rawConfig.DemoMode.SimulatedAgvId) {
             & $setProp $rawConfig.DemoMode 'SimulatedAgvId' "DEMO-AGV-01"
         }
         $rawConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $prodConfigPath -Encoding UTF8
-        Log-Update "Refreshed DemoMode simulation parameters in $prodConfigPath (Duration: 30s, AutoPrepare: true)."
+        Log-Update "Refreshed DemoMode simulation parameters in $prodConfigPath (Duration: 30s, AutoPrepare: false)."
     }
 
     # 5. Stop Windows Service (Quiesce Application) BEFORE backup

@@ -237,7 +237,7 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
     }
 
     [Fact]
-    public async Task Source_backed_variants_are_classified_without_calling_missing_field_data_a_software_defect()
+    public async Task Source_backed_variants_and_current_customer_data_are_internally_consistent()
     {
         await fixture.ResetAsync();
         Assert.Equal(9L, await fixture.ScalarAsync<long>("SELECT count(*) FROM master.machines WHERE is_active"));
@@ -258,7 +258,14 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             """));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_worksites"));
         Assert.Equal(4L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.preparation_areas WHERE area_number BETWEEN 1 AND 4"));
-        Assert.Equal(19L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_locations WHERE code LIKE 'FG-%' AND is_enabled"));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("""
+            SELECT count(*) FROM ops.store_locations
+            WHERE code LIKE 'FG-%' AND is_enabled AND area_purpose = 'DELIVERY' AND is_operator_visible
+            """));
+        Assert.Equal(6L, await fixture.ScalarAsync<long>("""
+            SELECT count(*) FROM ops.preparation_areas
+            WHERE warehouse_scope = 'FINISHED_GOODS' AND is_enabled
+            """));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("""
             SELECT count(*)
             FROM master.product_groups pg
@@ -273,8 +280,8 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             SELECT count(*) FROM master.product_group_parts
             WHERE relation_type = 'ALT_PART' AND is_active AND container_type_id IS NULL
             """);
-        Assert.True(altParts > incomplete);
-        Assert.True(incomplete > 0);
+        Assert.True(altParts > 0);
+        Assert.Equal(0L, incomplete);
         Assert.Equal(96L, await fixture.ScalarAsync<long>("""
             SELECT count(*) FROM (
                 SELECT DISTINCT t.variant_id, tt.code

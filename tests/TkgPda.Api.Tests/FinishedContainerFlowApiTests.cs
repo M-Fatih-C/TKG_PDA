@@ -199,7 +199,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
     }
 
     [Fact]
-    public async Task Kasa_bos_reserves_a_real_empty_pallet_needs_no_finished_goods_mapping_and_is_not_dispatched()
+    public async Task Kasa_bos_queues_finished_goods_preparation_without_reserving_or_dispatching()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -211,7 +211,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
         var response = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-bos");
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        Assert.Equal("NOT_REQUIRED", await fixture.ScalarAsync<string>(
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
             "SELECT readiness_state FROM ops.transport_requests WHERE idempotency_key = 'wp08-bos'"));
         Assert.Equal("BRING_EMPTY", await fixture.ScalarAsync<string>(
             """
@@ -219,6 +219,10 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
             JOIN master.task_types tt ON tt.id = r.task_type_id WHERE r.idempotency_key = 'wp08-bos'
             """));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_reservations WHERE released_at IS NULL"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.preparation_pallets WHERE released_at IS NULL"));
         // Creating the request must not occupy the position.
         Assert.Equal("VACANT", await fixture.ScalarAsync<string>(
             "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
@@ -226,7 +230,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
     }
 
     [Fact]
-    public async Task Kasa_bos_is_immediately_ready_and_rejects_a_warehouse_ready_transition()
+    public async Task Kasa_bos_cannot_be_marked_ready_before_its_preparation_pallet_exists()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -242,8 +246,8 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
         var ready = await warehouseClient.PostAsync($"/api/v1/transport-requests/{requestId}/ready", null);
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, ready.StatusCode);
-        Assert.Equal("READINESS_NOT_APPLICABLE", await ApiTestFixture.ErrorCodeAsync(ready));
-        Assert.Equal("NOT_REQUIRED", await fixture.ScalarAsync<string>(
+        Assert.Equal("PREPARATION_PALLET_REQUIRED", await ApiTestFixture.ErrorCodeAsync(ready));
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
             "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
         Assert.Equal("VACANT", await fixture.ScalarAsync<string>(

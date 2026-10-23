@@ -62,7 +62,7 @@ public sealed class TransportReadinessApiTests(ApiTestFixture fixture) : IClassF
     }
 
     [Fact]
-    public async Task Mark_ready_transitions_waiting_preparation_to_ready_and_is_idempotent()
+    public async Task Mark_ready_cannot_bypass_the_required_preparation_pallet()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -76,22 +76,16 @@ public sealed class TransportReadinessApiTests(ApiTestFixture fixture) : IClassF
         using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);
 
         var first = await warehouseClient.PostAsync($"/api/v1/transport-requests/{created!.Id}/ready", null);
-        var firstBody = await first.Content.ReadFromJsonAsync<TransportHttpResponse>();
         var second = await warehouseClient.PostAsync($"/api/v1/transport-requests/{created.Id}/ready", null);
-        var secondBody = await second.Content.ReadFromJsonAsync<TransportHttpResponse>();
 
-        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
-        Assert.Equal("READY", firstBody!.ReadinessState);
-        Assert.NotNull(firstBody.ReadyAt);
-        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        Assert.Equal("READY", secondBody!.ReadinessState);
-        // The replay returns the row read back from Postgres (microsecond
-        // precision) while the first response serialized the in-memory
-        // DateTimeOffset.UtcNow (100ns ticks) it just wrote — tolerate that,
-        // don't require bit-for-bit equality.
-        Assert.True(
-            (firstBody.ReadyAt!.Value - secondBody.ReadyAt!.Value).Duration() < TimeSpan.FromMilliseconds(1),
-            $"Expected readyAt to stay stable across repeated mark-ready calls: {firstBody.ReadyAt:O} vs {secondBody.ReadyAt:O}.");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, first.StatusCode);
+        Assert.Equal("PREPARATION_PALLET_REQUIRED", await ApiTestFixture.ErrorCodeAsync(first));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, second.StatusCode);
+        Assert.Equal("PREPARATION_PALLET_REQUIRED", await ApiTestFixture.ErrorCodeAsync(second));
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
+            "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", created.Id)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE id = @id AND ready_at IS NOT NULL", ("id", created.Id)));
     }
 
     [Fact]
@@ -113,7 +107,7 @@ public sealed class TransportReadinessApiTests(ApiTestFixture fixture) : IClassF
     }
 
     [Fact]
-    public async Task Warehouse_operator_can_mark_a_request_ready()
+    public async Task Warehouse_operator_cannot_mark_a_request_ready_without_a_preparation_pallet()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -127,14 +121,13 @@ public sealed class TransportReadinessApiTests(ApiTestFixture fixture) : IClassF
         using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);
 
         var response = await warehouseClient.PostAsync($"/api/v1/transport-requests/{created!.Id}/ready", null);
-        var body = await response.Content.ReadFromJsonAsync<TransportHttpResponse>();
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("READY", body!.ReadinessState);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PREPARATION_PALLET_REQUIRED", await ApiTestFixture.ErrorCodeAsync(response));
     }
 
     [Fact]
-    public async Task Supervisor_can_mark_a_request_ready()
+    public async Task Supervisor_cannot_mark_a_request_ready_without_a_preparation_pallet()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -148,10 +141,9 @@ public sealed class TransportReadinessApiTests(ApiTestFixture fixture) : IClassF
         using var supervisorClient = await fixture.LoginClientAsync(supervisor);
 
         var response = await supervisorClient.PostAsync($"/api/v1/transport-requests/{created!.Id}/ready", null);
-        var body = await response.Content.ReadFromJsonAsync<TransportHttpResponse>();
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Equal("READY", body!.ReadinessState);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PREPARATION_PALLET_REQUIRED", await ApiTestFixture.ErrorCodeAsync(response));
     }
 
     [Fact]

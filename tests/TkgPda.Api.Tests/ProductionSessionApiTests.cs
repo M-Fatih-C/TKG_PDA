@@ -148,7 +148,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         Assert.Equal("ACTIVE_TRANSPORT_EXISTS", await ApiTestFixture.ErrorCodeAsync(response));
         Assert.Equal(status, await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests"));
-        Assert.Equal("NOT_REQUIRED", await fixture.ScalarAsync<string>("SELECT readiness_state FROM ops.transport_requests"));
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>("SELECT readiness_state FROM ops.transport_requests"));
         Assert.Equal(session.Id, await fixture.ScalarAsync<Guid>("SELECT production_session_id FROM ops.transport_requests"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_sessions WHERE ended_at IS NULL"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));

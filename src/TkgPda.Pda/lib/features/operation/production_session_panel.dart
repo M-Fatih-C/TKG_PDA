@@ -15,10 +15,7 @@ class ProductionSessionPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = controller.production;
     final active = state.active;
-    final openCount = controller.context?.activeTransportRequests
-            .where((r) => !r.productionEnd)
-            .length ??
-        0;
+    final openCount = controller.context?.activeTransportRequests.length ?? 0;
     final error = controller.productionContextError ?? state.error;
     if (active != null) {
       return _CompactActiveHeader(
