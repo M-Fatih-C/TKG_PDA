@@ -157,7 +157,7 @@ internal static class OperationalReportXlsx
     private const string Styles = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-          <numFmts count="2"><numFmt numFmtId="164" formatCode="dd.mm.yyyy hh:mm:ss"/><numFmt numFmtId="165" formatCode="[h]:mm:ss"/></numFmts>
+          <numFmts count="2"><numFmt numFmtId="164" formatCode="dd.mm.yyyy hh:mm:ss"/><numFmt numFmtId="165" formatCode="[&lt;0.416666666666667]&quot;0&quot;[h]:mm:ss;[&gt;=0.416666666666667][h]:mm:ss"/></numFmts>
           <fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts>
           <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0B5975"/><bgColor indexed="64"/></patternFill></fill></fills>
           <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>

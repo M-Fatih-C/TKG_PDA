@@ -226,7 +226,7 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         var styles = await ReadEntryAsync(workbook, "xl/styles.xml");
         Assert.Contains("Oturum Süresi", sheet);
         Assert.Contains("Ayşe Demir", sheet);
-        Assert.Contains("[h]:mm:ss", styles);
+        Assert.Contains("[&lt;0.416666666666667]&quot;0&quot;[h]:mm:ss", styles);
     }
 
     [Fact]
@@ -287,10 +287,23 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         using var workbook = new ZipArchive(excelStream, ZipArchiveMode.Read);
         var sheet = await ReadEntryAsync(workbook, "xl/worksheets/sheet1.xml");
         var styles = await ReadEntryAsync(workbook, "xl/styles.xml");
-        Assert.Contains("Depo Hazırlık Başlangıcı", sheet);
-        Assert.Contains("Robot Başlangıç", sheet);
+        var expectedHeaders = new[]
+        {
+            "Talep No", "Tarih", "Saat", "Sicil", "Kullanıcı", "Bilgisayar", "Makine", "Varyant", "İşlem", "Parça",
+            "Durum", "Depo Operatörü", "Hazırlık Alanı", "Robot", "Toplam Süre", "Depo Süresi", "Robot Süresi",
+            "Hata Kodu", "Hata Açıklaması"
+        };
+        var lastHeaderPosition = -1;
+        foreach (var header in expectedHeaders)
+        {
+            var headerPosition = sheet.IndexOf($">{header}<", StringComparison.Ordinal);
+            Assert.True(headerPosition > lastHeaderPosition, $"Expected header '{header}' in customer-approved order.");
+            lastHeaderPosition = headerPosition;
+        }
+        Assert.DoesNotContain("Depo Hazırlık Başlangıcı", sheet);
+        Assert.DoesNotContain("Robot Başlangıç", sheet);
         Assert.Contains("Şişe", sheet);
-        Assert.Contains("[h]:mm:ss", styles);
+        Assert.Contains("[&lt;0.416666666666667]&quot;0&quot;[h]:mm:ss", styles);
 
         var hash = await fixture.ScalarAsync<string>("SELECT password_hash FROM auth.users WHERE id = @id", ("id", admin.UserId));
         var body = await client.GetStringAsync(Report("tasks"));
