@@ -419,6 +419,30 @@ void main() {
     expect(repo.productionEndKeys, hasLength(1));
     expect(repo.productionEndKeys.single, startsWith('production-end:'));
   });
+
+  test('production-end cleanup transports do not block new production start', () async {
+    final cleanupRequest = ActiveTransportRequest.fromJson({
+      'requestId': '90000000-0000-0000-0000-000000000099',
+      'requestNo': 99,
+      'operation': 'REMOVE_FULL',
+      'status': 'QUEUED',
+      'requestedBy': testUser.id,
+      'isMine': true,
+      'createdAt': '2026-08-24T08:00:00Z',
+      'canCancel': false,
+      'execution': {'state': 'WAITING_FOR_ROBOT'},
+      'productionEnd': true,
+    });
+    final repo = FakePdaRepository()
+      ..productionValue = null
+      ..contextValue = testContext(activeRequests: [cleanupRequest]);
+    final c = await controller(repo);
+    await c.refreshContext();
+    await c.selectMainPartOption(testMainPartOption);
+    expect(c.partSelectionReady, isTrue);
+    expect(c.production.active, isNull);
+    expect(c.canStartProduction, isTrue);
+  });
 }
 
 final sessionJson = <String, dynamic>{

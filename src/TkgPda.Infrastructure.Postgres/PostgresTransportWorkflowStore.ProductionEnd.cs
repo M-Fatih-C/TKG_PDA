@@ -85,69 +85,65 @@ public sealed partial class PostgresTransportWorkflowStore
         });
 
         var runId = Guid.NewGuid();
-        if (removals.Count == 0)
+        var runStatus = removals.Count == 0 ? "COMPLETED" : "RUNNING";
+        await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, runStatus, cancellationToken);
+        if (removals.Count > 0)
         {
-            await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, "COMPLETED", cancellationToken);
-            var ended = await CompleteProductionSessionAsync(connection, transaction, before, command.ActorUserId, command.DeviceId, cancellationToken);
-            await AuditProductionAsync(connection, transaction, "PRODUCTION_ENDED", command.ActorUserId, command.DeviceId, before, ended, cancellationToken);
-            await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, ended.Status, cancellationToken);
-            return new(ended, false);
-        }
-
-        await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, "RUNNING", cancellationToken);
-        Guid? previousRequestId = null;
-        for (var index = 0; index < removals.Count; index++)
-        {
-            var removal = removals[index];
-            var registryCleanup = await IsCommissioningRegistryProfileAsync(
-                connection,
-                transaction,
-                await ActiveNavigationAsync(connection, transaction, command.MachineId, cancellationToken),
-                cancellationToken);
-            if (!registryCleanup
-                && !removal.FinishedGoods
-                && removal.Operation == TransportTaskType.RemoveFull
-                && removal.DestinationSlotId is null)
+            Guid? previousRequestId = null;
+            for (var index = 0; index < removals.Count; index++)
             {
-                throw new WorkflowRuleException(
-                    "PRODUCTION_END_REMOVAL_NOT_CONFIGURED",
-                    $"{removal.Code} paletinin kaldırılacağı alan yapılandırılmamış. Üretim kapatılmadı.");
-            }
+                var removal = removals[index];
+                var registryCleanup = await IsCommissioningRegistryProfileAsync(
+                    connection,
+                    transaction,
+                    await ActiveNavigationAsync(connection, transaction, command.MachineId, cancellationToken),
+                    cancellationToken);
+                if (!registryCleanup
+                    && !removal.FinishedGoods
+                    && removal.Operation == TransportTaskType.RemoveFull
+                    && removal.DestinationSlotId is null)
+                {
+                    throw new WorkflowRuleException(
+                        "PRODUCTION_END_REMOVAL_NOT_CONFIGURED",
+                        $"{removal.Code} paletinin kaldırılacağı alan yapılandırılmamış. Üretim kapatılmadı.");
+                }
 
-            var created = await CreateAndQueueWithinTransactionAsync(
-                connection,
-                transaction,
-                new CreateTransportRequest(
-                    $"production-end:{runId:N}:{index + 1}",
-                    RequestOrigin.Api,
-                    command.ActorUserId,
-                    command.MachineId,
-                    before.VariantId,
-                    layoutId,
+                var created = await CreateAndQueueWithinTransactionAsync(
+                    connection,
+                    transaction,
+                    new CreateTransportRequest(
+                        $"production-end:{runId:N}:{index + 1}",
+                        RequestOrigin.Api,
+                        command.ActorUserId,
+                        command.MachineId,
+                        before.VariantId,
+                        layoutId,
+                        null,
+                        before.ProductGroupId,
+                        removal.PartId,
+                        removal.ContainerTypeId,
+                        removal.Operation,
+                        removal.SlotId,
+                        removal.FinishedGoods ? null : removal.DestinationSlotId,
+                        removal.Priority,
+                        RequiresFinishedGoodsDestination: removal.FinishedGoods),
                     null,
-                    before.ProductGroupId,
-                    removal.PartId,
-                    removal.ContainerTypeId,
-                    removal.Operation,
-                    removal.SlotId,
-                    removal.FinishedGoods ? null : removal.DestinationSlotId,
-                    removal.Priority,
-                    RequiresFinishedGoodsDestination: removal.FinishedGoods),
-                null,
-                OperationalEventContext.ForUser(command.ActorUserId, command.DeviceId),
-                cancellationToken);
-            await InsertProductionEndItemAsync(connection, transaction, runId, index + 1, removal, created.Request.Id, cancellationToken);
-            if (previousRequestId is { } predecessorId)
-            {
-                await LinkProductionEndDependencyAsync(connection, transaction, predecessorId, created.Request.Id, cancellationToken);
-            }
+                    OperationalEventContext.ForUser(command.ActorUserId, command.DeviceId),
+                    cancellationToken);
+                await InsertProductionEndItemAsync(connection, transaction, runId, index + 1, removal, created.Request.Id, cancellationToken);
+                if (previousRequestId is { } predecessorId)
+                {
+                    await LinkProductionEndDependencyAsync(connection, transaction, predecessorId, created.Request.Id, cancellationToken);
+                }
 
-            previousRequestId = created.Request.Id;
+                previousRequestId = created.Request.Id;
+            }
         }
 
-        var ending = await SetProductionStatusAsync(connection, transaction, before, "ENDING", cancellationToken);
-        await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, "RUNNING", cancellationToken);
-        return new(ending, false);
+        var ended = await CompleteProductionSessionAsync(connection, transaction, before, command.ActorUserId, command.DeviceId, cancellationToken);
+        await AuditProductionAsync(connection, transaction, "PRODUCTION_ENDED", command.ActorUserId, command.DeviceId, before, ended, cancellationToken);
+        await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, runStatus, cancellationToken);
+        return new(ended, false);
     }
 
     private static List<CleanupRemoval> ClassifyProductionEnd(

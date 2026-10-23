@@ -158,6 +158,7 @@ OperationalContext testContext({
               'operatorMessage': request.execution.operatorMessage,
               'correlationId': request.execution.correlationId,
             },
+            'productionEnd': request.productionEnd,
           },
         )
         .toList(),
