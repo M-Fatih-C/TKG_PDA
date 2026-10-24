@@ -91,6 +91,22 @@ public sealed class DemoModeTests
     }
 
     [Fact]
+    public void DemoModeOptions_Validate_RejectsRemoteM4Endpoint()
+    {
+        var inMemory = new Dictionary<string, string?>
+        {
+            ["DemoMode:Enabled"] = "true",
+            ["M4:BaseUrl"] = "http://m4.plant.local:5800"
+        };
+        var config = new ConfigurationBuilder().AddInMemoryCollection(inMemory).Build();
+        var options = DemoModeOptions.FromConfiguration(config);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => options.Validate(config));
+        Assert.Contains("DEMO_MODE_SAFETY_VIOLATION", ex.Message);
+        Assert.Contains("m4.plant.local", ex.Message);
+    }
+
+    [Fact]
     public void DemoModeOptions_Validate_AllowsLoopbackEndpoint()
     {
         var inMemory = new Dictionary<string, string?>

@@ -143,9 +143,9 @@ RDS WorkSite `filled/locked/disabled/syncFailed` semantiği M4'e kopyalanmayacak
 | Gate | Durum | Kapatılması gerekenler |
 |---|---|---|
 | Contract Ready | `BLOCKED` | Scene, robot, endpoint, BinTask ve gerçek status örnekleri eksik |
-| Read-only Ready | `PARTIAL` | M2M contract geçmiş durumda geçti; simulator scene/robot/schema okundu; güncel project credential, snapshot ve WebSocket eksik |
+| Read-only Ready | `PARTIAL` | Local HTTP/auth/error ve typed scene/robot/endpoint discovery testleri, snapshot persistence ve Admin API testleri geçti; güncel project credential ile gerçek M4 snapshot'ı ve WebSocket kanıtı eksik |
 | Simulator Ready | `PARTIAL` | OneDemo ve 15 mock robot aktif; test location ve order lifecycle henüz doğrulanmadı |
-| Shadow Ready | `NOT STARTED` | Provider-neutral model ve read comparison |
+| Shadow Ready | `PARTIAL` | Provider-neutral model ve SQL compatibility hazır; M4 read client ve read comparison eksik |
 | Canary Ready | `NOT STARTED` | Commissioning, safety, rollback ve açık test onayı |
 | Production Expansion | `NOT STARTED` | Canary sonuçları |
 | RDS Retirement | `NOT STARTED` | Tüm profile'lar M4 ve aktif RDS işi yok |

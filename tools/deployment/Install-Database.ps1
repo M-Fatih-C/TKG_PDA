@@ -392,7 +392,7 @@ try {
     # Grant privileges on Database to AppUser
     & $psql @commonAdminPsql -d 'postgres' -c "GRANT ALL PRIVILEGES ON DATABASE $Database TO $AppUser;" | Out-Null
 
-    # 6. Apply Schema Migrations in numerical order (001 to 029)
+    # 6. Apply schema migrations in numerical order.
     $baseSchemaExists = Invoke-AdminPsqlScalar $Database "SELECT to_regclass('auth.roles');"
     Write-SecureLog "Executing migrations from: $MigrationsDir (BaseSchemaExists=$baseSchemaExists)"
     $migrationFiles = Get-ChildItem -Path $MigrationsDir -Filter "*.sql" | Sort-Object Name

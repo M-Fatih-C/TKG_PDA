@@ -65,6 +65,7 @@ fieldSessionOptions.Validate();
 var rdsOptions = RdsOptions.FromConfiguration(builder.Configuration);
 var rdsCoreDiscoveryOptions = RdsCoreDiscoveryOptions.FromConfiguration(builder.Configuration);
 var rdsCoreExecutionOptions = RdsCoreExecutionOptions.FromConfiguration(builder.Configuration);
+var m4Options = M4Options.FromConfiguration(builder.Configuration);
 var demoOptions = DemoModeOptions.FromConfiguration(builder.Configuration);
 demoOptions.Validate(builder.Configuration);
 if (demoOptions.Enabled)
@@ -72,6 +73,14 @@ if (demoOptions.Enabled)
     rdsOptions = rdsOptions with { Enabled = false, DispatchEnabled = false };
     rdsCoreExecutionOptions = rdsCoreExecutionOptions with { Enabled = false };
     rdsCoreDiscoveryOptions = rdsCoreDiscoveryOptions with { Enabled = false };
+    m4Options = m4Options with
+    {
+        Enabled = false,
+        ReadEnabled = false,
+        DispatchEnabled = false,
+        AppId = null,
+        AppKey = null
+    };
 }
 var operatorWebOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
@@ -106,6 +115,7 @@ builder.Services.AddSingleton(fieldSessionOptions);
 builder.Services.AddSingleton(rdsOptions);
 builder.Services.AddSingleton(rdsCoreDiscoveryOptions);
 builder.Services.AddSingleton(rdsCoreExecutionOptions);
+builder.Services.AddSingleton(m4Options);
 builder.Services.AddSingleton(demoOptions);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Pbkdf2PasswordHasher>();
@@ -118,6 +128,7 @@ builder.Services.AddSingleton<PostgresApiDataStore>();
 builder.Services.AddSingleton<IApiDataStore>(services => services.GetRequiredService<PostgresApiDataStore>());
 builder.Services.AddSingleton<IOperatorTransportQueueStore>(services => services.GetRequiredService<PostgresApiDataStore>());
 builder.Services.AddSingleton<IAdminConfigurationStore, PostgresAdminConfigurationStore>();
+builder.Services.AddSingleton<IM4DiscoveryStore, PostgresM4DiscoveryStore>();
 builder.Services.AddSingleton<IRdsIntegrationStore, PostgresRdsIntegrationStore>();
 builder.Services.AddSingleton<IRdsExecutionStore, PostgresRdsExecutionStore>();
 builder.Services.AddSingleton<IRdsCommissioningConfigurationStore, PostgresRdsCommissioningConfigurationStore>();
@@ -179,6 +190,23 @@ builder.Services.AddHttpClient("RdsMutation", client =>
     AllowAutoRedirect = false
 });
 builder.Services.AddSingleton<IRdsExecutionClient, RdsExecutionClient>();
+builder.Services.AddTransient<M4AuthenticationHandler>();
+builder.Services.AddHttpClient<M4HttpClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(m4Options.TimeoutSeconds);
+    if (m4Options.BaseAddress is { } baseAddress)
+    {
+        client.BaseAddress = baseAddress;
+    }
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    UseCookies = false,
+    AllowAutoRedirect = false
+})
+.AddHttpMessageHandler<M4AuthenticationHandler>();
+builder.Services.AddSingleton<IM4DiscoveryClient, M4DiscoveryClient>();
+builder.Services.AddSingleton<M4DiscoveryService>();
 builder.Services.AddSingleton<RdsIntegrationService>();
 builder.Services.AddSingleton<IRdsWorkSiteReconciler>(services =>
     services.GetRequiredService<RdsIntegrationService>());
@@ -371,6 +399,7 @@ app.MapFinishedGoodsStore();
 app.MapDeviceNotifications();
 app.MapTkgPdaAdminApi();
 app.MapTkgPdaRdsIntegrationApi();
+app.MapTkgPdaM4DiscoveryApi();
 
 try
 {
