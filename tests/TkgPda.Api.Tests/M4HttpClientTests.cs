@@ -145,7 +145,8 @@ public sealed class M4HttpClientTests
         {
             Content = new StringContent(new string('x', 70 * 1024))
         });
-        var (oversizedClient, _) = Client(oversized);
+        var oversizedOptions = Options() with { MaxResponseBytes = 64 * 1024 };
+        var oversizedClient = BuildClient(oversized, oversizedOptions);
         var oversizedError = await Assert.ThrowsAsync<M4HttpException>(
             () => oversizedClient.GetHealthAsync(Guid.NewGuid()));
         Assert.Equal("M4_RESPONSE_TOO_LARGE", oversizedError.Code);
@@ -201,6 +202,8 @@ public sealed class M4HttpClientTests
             TimeoutSeconds: 5,
             MaxReadRetries: maxReadRetries,
             RetryBaseDelayMilliseconds: 0,
+            MaxResponseBytes: 2 * 1024 * 1024,
+            DiscoveryFreshnessSeconds: 300,
             AppId: "unit-app",
             AppKey: "unit-test-key-value");
 

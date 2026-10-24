@@ -73,6 +73,14 @@ if (demoOptions.Enabled)
     rdsOptions = rdsOptions with { Enabled = false, DispatchEnabled = false };
     rdsCoreExecutionOptions = rdsCoreExecutionOptions with { Enabled = false };
     rdsCoreDiscoveryOptions = rdsCoreDiscoveryOptions with { Enabled = false };
+    m4Options = m4Options with
+    {
+        Enabled = false,
+        ReadEnabled = false,
+        DispatchEnabled = false,
+        AppId = null,
+        AppKey = null
+    };
 }
 var operatorWebOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
@@ -120,6 +128,7 @@ builder.Services.AddSingleton<PostgresApiDataStore>();
 builder.Services.AddSingleton<IApiDataStore>(services => services.GetRequiredService<PostgresApiDataStore>());
 builder.Services.AddSingleton<IOperatorTransportQueueStore>(services => services.GetRequiredService<PostgresApiDataStore>());
 builder.Services.AddSingleton<IAdminConfigurationStore, PostgresAdminConfigurationStore>();
+builder.Services.AddSingleton<IM4DiscoveryStore, PostgresM4DiscoveryStore>();
 builder.Services.AddSingleton<IRdsIntegrationStore, PostgresRdsIntegrationStore>();
 builder.Services.AddSingleton<IRdsExecutionStore, PostgresRdsExecutionStore>();
 builder.Services.AddSingleton<IRdsCommissioningConfigurationStore, PostgresRdsCommissioningConfigurationStore>();
@@ -196,6 +205,8 @@ builder.Services.AddHttpClient<M4HttpClient>(client =>
     AllowAutoRedirect = false
 })
 .AddHttpMessageHandler<M4AuthenticationHandler>();
+builder.Services.AddSingleton<IM4DiscoveryClient, M4DiscoveryClient>();
+builder.Services.AddSingleton<M4DiscoveryService>();
 builder.Services.AddSingleton<RdsIntegrationService>();
 builder.Services.AddSingleton<IRdsWorkSiteReconciler>(services =>
     services.GetRequiredService<RdsIntegrationService>());
@@ -388,6 +399,7 @@ app.MapFinishedGoodsStore();
 app.MapDeviceNotifications();
 app.MapTkgPdaAdminApi();
 app.MapTkgPdaRdsIntegrationApi();
+app.MapTkgPdaM4DiscoveryApi();
 
 try
 {

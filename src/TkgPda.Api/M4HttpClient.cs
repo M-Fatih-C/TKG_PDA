@@ -15,6 +15,8 @@ public sealed record M4Options(
     int TimeoutSeconds,
     int MaxReadRetries,
     int RetryBaseDelayMilliseconds,
+    int MaxResponseBytes,
+    int DiscoveryFreshnessSeconds,
     string? AppId,
     string? AppKey)
 {
@@ -30,6 +32,8 @@ public sealed record M4Options(
             configuration.GetValue("M4:TimeoutSeconds", 10),
             configuration.GetValue("M4:MaxReadRetries", 1),
             configuration.GetValue("M4:RetryBaseDelayMilliseconds", 100),
+            configuration.GetValue("M4:MaxResponseBytes", 2 * 1024 * 1024),
+            configuration.GetValue("M4:DiscoveryFreshnessSeconds", 300),
             TkgSecureConfig.UnprotectIfNeeded(configuration["M4:AppId"]),
             TkgSecureConfig.UnprotectIfNeeded(configuration["M4:AppKey"]));
         options.Validate();
@@ -52,6 +56,16 @@ public sealed record M4Options(
         if (MaxReadRetries is < 0 or > 3 || RetryBaseDelayMilliseconds is < 0 or > 2000)
         {
             throw new InvalidOperationException("M4 read retry settings are outside the supported bounds.");
+        }
+
+        if (MaxResponseBytes is < 65536 or > 4 * 1024 * 1024)
+        {
+            throw new InvalidOperationException("M4:MaxResponseBytes must be between 65536 and 4194304.");
+        }
+
+        if (DiscoveryFreshnessSeconds is < 30 or > 3600)
+        {
+            throw new InvalidOperationException("M4:DiscoveryFreshnessSeconds must be between 30 and 3600.");
         }
 
         if (!Enabled)
@@ -181,8 +195,6 @@ public sealed class M4HttpClient(
     TimeProvider timeProvider,
     ILogger<M4HttpClient> logger)
 {
-    private const int MaxResponseBytes = 64 * 1024;
-
     public async Task<M4HealthResult> GetHealthAsync(
         Guid correlationId,
         CancellationToken cancellationToken = default)
@@ -247,7 +259,7 @@ public sealed class M4HttpClient(
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
                     cancellationToken);
-                var body = await ReadBoundedAsync(response.Content, cancellationToken);
+                var body = await ReadBoundedAsync(response.Content, options.MaxResponseBytes, cancellationToken);
                 stopwatch.Stop();
                 logger.LogInformation(
                     "M4 read {Method} {Path} returned {StatusCode} in {ElapsedMilliseconds}ms on attempt {Attempt} with correlation {CorrelationId}.",
@@ -453,9 +465,10 @@ public sealed class M4HttpClient(
 
     private static async Task<byte[]> ReadBoundedAsync(
         HttpContent content,
+        int maxResponseBytes,
         CancellationToken cancellationToken)
     {
-        if (content.Headers.ContentLength > MaxResponseBytes)
+        if (content.Headers.ContentLength > maxResponseBytes)
         {
             throw new M4HttpException("M4_RESPONSE_TOO_LARGE", "M4 response exceeded the configured read limit.");
         }
@@ -470,7 +483,7 @@ public sealed class M4HttpClient(
             {
                 return output.ToArray();
             }
-            if (output.Length + read > MaxResponseBytes)
+            if (output.Length + read > maxResponseBytes)
             {
                 throw new M4HttpException("M4_RESPONSE_TOO_LARGE", "M4 response exceeded the configured read limit.");
             }

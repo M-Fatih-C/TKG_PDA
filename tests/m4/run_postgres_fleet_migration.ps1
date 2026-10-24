@@ -65,6 +65,15 @@ try {
         throw "Migration replay changed fleet order cardinality: $fleetCount"
     }
 
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\038_m4_readonly_discovery.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $PSScriptRoot '038_m4_readonly_discovery_test.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\038_m4_readonly_discovery.sql')))
+    $discoveryCount = & $psql @common -Atc "SELECT count(*) FROM integration.m4_discovery_snapshots"
+    if ($LASTEXITCODE -ne 0 -or [int]$discoveryCount -ne 1) {
+        throw "Migration replay changed M4 discovery snapshot cardinality: $discoveryCount"
+    }
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\rollback\038_m4_readonly_discovery.sql')))
+
     # Rollback is expected to fail closed while M4-owned rows exist.
     & $psql @common -f (Join-Path $projectRoot 'db\rollback\037_fleet_provider_compatibility.sql') 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {

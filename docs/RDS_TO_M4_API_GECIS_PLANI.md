@@ -837,6 +837,8 @@ Fake M4 server üzerinde health/auth/error contract testleri geçer.
 
 ### WP-M4-04 — Read-only discovery
 
+**Uygulama durumu — 24 Ekim 2026:** Yerel uygulama katmanı tamamlandı. Scene listesi, robotlar, scene schema ve scene snapshot kaynaklarını yalnız izin verilen read-only M4 route'larından okuyan typed discovery client; kaynak bazında `SUCCESS` / `UNKNOWN` sonuçları; `PARTIAL` / `FAILED` snapshot durumu; freshness/stale hesabı; ham yanıtların PostgreSQL `jsonb` kaydı ve yalnız Admin rolüne açık capture/latest/detail API'leri eklendi. Scene belirtilmediğinde uygulama kendiliğinden scene veya saha eşlemesi seçmez. Demo modunda M4 erişimi zorla kapalıdır. Fake HTTP, application service, Admin API ve SQL migration testleri geçmiştir. Bu aşamada canlı M4 çağrısı veya robot mutation yapılmamıştır; gerçek M4 üzerindeki çıkış kriteri güncel project credential ve scene ile ayrıca doğrulanacaktır.
+
 **İşler**
 
 - Scene snapshot
@@ -1470,7 +1472,8 @@ Sıradaki uygulama sırası:
 10. TKG logical endpoint -> M4 point/storage-bin eşlemesi müşteri/SEER onayıyla oluşturulur.
 11. Dört operasyonun step ve `BinTask` sözleşmesi onaylanır.
 12. Physical evidence kaynağı ve freshness semantiği kanıtlanır.
-13. Provider-neutral interface, additive SQL migration ve fake-server HTTP/auth client tamamlandı; sıradaki kod dilimi read-only scene/robot discovery adapter'ıdır.
+13. Provider-neutral interface, additive SQL migration, fake-server HTTP/auth client ve read-only discovery adapter'ı tamamlandı.
+14. Sıradaki doğrulama, güncel project credential ile gerçek M4 scene/robot/endpoint snapshot'ının hareket üretmeden alınmasıdır.
 
 Bu sıralama, doğrulanmamış scene, location, binTask, robot veya occupancy değerlerinin kod ve veritabanına girmesini engeller.
 
