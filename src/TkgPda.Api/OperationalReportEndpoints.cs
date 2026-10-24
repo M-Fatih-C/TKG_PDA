@@ -11,9 +11,11 @@ public static class OperationalReportEndpoints
         var reports = admin.MapGroup("/reports");
         reports.MapGet("/tasks", ListTasksAsync);
         reports.MapGet("/tasks/export.csv", ExportTasksAsync);
+        reports.MapGet("/tasks/export.xlsx", ExportTasksXlsxAsync);
         reports.MapGet("/tasks/{requestId:guid}", ReadTaskAsync);
         reports.MapGet("/sessions", ListSessionsAsync);
         reports.MapGet("/sessions/export.csv", ExportSessionsAsync);
+        reports.MapGet("/sessions/export.xlsx", ExportSessionsXlsxAsync);
         reports.MapGet("/summary", ReadSummaryAsync);
         return admin;
     }
@@ -104,6 +106,38 @@ public static class OperationalReportEndpoints
         return ReportCsv.File(csv, $"TKG_Gorev_Raporu_{ReportCsv.FileDate(window.From)}.csv");
     }
 
+    private static async Task<IResult> ExportTasksXlsxAsync(
+        DateTimeOffset? from, DateTimeOffset? to, Guid? machineId, string? employeeNo,
+        Guid? deviceId, string? status, string? operation, string? part, long? requestNo,
+        string? agvId, bool? errorsOnly, bool? cancelledOnly,
+        IOperationalReportStore store, CancellationToken cancellationToken)
+    {
+        var window = Window(from, to);
+        var rows = await AllTasksAsync(store, new TaskReportQuery(
+            window.From, window.To, machineId, employeeNo, deviceId, status, operation, part, requestNo, agvId,
+            errorsOnly == true, cancelledOnly == true, 1, 500), cancellationToken);
+        string[] headers = [
+            "Talep No", "Tarih", "Saat", "Sicil", "Kullanıcı", "Bilgisayar", "Makine", "Varyant", "İşlem", "Parça",
+            "Durum", "Depo Operatörü", "Hazırlık Alanı", "Robot", "Toplam Süre", "Depo Süresi", "Robot Süresi",
+            "Hata Kodu", "Hata Açıklaması"
+        ];
+        var data = rows.Select(row => (IReadOnlyList<OperationalReportXlsx.Cell>)[
+            OperationalReportXlsx.Number(row.RequestNo),
+            OperationalReportXlsx.Text(ReportCsv.Date(row.CreatedAt)),
+            OperationalReportXlsx.Text(ReportCsv.Time(row.CreatedAt)),
+            OperationalReportXlsx.Text(row.EmployeeNo), OperationalReportXlsx.Text(row.RequestedByName),
+            OperationalReportXlsx.Text(row.DeviceCode ?? row.DeviceName), OperationalReportXlsx.Text(row.MachineCode),
+            OperationalReportXlsx.Text(row.VariantCode), OperationalReportXlsx.Text(row.OperationLabel),
+            OperationalReportXlsx.Text(row.PartCode), OperationalReportXlsx.Text(row.StatusLabel),
+            OperationalReportXlsx.Text(row.PreparationOperatorName),
+            OperationalReportXlsx.Text(row.PreparationArea), OperationalReportXlsx.Text(row.AgvId),
+            OperationalReportXlsx.Duration(row.TotalSeconds), OperationalReportXlsx.Duration(row.WarehouseResponseSeconds),
+            OperationalReportXlsx.Duration(row.RobotExecutionSeconds), OperationalReportXlsx.Text(row.FailureCode),
+            OperationalReportXlsx.Text(row.FailureMessage)
+        ]);
+        return OperationalReportXlsx.File(headers, data, $"TKG_Gorev_Raporu_{ReportCsv.FileDate(window.From)}.xlsx");
+    }
+
     private static async Task<IResult> ListSessionsAsync(
         DateTimeOffset? from,
         DateTimeOffset? to,
@@ -134,14 +168,14 @@ public static class OperationalReportEndpoints
         CancellationToken cancellationToken)
     {
         var window = Window(from, to);
-        var page = await store.ListSessionsAsync(new SessionReportQuery(
+        var rows = await AllSessionsAsync(store, new SessionReportQuery(
             window.From, window.To, employeeNo, deviceId, machineId, activity, endReason, 1, 500), cancellationToken);
         var csv = ReportCsv.Build(
             [
                 "Giriş Tarihi", "Giriş Saati", "Çıkış Tarihi", "Çıkış Saati", "Oturum Süresi", "Sicil", "Kullanıcı",
                 "Bilgisayar", "Makine", "Durum", "Çıkış Nedeni"
             ],
-            page.Items.Select(row => new string?[]
+            rows.Select(row => new string?[]
             {
                 ReportCsv.Date(row.LoginAt),
                 ReportCsv.Time(row.LoginAt),
@@ -156,6 +190,30 @@ public static class OperationalReportEndpoints
                 row.EndReasonLabel
             }));
         return ReportCsv.File(csv, $"TKG_Oturum_Raporu_{ReportCsv.FileDate(window.From)}.csv");
+    }
+
+    private static async Task<IResult> ExportSessionsXlsxAsync(
+        DateTimeOffset? from, DateTimeOffset? to, string? employeeNo, Guid? deviceId,
+        Guid? machineId, string? activity, string? endReason,
+        IOperationalReportStore store, CancellationToken cancellationToken)
+    {
+        var window = Window(from, to);
+        var sessions = await AllSessionsAsync(store, new SessionReportQuery(
+            window.From, window.To, employeeNo, deviceId, machineId, activity, endReason, 1, 500), cancellationToken);
+        string[] headers = [
+            "Giriş Zamanı", "Çıkış Zamanı", "Oturum Süresi", "Sicil", "Kullanıcı", "Kullanıcı Adı",
+            "Roller", "Bilgisayar Kodu", "Bilgisayar", "Cihaz Türü", "Makine", "Durum", "Çıkış Nedeni"
+        ];
+        var rows = sessions.Select(row => (IReadOnlyList<OperationalReportXlsx.Cell>)[
+            OperationalReportXlsx.Date(row.LoginAt), OperationalReportXlsx.Date(row.EndedAt),
+            OperationalReportXlsx.Duration(row.DurationSeconds), OperationalReportXlsx.Text(row.EmployeeNo),
+            OperationalReportXlsx.Text(row.FullName), OperationalReportXlsx.Text(row.Username),
+            OperationalReportXlsx.Text(string.Join(", ", row.Roles)), OperationalReportXlsx.Text(row.DeviceCode),
+            OperationalReportXlsx.Text(row.DeviceName), OperationalReportXlsx.Text(row.DeviceType),
+            OperationalReportXlsx.Text(row.MachineState == "UNKNOWN" ? "Geçmiş makine bilgisi kayıtlı değil" : row.MachineCode),
+            OperationalReportXlsx.Text(row.StatusLabel), OperationalReportXlsx.Text(row.EndReasonLabel)
+        ]);
+        return OperationalReportXlsx.File(headers, rows, $"TKG_Oturum_Raporu_{ReportCsv.FileDate(window.From)}.xlsx");
     }
 
     private static async Task<IResult> ReadSummaryAsync(
@@ -189,13 +247,35 @@ public static class OperationalReportEndpoints
         return all;
     }
 
+    private static async Task<IReadOnlyList<SessionReportRow>> AllSessionsAsync(
+        IOperationalReportStore store,
+        SessionReportQuery first,
+        CancellationToken cancellationToken)
+    {
+        var page = await store.ListSessionsAsync(first, cancellationToken);
+        if (page.Total <= page.Items.Count) return page.Items;
+        var all = new List<SessionReportRow>(page.Items);
+        var next = 2;
+        while (all.Count < page.Total && all.Count < 20000)
+        {
+            var more = await store.ListSessionsAsync(first with { Page = next }, cancellationToken);
+            if (more.Items.Count == 0) break;
+            all.AddRange(more.Items);
+            next++;
+        }
+
+        return all;
+    }
+
     private static (DateTimeOffset From, DateTimeOffset To) Window(DateTimeOffset? from, DateTimeOffset? to)
     {
-        if (from is not null && to is not null) return (from.Value, to.Value);
+        if (from is not null && to is not null) return (from.Value.ToUniversalTime(), to.Value.ToUniversalTime());
         var zone = ReportCsv.Zone;
         var local = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, zone);
-        var start = new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, zone.GetUtcOffset(local));
-        return (from ?? start, to ?? start.AddDays(1));
+        var startLocal = new DateTimeOffset(local.Year, local.Month, local.Day, 0, 0, 0, zone.GetUtcOffset(local));
+        var fromUtc = (from ?? startLocal).ToUniversalTime();
+        var toUtc = (to ?? startLocal.AddDays(1)).ToUniversalTime();
+        return (fromUtc, toUtc);
     }
 }
 

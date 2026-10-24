@@ -19,6 +19,7 @@ class PreparationAreasScreen extends StatelessWidget {
     required this.coordinator,
     required this.onBack,
     this.onNavigate,
+    this.onLogout,
     this.operatorLabel,
     this.title = 'Yarı Mamul Hazırlık',
     super.key,
@@ -27,6 +28,7 @@ class PreparationAreasScreen extends StatelessWidget {
   final PreparationCoordinator coordinator;
   final VoidCallback onBack;
   final void Function(AppStage stage)? onNavigate;
+  final VoidCallback? onLogout;
   final String? operatorLabel;
   final String title;
 
@@ -103,6 +105,13 @@ class PreparationAreasScreen extends StatelessWidget {
                   : () => coordinator.refresh(),
               icon: const Icon(Icons.refresh),
             ),
+            if (onLogout != null)
+              IconButton(
+                key: const Key('logout-button'),
+                tooltip: 'Çıkış',
+                onPressed: onLogout,
+                icon: const Icon(Icons.logout),
+              ),
           ],
         ),
         body: SafeArea(
@@ -484,7 +493,7 @@ class _AreaActions extends StatelessWidget {
                   fontWeight: FontWeight.w800,
                 ),
               ),
-              onPressed: coordinator.inFlight
+              onPressed: coordinator.inFlight || !pallet.canConfirmCollected
                   ? null
                   : () => coordinator.release(pallet, 'COLLECTED'),
               icon: const Icon(Icons.local_shipping_outlined, size: 20),
@@ -502,7 +511,7 @@ class _AreaActions extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
               ),
             ),
-            onPressed: coordinator.inFlight
+            onPressed: coordinator.inFlight || !pallet.canWithdraw
                 ? null
                 : () => coordinator.release(pallet, 'WITHDRAWN'),
             child: const Text('Hazırlığı Geri Al'),

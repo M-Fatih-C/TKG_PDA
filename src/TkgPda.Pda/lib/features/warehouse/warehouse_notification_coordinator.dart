@@ -115,6 +115,7 @@ class WarehouseNotificationCoordinator extends ChangeNotifier {
     required String partCode,
     required bool needsMaterial,
     required int requestNo,
+    AppStage targetStage = AppStage.preparationAreas,
   }) {
     final eventId = 'demand-$requestId';
     if (_seenEventIds.contains(eventId)) return;
@@ -127,7 +128,7 @@ class WarehouseNotificationCoordinator extends ChangeNotifier {
       message:
           '$partCode · ${needsMaterial ? "Yarı Mamul (Dolu Kasa)" : "Boş Kasa"} · Talep #$requestNo',
       timestamp: DateTime.now(),
-      targetStage: AppStage.preparationAreas,
+      targetStage: targetStage,
       machineCode: machineCode,
       partCode: partCode,
     );

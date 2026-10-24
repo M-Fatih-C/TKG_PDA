@@ -18,8 +18,8 @@ SELECT (SELECT id FROM auth.users WHERE employee_no = 'DEV-WH')                 
        (SELECT r.id FROM ops.transport_requests r ORDER BY r.request_no DESC LIMIT 1)      AS req_a,
        (SELECT r.id FROM ops.transport_requests r ORDER BY r.request_no DESC OFFSET 1 LIMIT 1) AS req_b;
 
-INSERT INTO ops.store_locations (code, display_name, capacity)
-VALUES ('TEST-STORE-1', 'Test Depo Alanı', 3);
+INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose, is_operator_visible)
+VALUES ('TEST-STORE-1', 'Test Depo Alanı', 3, 'DELIVERY', true);
 
 CREATE TEMP TABLE loc AS
 SELECT id FROM ops.store_locations WHERE code = 'TEST-STORE-1';

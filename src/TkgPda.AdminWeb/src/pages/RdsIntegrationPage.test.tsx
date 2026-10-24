@@ -31,11 +31,11 @@ describe('RDS integration page', () => {
   it('labels RDS data as external read evidence and does not mutate during load', async () => {
     const fetchMock = mockRdsApi()
     expect(await screen.findAllByText('RDS Entegrasyonu')).not.toHaveLength(0)
-    expect(screen.getByText('Robot yürütme, canlı durum, alarm ve WorkSite eşleşmeleri.')).toBeVisible()
+    expect(screen.getByText('Robot yürütme, canlı durum, alarm ve fiziksel alan eşleşmeleri.')).toBeVisible()
     expect(screen.getByText('RDS Bağlantısı')).toBeVisible()
     expect(screen.getByText('Eşleme Durumu')).toBeVisible()
     expect(screen.getByText('Aktif Robot Alarmları')).toBeVisible()
-    expect(screen.getByText('WorkSite Senkronizasyonu')).toBeVisible()
+    expect(screen.getByText('RDS Alan Senkronizasyonu')).toBeVisible()
     expect(screen.queryByText('Salt okunur dış entegrasyon')).not.toBeInTheDocument()
     expect(screen.getByText('RDS değerleri dış sistem kanıtıdır.')).toBeVisible()
     expect(await screen.findByText('SITE-01')).toBeVisible()
@@ -64,12 +64,13 @@ describe('RDS integration page', () => {
     mockRdsApi({ alarms: [robotAlarm] })
     expect(await screen.findByText('sim_01')).toBeVisible()
     expect(screen.getByText('AMB-150')).toBeVisible()
-    expect(screen.getByText('FATAL')).toBeVisible()
+    expect(screen.getByText('Kritik')).toBeVisible()
     expect(screen.getByText('F1')).toBeVisible()
     expect(screen.getByText('Fatal one')).toBeVisible()
     expect(screen.getByText('3')).toBeVisible()
-    expect(screen.getByText('2026-08-30T10:00:00Z')).toBeVisible()
-    expect(screen.getByText(/NO.*low_battery/)).toBeVisible()
+    expect(screen.getByText('30 Ağu 2026 13:00')).toBeVisible()
+    expect(screen.getByText('Hayır')).toBeVisible()
+    expect(screen.getByText(/Neden: low_battery/)).toBeVisible()
   })
 
   it('shows an empty state when there are no active robot alarms', async () => {
@@ -110,9 +111,9 @@ describe('RDS integration page', () => {
     expect(screen.getByText('LM1')).toBeVisible()
     expect(screen.getByText('26.7.2026_map_optimak')).toBeVisible()
     expect(screen.getByText('Emir: ORD-100')).toBeVisible()
-    expect(screen.getByText('ONLINE')).toBeVisible()
-    expect(screen.getByText('DISPATCHABLE')).toBeVisible()
-    expect(screen.getByText('UNLOCKED')).toBeVisible()
+    expect(screen.getByText('Çevrimiçi')).toBeVisible()
+    expect(screen.getByText('Sevke Uygun')).toBeVisible()
+    expect(screen.getByText('Kilitli Değil')).toBeVisible()
     expect(screen.getByText('Yük Telemetrisi: YÜKLÜ (RDS)')).toBeVisible()
     expect(screen.getByText('1 / 1 Çevrimiçi')).toBeVisible()
     expect(screen.getByText('1 Sevk Edilebilir')).toBeVisible()
@@ -146,7 +147,7 @@ describe('RDS integration page', () => {
       alarms: { fatal: 0, error: 0, warning: 0, notice: 0, total: 0, critical: 0 },
     }
     mockRdsApi({ robots: [runningMultiMapRobot] })
-    const profileSelect = await screen.findByRole('combobox', { name: /Navigation profile/i })
+    const profileSelect = await screen.findByRole('combobox', { name: /Navigasyon profili/i })
     await userEvent.selectOptions(profileSelect, 'np-1')
 
     expect(await screen.findByText('RDSCORE ROTA YÖNETİMLİ HARİTA')).toBeVisible()
@@ -182,12 +183,12 @@ describe('RDS integration page', () => {
     }
     mockRdsApi({ robots: [blockedRobot] })
     expect(await screen.findByText('robot_101')).toBeVisible()
-    expect(screen.getByText('ONLINE')).toBeVisible()
-    expect(screen.getByText('UNDISPATCHABLE')).toBeVisible()
+    expect(screen.getByText('Çevrimiçi')).toBeVisible()
+    expect(screen.getByText('Sevke Uygun Değil')).toBeVisible()
     expect(screen.getByText('low_battery')).toBeVisible()
-    expect(screen.getByText('BLOCKED')).toBeVisible()
-    expect(screen.getByText('EXTERNAL_OR_OTHER')).toBeVisible()
-    expect(screen.queryByText('TKG_CORRELATED')).not.toBeInTheDocument()
+    expect(screen.getByText('Engellendi')).toBeVisible()
+    expect(screen.getByText('Harici / Diğer')).toBeVisible()
+    expect(screen.queryByText('TKG ile İlişkili')).not.toBeInTheDocument()
   })
 
   it('does not treat a retained FINISHED order id as an active order', async () => {
@@ -222,7 +223,7 @@ describe('RDS integration page', () => {
       alarms: { fatal: 0, error: 0, warning: 0, notice: 0, total: 0, critical: 0 },
     }
     mockRdsApi({ robots: [finishedRobot] })
-    const profileSelect = await screen.findByRole('combobox', { name: /Navigation profile/i })
+    const profileSelect = await screen.findByRole('combobox', { name: /Navigasyon profili/i })
     await userEvent.selectOptions(profileSelect, 'np-1')
 
     expect(await screen.findByText('robot_102')).toBeVisible()
@@ -257,7 +258,7 @@ describe('RDS integration page', () => {
       alarms: { fatal: 0, error: 0, warning: 0, notice: 0, total: 0, critical: 0 },
     }
     mockRdsApi({ robots: [idleRobot] })
-    const profileSelect = await screen.findByRole('combobox', { name: /Navigation profile/i })
+    const profileSelect = await screen.findByRole('combobox', { name: /Navigasyon profili/i })
     await userEvent.selectOptions(profileSelect, 'np-1')
 
     expect(await screen.findByText('robot_103')).toBeVisible()
@@ -299,7 +300,7 @@ describe('RDS integration page', () => {
     expect(screen.getByText('2 BİLGİ')).toBeVisible()
     expect(screen.queryByText('2 ARIZA')).not.toBeInTheDocument()
     // Fleet fault KPI counts only fatal + error.
-    expect(screen.getByText('Aktif Arıza (Fatal + Error)')).toBeVisible()
+    expect(screen.getByText('Aktif Kritik Arıza')).toBeVisible()
     expect(screen.getByText('0 uyarı · 2 bilgi notu (arıza sayılmaz)')).toBeVisible()
   })
 
@@ -332,9 +333,9 @@ describe('RDS integration page', () => {
     mockRdsApi({ robots: [unknownRobot] })
 
     expect(await screen.findByText('robot_105')).toBeVisible()
-    expect(screen.getAllByText('UNKNOWN').length).toBeGreaterThanOrEqual(3)
-    expect(screen.queryByText('ONLINE')).not.toBeInTheDocument()
-    expect(screen.queryByText('UNLOCKED')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Bilinmiyor').length).toBeGreaterThanOrEqual(3)
+    expect(screen.queryByText('Çevrimiçi', { exact: true })).not.toBeInTheDocument()
+    expect(screen.queryByText('Kilitli Değil')).not.toBeInTheDocument()
     // An unknown-connectivity robot is not counted as online.
     expect(screen.getByText('0 / 1 Çevrimiçi')).toBeVisible()
     expect(screen.getByText('0 Kilitli')).toBeVisible()

@@ -52,6 +52,7 @@ public static class PdaOperationalContextPolicy
         ArgumentNullException.ThrowIfNull(actor);
 
         var busySlots = data.ActiveTransportRequests
+            .Where(static request => request.MachineSlotReservationActive)
             .SelectMany(static request => new[] { request.SourceSlotId, request.DestinationSlotId })
             .Where(static slotId => slotId.HasValue)
             .Select(static slotId => slotId!.Value)

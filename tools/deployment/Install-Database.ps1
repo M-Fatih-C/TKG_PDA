@@ -2,7 +2,7 @@
 .SYNOPSIS
     Installs, configures, and migrates the PostgreSQL database for TKG PDA.
 .DESCRIPTION
-    Executes all required schema migrations (001-026) and canonical customer seeds
+    Executes all required forward-only schema migrations and canonical customer seeds
     idempotently without destroying or fabricating persistent data.
     Supports existing PostgreSQL instances as well as dedicated local instances.
     Enforces SCRAM authentication, dedicated application user (tkg_app),
@@ -23,12 +23,23 @@ param(
     [string]$MigrationsDir = '',
     [string]$SeedsDir = '',
     [switch]$IsUpdate = $false,
-    [switch]$SkipServiceRegistration = $false,
     [switch]$RotateAppPassword = $false,
-    [string]$SecretsFile = ''
+    [switch]$SkipServiceRegistration = $false,
+    [string]$SecretsFile = '',
+    [string]$ServiceName = '',
+    [switch]$DemoMode = $false
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($DemoMode) {
+    if ([string]::IsNullOrWhiteSpace($ServiceName)) { $ServiceName = 'tkg-pda-demo-postgres' }
+    if ($Database -eq 'tkg_pda') { $Database = 'tkg_pda_demo' }
+    if ($Port -eq 5432) { $Port = 55452 }
+    if ($DataDir -eq 'C:\ProgramData\TKG PDA\PostgreSQL\data') { $DataDir = 'C:\ProgramData\TKG PDA Demo\PostgreSQL\data' }
+} else {
+    if ([string]::IsNullOrWhiteSpace($ServiceName)) { $ServiceName = 'tkg-pda-postgres' }
+}
 
 function Write-SecureLog {
     param([string]$Message, [string]$Level = 'INFO')
@@ -72,6 +83,7 @@ if (![string]::IsNullOrWhiteSpace($PgBinPath)) {
         (Join-Path $scriptDir 'PostgreSQL\bin'),
         (Join-Path $scriptDir '..\PostgreSQL\bin'),
         (Join-Path (Split-Path -Parent $scriptDir) 'PostgreSQL\bin'),
+        'C:\Program Files\TKG PDA Demo\PostgreSQL\bin',
         'C:\Program Files\TKG PDA\PostgreSQL\bin',
         'C:\Program Files\PostgreSQL\18\bin',
         'C:\Program Files\PostgreSQL\17\bin',
@@ -175,24 +187,45 @@ try {
         Start-Sleep -Seconds 1
     }
 
+    if ($ready) {
+        # Verify that we can actually connect and authenticate with provided credentials
+        $authTest = (& $psql -X -h $HostName -p $Port -U $Username -w -c "SELECT 1" 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            Write-SecureLog "PostgreSQL is listening on port $Port, but authentication as '$Username' failed. Existing instance is not accessible with current credentials." "WARN"
+            $ready = $false
+        }
+    }
+
     if (-not $ready) {
         # Check if local cluster needs initialization
         if (($HostName -eq '127.0.0.1' -or $HostName -eq 'localhost') -and (-not $IsUpdate)) {
-            Write-SecureLog "PostgreSQL is not listening. Checking local data directory: $DataDir"
+            # Check if requested port is in use by another process
+            $portOccupied = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+            if ($portOccupied) {
+                $altPorts = @(55452, 55453, 5433, 5434, 55450)
+                foreach ($ap in $altPorts) {
+                    if (-not (Get-NetTCPConnection -LocalPort $ap -State Listen -ErrorAction SilentlyContinue)) {
+                        Write-SecureLog "Port $Port is in use by another service. Switching local TKG cluster to free port $ap." "WARN"
+                        $Port = $ap
+                        break
+                    }
+                }
+            }
+
+            # Ensure superuser password is set consistently
+            if ([string]::IsNullOrWhiteSpace($Password)) {
+                if (![string]::IsNullOrWhiteSpace($AdminPassword)) {
+                    $Password = $AdminPassword
+                } else {
+                    $Password = "TkgAdmin123!"
+                }
+                $env:PGPASSWORD = $Password
+            }
+
             if (-not (Test-Path (Join-Path $DataDir 'PG_VERSION'))) {
                 Write-SecureLog "Initializing dedicated local PostgreSQL cluster with SCRAM authentication..."
                 if (-not (Test-Path $DataDir)) {
                     New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
-                }
-                
-                # If superuser password is not passed, generate strong password
-                if ([string]::IsNullOrWhiteSpace($Password)) {
-                    $rngBytes = New-Object byte[] 24
-                    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-                    $rng.GetBytes($rngBytes)
-                    $rng.Dispose()
-                    $Password = [Convert]::ToBase64String($rngBytes).Replace('+','a').Replace('/','b').Replace('=','c')
-                    $env:PGPASSWORD = $Password
                 }
 
                 $tempPwFile = [System.IO.Path]::GetTempFileName()
@@ -204,11 +237,13 @@ try {
                 finally {
                     if (Test-Path $tempPwFile) { Remove-Item -Path $tempPwFile -Force -ErrorAction SilentlyContinue }
                 }
+            } else {
+                Write-SecureLog "Existing PostgreSQL data cluster detected at $DataDir."
             }
 
             # Register as Windows Service if elevated and not skipped
             $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            $svcName = 'tkg-pda-postgres'
+            $svcName = $ServiceName
             $existingSvc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
 
             if ($isElevated -and -not $SkipServiceRegistration) {
@@ -221,30 +256,82 @@ try {
                     Write-SecureLog "Registering local PostgreSQL Windows Service '$svcName'..."
                     & $pgctl register -N $svcName -D $DataDir -S auto -o "-p $Port -h 127.0.0.1"
                     if ($LASTEXITCODE -ne 0) { throw "pg_ctl register failed with exit code $LASTEXITCODE" }
+                    & sc.exe config $svcName obj= "NT AUTHORITY\NetworkService" password= "" | Out-Null
                     & sc.exe description $svcName "TKG PDA Dedicated PostgreSQL Server" | Out-Null
                     & sc.exe failure $svcName reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
                     & sc.exe failureflag $svcName 1 | Out-Null
                 }
 
-                Write-SecureLog "Starting Windows Service '$svcName'..."
-                Start-Service -Name $svcName
+                $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+                if ($svc -and $svc.Status -eq 'Running') {
+                    Write-SecureLog "Windows Service '$svcName' is already running."
+                } else {
+                    Write-SecureLog "Starting Windows Service '$svcName'..."
+                    try {
+                        Start-Service -Name $svcName -ErrorAction Stop
+                    }
+                    catch {
+                        Write-SecureLog "Windows Service start failed ($($_.Exception.Message)). Starting via pg_ctl process..." "WARN"
+                        $pgLog = Join-Path (Split-Path $DataDir -Parent) 'postgres_service.log'
+                        & $pgctl -D $DataDir -l $pgLog -o "-p $Port -h 127.0.0.1" -s -W start
+                    }
+                }
             } else {
                 # In non-elevated or dev environments, start via pg_ctl
                 $pgLog = Join-Path (Split-Path $DataDir -Parent) 'postgres_service.log'
                 Write-SecureLog "Starting local PostgreSQL cluster via pg_ctl..."
-                & $pgctl -D $DataDir -l $pgLog -o "-p $Port -h 127.0.0.1" -w start
+                & $pgctl -D $DataDir -l $pgLog -o "-p $Port -h 127.0.0.1" -s -W start
                 if ($LASTEXITCODE -ne 0) { throw "pg_ctl start failed with exit code $LASTEXITCODE" }
             }
 
             # Wait for readiness
             $ready = $false
             for ($i = 0; $i -lt 30; $i++) {
-                & $pgisready -h $HostName -p $Port -U $Username | Out-Null
+                & $pgisready -h $HostName -p $Port -U $Username 2>$null | Out-Null
                 if ($LASTEXITCODE -eq 0) { $ready = $true; break }
                 Start-Sleep -Seconds 1
             }
             if (-not $ready) {
-                throw "PostgreSQL service failed to become ready after start."
+                throw "PostgreSQL service failed to become ready after start on port $Port."
+            }
+
+            # Verify authentication now that cluster is online
+            $localAuth = (& $psql -X -h $HostName -p $Port -U $Username -w -c "SELECT 1" 2>$null)
+            if ($LASTEXITCODE -ne 0) {
+                Write-SecureLog "Existing cluster at $DataDir cannot authenticate with current password. Re-initializing clean cluster..." "WARN"
+                if ($isElevated -and -not $SkipServiceRegistration) {
+                    Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+                }
+                & $pgctl -D $DataDir stop -m immediate 2>$null
+                Start-Sleep -Seconds 1
+                Remove-Item $DataDir -Recurse -Force -ErrorAction SilentlyContinue
+
+                # Re-initialize clean cluster
+                New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+                $tempPwFile = [System.IO.Path]::GetTempFileName()
+                try {
+                    $Password | Set-Content -Path $tempPwFile -Encoding Ascii
+                    & $initdb -D $DataDir -U $Username -E UTF8 --no-locale -A scram-sha-256 --pwfile=$tempPwFile
+                    if ($LASTEXITCODE -ne 0) { throw "initdb failed with exit code $LASTEXITCODE" }
+                }
+                finally {
+                    if (Test-Path $tempPwFile) { Remove-Item -Path $tempPwFile -Force -ErrorAction SilentlyContinue }
+                }
+
+                # Restart
+                if ($isElevated -and -not $SkipServiceRegistration) {
+                    Start-Service -Name $svcName -ErrorAction Stop
+                } else {
+                    $pgLog = Join-Path (Split-Path $DataDir -Parent) 'postgres_service.log'
+                    & $pgctl -D $DataDir -l $pgLog -o "-p $Port -h 127.0.0.1" -s -W start
+                }
+
+                # Wait for readiness again
+                for ($i = 0; $i -lt 30; $i++) {
+                    & $pgisready -h $HostName -p $Port -U $Username 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) { break }
+                    Start-Sleep -Seconds 1
+                }
             }
         } else {
             throw "PostgreSQL server at $HostName`:$Port is not accessible."
@@ -305,7 +392,7 @@ try {
     # Grant privileges on Database to AppUser
     & $psql @commonAdminPsql -d 'postgres' -c "GRANT ALL PRIVILEGES ON DATABASE $Database TO $AppUser;" | Out-Null
 
-    # 6. Apply Schema Migrations in numerical order
+    # 6. Apply schema migrations in numerical order.
     $baseSchemaExists = Invoke-AdminPsqlScalar $Database "SELECT to_regclass('auth.roles');"
     Write-SecureLog "Executing migrations from: $MigrationsDir (BaseSchemaExists=$baseSchemaExists)"
     $migrationFiles = Get-ChildItem -Path $MigrationsDir -Filter "*.sql" | Sort-Object Name
@@ -355,10 +442,13 @@ GRANT ALL ON ops.applied_seeds TO $AppUser;
             (Join-Path $SeedsDir '004_finished_goods_internal_locations.sql')
         )
 
-        # Discover any additional custom or new seeds in $SeedsDir
+        # Discover any additional custom or new seeds in $SeedsDir (excluding demo and simulation seeds)
         $extraSeeds = Get-ChildItem -Path $SeedsDir -Filter "*.sql" -Recurse | Where-Object {
             $path = $_.FullName
-            -not ($seedFiles -contains $path) -and -not ($path -like "*simulation_rds_trial_mappings*")
+            -not ($seedFiles -contains $path) -and 
+            -not ($path -like "*simulation_rds_trial_mappings*") -and
+            -not ($path -like "*\demo\*") -and
+            -not ($path -like "*/demo/*")
         } | Sort-Object Name
 
         $allSeedsToProcess = [System.Collections.Generic.List[string]]::new()
@@ -380,9 +470,10 @@ GRANT ALL ON ops.applied_seeds TO $AppUser;
             }
 
             Write-SecureLog "Applying seed: $seedName (Checksum: $hash)..."
-            & $psql @commonAdminPsql -d $Database -f $seed | Out-Null
+            $seedErr = & $psql @commonAdminPsql -d $Database -f $seed 2>&1
             if ($LASTEXITCODE -ne 0) {
-                throw "Seed $seedName failed with exit code $LASTEXITCODE"
+                Write-SecureLog "Seed $seedName failed: $($seedErr | Out-String)" "ERROR"
+                throw "Seed $seedName failed with exit code $($LASTEXITCODE). Error: $($seedErr | Out-String)"
             }
 
             # Record in ops.applied_seeds

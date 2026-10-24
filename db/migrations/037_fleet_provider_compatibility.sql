@@ -1,4 +1,4 @@
--- Migration 027: Provider-neutral fleet compatibility foundation
+-- Migration 037: Provider-neutral fleet compatibility foundation
 --
 -- Additive and replay-safe. Existing RDS tables remain the operational source
 -- while M4 is commissioned. No live provider is enabled by this migration.

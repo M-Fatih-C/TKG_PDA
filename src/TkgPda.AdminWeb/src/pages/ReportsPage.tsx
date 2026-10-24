@@ -48,8 +48,8 @@ export function ReportsPage() {
       <PageHeader
         eyebrow="Operasyon"
         title="Operasyon Kayıtları & Raporlar"
-        description="Görevler, oturumlar ve dönem özeti. Teknik JSON için Teknik Audit sayfası duruyor."
-        actions={<div className="no-print"><Button variant="secondary" onClick={() => void api.downloadReport(tab === 'sessions' ? 'sessions' : 'tasks', range, tab === 'sessions' ? 'TKG_Oturum_Raporu.csv' : 'TKG_Gorev_Raporu.csv')}>CSV indir</Button><Button variant="ghost" onClick={() => window.print()}>Yazdır</Button></div>}
+        description="Taşıma görevleri, operatör oturumları ve operasyonel dönem analizleri."
+        actions={<div className="no-print"><Button variant="secondary" onClick={() => void api.downloadReport(tab === 'sessions' ? 'sessions' : 'tasks', range, tab === 'sessions' ? 'TKG_Oturum_Raporu.xlsx' : 'TKG_Gorev_Raporu.xlsx')}>Excel indir</Button><Button variant="ghost" onClick={() => window.print()}>Yazdır</Button></div>}
       />
       <div className="no-print report-toolbar">
         {presets.map((item) => <Button key={item.id} size="sm" variant={preset === item.id ? 'primary' : 'secondary'} onClick={() => applyPreset(item.id)}>{item.label}</Button>)}
@@ -69,7 +69,7 @@ export function ReportsPage() {
         </>}
         {tab === 'sessions' && <>
           <Field label="Oturum"><SelectInput aria-label="Oturum durumu" value={range.activity ?? ''} onChange={(event) => patch({ activity: event.target.value || undefined })}><option value="">Tümü</option><option value="active">Aktif</option><option value="ended">Sonlanmış</option></SelectInput></Field>
-          <Field label="Çıkış nedeni"><SelectInput aria-label="Çıkış nedeni" value={range.endReason ?? ''} onChange={(event) => patch({ endReason: event.target.value || undefined })}><option value="">Tümü</option><option value="USER_LOGOUT">Kullanıcı çıkışı</option><option value="LEASE_EXPIRED">Süre doldu</option><option value="TOKEN_EXPIRED">Token süresi doldu</option><option value="REPLACED_SAME_DEVICE_LOGIN">Aynı cihazda yeni giriş</option></SelectInput></Field>
+          <Field label="Çıkış nedeni"><SelectInput aria-label="Çıkış nedeni" value={range.endReason ?? ''} onChange={(event) => patch({ endReason: event.target.value || undefined })}><option value="">Tümü</option><option value="USER_LOGOUT">Kullanıcı çıkışı</option><option value="LEASE_EXPIRED">Oturum süresi doldu</option><option value="TOKEN_EXPIRED">Oturum anahtarının süresi doldu</option><option value="REPLACED_SAME_DEVICE_LOGIN">Aynı cihazda yeni giriş</option></SelectInput></Field>
         </>}
       </div>
       <div className="report-tabs no-print" role="tablist">
@@ -77,7 +77,7 @@ export function ReportsPage() {
         <button role="tab" aria-selected={tab === 'sessions'} onClick={() => setTab('sessions')}>Kullanıcı Oturumları</button>
         <button role="tab" aria-selected={tab === 'summary'} onClick={() => setTab('summary')}>Operasyon Özeti</button>
         <button role="tab" aria-selected={tab === 'failures'} onClick={() => setTab('failures')}>Hata / İptal Analizi</button>
-        <Link to="/audit">Teknik Audit</Link>
+        <Link to="/audit">Teknik Denetim</Link>
       </div>
       {tab === 'tasks' && <TaskSection query={tasks} page={page} onPage={setPage} onOpen={setSelected} />}
       {tab === 'sessions' && <SessionSection query={sessions} page={page} onPage={setPage} />}
@@ -88,7 +88,7 @@ export function ReportsPage() {
           <h2>Talep {detail.data.task.requestNo}</h2>
           <ol>{detail.data.timeline.map((entry) => <li key={`${entry.at}-${entry.title}`}><strong>{stamp(entry.at)}</strong> — {entry.title}{entry.actorLine && <small>{entry.actorLine}</small>}</li>)}</ol>
           <p>Toplam: {duration(detail.data.task.totalSeconds)} · Depo yanıtı: {duration(detail.data.task.warehouseResponseSeconds)} · Robot: {duration(detail.data.task.robotExecutionSeconds)}</p>
-          <details className="no-print"><summary>Teknik Detay</summary><p>Talep kimliği: {detail.data.task.requestId}</p><p>Correlation: {detail.data.task.correlationId}</p><Link to={`/audit?correlationId=${detail.data.task.correlationId}&entityId=${detail.data.task.requestId}`}>Teknik denetime git</Link></details>
+          <details className="no-print"><summary>Teknik Ayrıntılar</summary><p>Talep kimliği: {detail.data.task.requestId}</p><p>İlişkilendirme kimliği: {detail.data.task.correlationId}</p><Link to={`/audit?correlationId=${detail.data.task.correlationId}&entityId=${detail.data.task.requestId}`}>Teknik denetime git</Link></details>
           <Button className="no-print" variant="ghost" onClick={() => setSelected(null)}>Kapat</Button>
         </Panel>
       )}
@@ -168,15 +168,10 @@ function machineText(state: string, code: string | null) {
 
 function duration(seconds: number | null) {
   if (seconds === null || seconds === undefined) return 'Bilgi yok'
-  if (seconds < 60) return `${seconds} sn`
-  if (seconds < 3600) {
-    const minutes = Math.floor(seconds / 60)
-    const rest = seconds % 60
-    return rest === 0 ? `${minutes} dk` : `${minutes} dk ${rest} sn`
-  }
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
-  return `${hours} sa ${String(minutes).padStart(2, '0')} dk`
+  const rest = seconds % 60
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`
 }
 
 function stamp(value: string | null) {

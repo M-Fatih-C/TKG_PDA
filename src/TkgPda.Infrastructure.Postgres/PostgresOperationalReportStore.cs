@@ -276,9 +276,12 @@ public sealed class PostgresOperationalReportStore(NpgsqlDataSource dataSource) 
                    count(*) FILTER (WHERE r.status = 'FAILED')::int,
                    count(*) FILTER (WHERE r.status = 'CANCELLED')::int,
                    count(*) FILTER (WHERE r.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING'))::int,
-                   avg(EXTRACT(EPOCH FROM (done_at - created_event))) FILTER (WHERE created_event IS NOT NULL AND done_at IS NOT NULL),
-                   avg(EXTRACT(EPOCH FROM (ready_at - created_event))) FILTER (WHERE created_event IS NOT NULL AND ready_at IS NOT NULL),
-                   avg(EXTRACT(EPOCH FROM (robot_done - robot_started))) FILTER (WHERE robot_started IS NOT NULL AND robot_done IS NOT NULL)
+                   avg(EXTRACT(EPOCH FROM (times.done_at - times.created_event)))
+                       FILTER (WHERE times.created_event IS NOT NULL AND times.done_at IS NOT NULL),
+                   avg(EXTRACT(EPOCH FROM (times.ready_at - times.created_event)))
+                       FILTER (WHERE times.created_event IS NOT NULL AND times.ready_at IS NOT NULL),
+                   avg(EXTRACT(EPOCH FROM (times.robot_done - times.robot_started)))
+                       FILTER (WHERE times.robot_started IS NOT NULL AND times.robot_done IS NOT NULL)
             FROM ops.transport_requests r
             LEFT JOIN LATERAL (
                 SELECT min(e.created_at) FILTER (WHERE e.event_type = 'REQUEST_CREATED') AS created_event,
@@ -405,8 +408,8 @@ public sealed class PostgresOperationalReportStore(NpgsqlDataSource dataSource) 
             LIMIT 100
             """,
             connection);
-        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = query.From });
-        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = query.To });
+        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = query.From.ToUniversalTime() });
+        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = query.To.ToUniversalTime() });
         AddText(command, "employee_no", string.IsNullOrWhiteSpace(query.EmployeeNo) ? null : query.EmployeeNo.Trim());
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -497,8 +500,8 @@ public sealed class PostgresOperationalReportStore(NpgsqlDataSource dataSource) 
 
     private static void BindTask(NpgsqlCommand command, TaskReportQuery query)
     {
-        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = query.From });
-        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = query.To });
+        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = query.From.ToUniversalTime() });
+        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = query.To.ToUniversalTime() });
         AddUuid(command, "machine_id", query.MachineId);
         AddText(command, "employee_no", string.IsNullOrWhiteSpace(query.EmployeeNo) ? null : query.EmployeeNo.Trim());
         AddUuid(command, "device_id", query.DeviceId);
@@ -513,8 +516,8 @@ public sealed class PostgresOperationalReportStore(NpgsqlDataSource dataSource) 
 
     private static void BindSession(NpgsqlCommand command, SessionReportQuery query)
     {
-        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = query.From });
-        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = query.To });
+        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = query.From.ToUniversalTime() });
+        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = query.To.ToUniversalTime() });
         AddText(command, "employee_no", string.IsNullOrWhiteSpace(query.EmployeeNo) ? null : query.EmployeeNo.Trim());
         AddUuid(command, "device_id", query.DeviceId);
         AddUuid(command, "machine_id", query.MachineId);
@@ -524,8 +527,8 @@ public sealed class PostgresOperationalReportStore(NpgsqlDataSource dataSource) 
 
     private static void BindWindow(NpgsqlCommand command, DateTimeOffset from, DateTimeOffset to, Guid? machineId)
     {
-        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = from });
-        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = to });
+        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = from.ToUniversalTime() });
+        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = to.ToUniversalTime() });
         AddUuid(command, "machine_id", machineId);
     }
 

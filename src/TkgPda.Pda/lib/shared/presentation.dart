@@ -9,6 +9,7 @@ String actionLabel(String action) => switch (action) {
 };
 
 String actionQuestion(String action) => switch (action) {
+  'BRING_FULL' => 'Dolu kasa getirmek istiyor musunuz?',
   'BRING_EMPTY' => 'Boş kasa getirmek istiyor musunuz?',
   'REMOVE_FULL' => 'Dolu kasayı kaldırmak istiyor musunuz?',
   'REMOVE_EMPTY' => 'Boş kasayı kaldırmak istiyor musunuz?',
@@ -16,6 +17,7 @@ String actionQuestion(String action) => switch (action) {
 };
 
 IconData actionIcon(String action) => switch (action) {
+  'BRING_FULL' => Icons.inbox,
   'BRING_EMPTY' => Icons.move_to_inbox_outlined,
   'REMOVE_FULL' => Icons.outbox,
   'REMOVE_EMPTY' => Icons.outbox_outlined,

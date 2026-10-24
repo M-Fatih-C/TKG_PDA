@@ -387,6 +387,8 @@ String? _chainLabel(String? chainState) => switch (chainState) {
   'WAITING_PREDECESSOR' => 'Önceki görev bekleniyor',
   'REMOVING_EXISTING' => 'Mevcut palet kaldırılıyor',
   'PREPARING_SUCCESSOR' => 'Yeni palet hazırlanıyor',
+  'WAITING_MACHINE_SLOT' => 'Makine alanı bekleniyor',
+  'WAITING_STORE_CAPACITY' => 'Depo alanı bekleniyor',
   'PREPARING' => 'Palet hazırlanıyor',
   _ => null,
 };

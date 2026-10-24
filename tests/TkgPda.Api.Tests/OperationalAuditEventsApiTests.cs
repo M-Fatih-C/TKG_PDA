@@ -512,6 +512,10 @@ public sealed class OperationalAuditEventsApiTests(ApiTestFixture fixture) : ICl
         }
 
         // Second request for RDS confirmed cancellation
+        // The failed dispatched move correctly left the endpoint UNKNOWN. This
+        // test is about audit boundaries, so provide explicit physical
+        // reconciliation before creating another movement on the same slot.
+        await fixture.SetSlotAsync(slot, "VACANT", "UNKNOWN");
         var cancelCommand = command with { IdempotencyKey = "rds-cancel-test-" + Guid.NewGuid() };
         var created2 = await service.CreateAsync(cancelCommand);
         await store.RecordExecutionTransitionAsync(created2.Request.Id, TransportRequestStatus.SentToRds);
@@ -689,6 +693,92 @@ public sealed class OperationalAuditEventsApiTests(ApiTestFixture fixture) : ICl
         var started = Assert.Single(await GetEventsAsync(demand.Request.Id), e => e.EventType == TransportEventTypes.WarehousePreparationStarted);
         Assert.Equal(first.Id, JsonDocument.Parse(started.DataJson).RootElement.GetProperty("preparation_pallet_id").GetGuid());
         Assert.Equal(firstCorrelation, started.CorrelationId);
+    }
+
+    [Fact]
+    public async Task Withdrawing_ready_pallet_reopens_preparation_and_releases_machine_slot_claim()
+    {
+        var demand = await CreateWaitingBringFullAsync("P06-WITHDRAW-READY");
+        var warehouseOperator = await fixture.SeedIdentityAsync(role: RoleCodes.WarehouseOperator);
+        using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);
+        var areaId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.preparation_areas WHERE is_enabled ORDER BY area_number LIMIT 1");
+
+        var placedResponse = await PlaceFullPalletAsync(warehouseClient, areaId, demand, Guid.NewGuid());
+        var placed = await placedResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(placed);
+        var readyResponse = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/preparation/pallets/{placed.Id}/ready",
+            new PalletVersionHttpRequest(placed.RowVersion));
+        readyResponse.EnsureSuccessStatusCode();
+        var ready = await readyResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(ready);
+
+        var released = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/preparation/pallets/{ready.Id}/release",
+            new ReleaseAreaHttpRequest(ready.RowVersion, "WITHDRAWN"));
+        released.EnsureSuccessStatusCode();
+
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
+            "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", demand.Request.Id)));
+        Assert.False(await fixture.ScalarAsync<bool>(
+            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE id = @id", ("id", demand.Request.Id)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE id = @id AND ready_at IS NOT NULL", ("id", demand.Request.Id)));
+        Assert.Single(await GetEventsAsync(demand.Request.Id),
+            e => e.EventType == TransportEventTypes.WarehousePreparationWithdrawn);
+    }
+
+    [Fact]
+    public async Task Ready_pallet_cannot_be_recorded_collected_before_robot_dispatch()
+    {
+        var demand = await CreateWaitingBringFullAsync("P06-COLLECT-BEFORE-DISPATCH");
+        var warehouseOperator = await fixture.SeedIdentityAsync(role: RoleCodes.WarehouseOperator);
+        using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);
+        var areaId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.preparation_areas WHERE is_enabled ORDER BY area_number LIMIT 1");
+        var placedResponse = await PlaceFullPalletAsync(warehouseClient, areaId, demand, Guid.NewGuid());
+        var placed = await placedResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(placed);
+        var readyResponse = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/preparation/pallets/{placed.Id}/ready",
+            new PalletVersionHttpRequest(placed.RowVersion));
+        var ready = await readyResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(ready);
+
+        var rejected = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/preparation/pallets/{ready.Id}/release",
+            new ReleaseAreaHttpRequest(ready.RowVersion, "COLLECTED"));
+
+        Assert.False(rejected.IsSuccessStatusCode);
+        Assert.Equal("PREPARATION_COLLECTION_NOT_DISPATCHED", await ApiTestFixture.ErrorCodeAsync(rejected));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.preparation_pallets WHERE id = @id AND released_at IS NULL", ("id", ready.Id)));
+    }
+
+    [Fact]
+    public async Task Cancelled_request_cannot_be_marked_ready()
+    {
+        var demand = await CreateWaitingBringFullAsync("P06-CANCEL-BEFORE-READY");
+        var warehouseOperator = await fixture.SeedIdentityAsync(role: RoleCodes.WarehouseOperator);
+        using var warehouseClient = await fixture.LoginClientAsync(warehouseOperator);
+        var areaId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.preparation_areas WHERE is_enabled ORDER BY area_number LIMIT 1");
+        var placedResponse = await PlaceFullPalletAsync(warehouseClient, areaId, demand, Guid.NewGuid());
+        var placed = await placedResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(placed);
+        await fixture.ExecuteAsync(
+            "UPDATE ops.transport_requests SET status = 'CANCELLED', cancelled_at = now() WHERE id = @id",
+            ("id", demand.Request.Id));
+
+        var rejected = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/preparation/pallets/{placed.Id}/ready",
+            new PalletVersionHttpRequest(placed.RowVersion));
+
+        Assert.False(rejected.IsSuccessStatusCode);
+        Assert.Equal("PREPARATION_REQUEST_NOT_WAITING", await ApiTestFixture.ErrorCodeAsync(rejected));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.preparation_pallets WHERE id = @id AND ready_at IS NOT NULL", ("id", placed.Id)));
     }
 
     [Fact]

@@ -93,8 +93,11 @@ public sealed partial class PostgresTransportWorkflowStore
         await using var command = new NpgsqlCommand($"""
             SELECT b.business_code, b.navigation_profile_id, w.rds_type, w.last_filled,
                    w.last_locked, w.last_disabled, w.last_sync_failed, w.last_sync_at,
-                   b.endpoint_class <> 'FINISHED_GOODS' OR EXISTS (
-                       SELECT 1 FROM ops.store_locations sl WHERE sl.code = b.business_code AND sl.is_enabled)
+                    b.endpoint_class NOT IN ('FINISHED_GOODS', 'EMPTY_SOURCE') OR EXISTS (
+                       SELECT 1 FROM ops.store_locations sl
+                       WHERE sl.is_enabled
+                         AND (b.endpoint_class <> 'FINISHED_GOODS' OR sl.area_purpose = 'DELIVERY')
+                         AND (sl.id = b.store_location_id OR (b.store_location_id IS NULL AND sl.code = b.business_code)))
             FROM integration.profile_shared_endpoint_bindings b
             JOIN integration.rds_worksites w ON w.id = b.rds_worksite_id
                 AND w.navigation_profile_id = b.navigation_profile_id
@@ -201,8 +204,9 @@ public sealed partial class PostgresTransportWorkflowStore
         switch (request.TaskType)
         {
             case TransportTaskType.BringEmpty:
-                await RequireSharedEndpointAsync(connection, transaction, profileId, "EMPTY_SOURCE", "EMPTY_SOURCE_MAPPING_MISSING", cancellationToken);
-                return request with { SourceSlotId = null };
+                var emptySource = await AllocateEmptySourceBusinessCodeAsync(
+                    connection, transaction, profileId, cancellationToken);
+                return request with { SourceSlotId = null, SourceBusinessCode = emptySource };
             case TransportTaskType.RemoveEmpty:
                 var emptyReturn = await AllocateSharedBusinessCodeAsync(
                     connection, transaction, profileId, "EMPTY_RETURN", "EMPTY_RETURN_MAPPING_MISSING", cancellationToken);
@@ -223,6 +227,102 @@ public sealed partial class PostgresTransportWorkflowStore
             default:
                 return request;
         }
+    }
+
+    private async Task<string> AllocateEmptySourceBusinessCodeAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, Guid profileId, CancellationToken cancellationToken)
+    {
+        var observations = await ReadSharedCandidatesAsync(connection, transaction, profileId, "EMPTY_SOURCE", cancellationToken);
+        var candidates = observations.Where(c => c.ProfileId == profileId).ToArray();
+        if (candidates.Length == 0) throw new WorkflowRuleException("EMPTY_SOURCE_MAPPING_MISSING", SharedEndpointMessage("EMPTY_SOURCE_MAPPING_MISSING"));
+
+        foreach (var candidate in candidates)
+        {
+            if (!candidate.StoreEnabled) continue;
+            var sourceState = _physicalPolicy.State(candidate.Evidence);
+            if (_physicalPolicy.IsSimulationMode
+                ? sourceState != "AVAILABLE"
+                : sourceState != "OCCUPIED") continue;
+            if (!_physicalPolicy.IsSimulationMode
+                && observations.Any(other => other.BusinessCode == candidate.BusinessCode
+                    && other.ProfileId != candidate.ProfileId
+                    && _physicalPolicy.State(other.Evidence) == "AVAILABLE")) continue;
+            if (!await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
+
+            await using var checkEmpty = new NpgsqlCommand(
+                """
+                SELECT u.id
+                FROM ops.store_units u
+                JOIN ops.store_locations sl ON sl.id = u.store_location_id
+                WHERE u.load_state = 'EMPTY'
+                  AND u.removed_at IS NULL
+                  AND sl.is_enabled
+                  AND (
+                      sl.code = @code
+                      OR sl.id = (
+                          SELECT store_location_id FROM integration.profile_shared_endpoint_bindings
+                          WHERE navigation_profile_id = @profile AND endpoint_class = 'EMPTY_SOURCE' AND business_code = @code
+                          LIMIT 1
+                      )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ops.store_reservations sr
+                      WHERE sr.store_location_id = sl.id AND sr.released_at IS NULL
+                  )
+                LIMIT 1
+                FOR UPDATE OF u, sl SKIP LOCKED
+                """,
+                connection,
+                transaction);
+            checkEmpty.Parameters.AddWithValue("code", candidate.BusinessCode);
+            checkEmpty.Parameters.AddWithValue("profile", profileId);
+            if (await checkEmpty.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return candidate.BusinessCode;
+            }
+        }
+
+        // Distinguish a missing pallet from unsafe physical evidence, but never
+        // substitute a different store location or EMPTY_SOURCE binding.
+        await using (var checkBoundEmpty = new NpgsqlCommand(
+            """
+            SELECT 1
+            FROM ops.store_units u
+            JOIN ops.store_locations sl ON sl.id = u.store_location_id
+            JOIN integration.profile_shared_endpoint_bindings b
+              ON b.navigation_profile_id = @profile
+             AND b.endpoint_class = 'EMPTY_SOURCE'
+             AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND b.business_code = sl.code))
+            WHERE u.load_state = 'EMPTY'
+              AND u.removed_at IS NULL
+              AND sl.is_enabled
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_reservations sr
+                  WHERE sr.store_location_id = sl.id AND sr.released_at IS NULL
+              )
+            LIMIT 1
+            """,
+            connection,
+            transaction))
+        {
+            checkBoundEmpty.Parameters.AddWithValue("profile", profileId);
+            if (await checkBoundEmpty.ExecuteScalarAsync(cancellationToken) is null)
+            {
+                throw new WorkflowRuleException(
+                    "FINISHED_GOODS_NO_EMPTY_CONTAINER",
+                    "Bitmiş ürün alanında bu NAV profiline bağlı hazır boş kasa yok.");
+            }
+        }
+
+        var states = candidates.Select(candidate => _physicalPolicy.State(candidate.Evidence)).ToArray();
+        if (!_physicalPolicy.IsSimulationMode && states.Contains("AVAILABLE"))
+            throw new WorkflowRuleException(
+                "RDS_WORKSITE_OCCUPANCY_CONFLICT",
+                "Boş kasa kaydı ile fiziksel WorkSite doluluğu çelişiyor.");
+        var state = states.FirstOrDefault() ?? "UNKNOWN";
+        throw new WorkflowRuleException(
+            RdsPhysicalAvailabilityPolicy.ErrorCode(state) ?? "RDS_WORKSITE_STATE_UNKNOWN",
+            "Boş kasa kaynağının fiziksel durumu kullanıma uygun değil.");
     }
 
     private static async Task<bool> IsMainPartAsync(
@@ -269,6 +369,58 @@ public sealed partial class PostgresTransportWorkflowStore
         if (candidates.Length == 0) throw new WorkflowRuleException(missingCode, SharedEndpointMessage(missingCode));
         if (endpointClass == "FINISHED_GOODS" && !candidates.Any(c => c.StoreEnabled))
             throw new WorkflowRuleException("FINISHED_GOODS_DESTINATION_NOT_CONFIGURED", FinishedGoodsDestinationNotConfiguredMessage);
+
+        if (endpointClass == "FINISHED_GOODS")
+        {
+            var hasPhysicalCandidate = false;
+            foreach (var candidate in candidates)
+            {
+                if (!IsPhysicallyAvailable(candidate, observations)) continue;
+                hasPhysicalCandidate = true;
+                if (!await TryLockSharedEndpointAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
+                if (await IsSharedEndpointOccupiedGloballyAsync(connection, transaction, candidate.BusinessCode, cancellationToken)) continue;
+
+                await using var checkVacant = new NpgsqlCommand(
+                    """
+                    SELECT sl.id
+                    FROM ops.store_locations sl
+                    WHERE sl.is_enabled
+                      AND sl.area_purpose = 'DELIVERY'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM integration.profile_shared_endpoint_bindings b
+                          WHERE b.navigation_profile_id = @profile
+                            AND b.endpoint_class = 'FINISHED_GOODS'
+                            AND b.business_code = @code
+                            AND (b.store_location_id = sl.id OR (b.store_location_id IS NULL AND b.business_code = sl.code))
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM ops.store_units u
+                          WHERE u.store_location_id = sl.id AND u.removed_at IS NULL
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM ops.store_reservations sr
+                          WHERE sr.store_location_id = sl.id AND sr.released_at IS NULL
+                      )
+                    LIMIT 1
+                    FOR UPDATE OF sl SKIP LOCKED
+                    """,
+                    connection,
+                    transaction);
+                checkVacant.Parameters.AddWithValue("code", candidate.BusinessCode);
+                checkVacant.Parameters.AddWithValue("profile", profileId);
+                if (await checkVacant.ExecuteScalarAsync(cancellationToken) is not null)
+                {
+                    return candidate.BusinessCode;
+                }
+            }
+
+            if (!hasPhysicalCandidate) throw SharedUnavailable(endpointClass, candidates);
+            throw new WorkflowRuleException(
+                "FINISHED_GOODS_STORE_FULL",
+                "Bitmiş ürün alanında boş yer yok.");
+        }
+
         if (!IsSingleCapacityEndpoint(endpointClass))
         {
             var source = candidates.FirstOrDefault(c => c.SourceHealthy);

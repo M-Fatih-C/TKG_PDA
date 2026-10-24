@@ -41,9 +41,9 @@ export function CatalogPage() {
   }
 
   return <div className="page">
-    <PageHeader eyebrow="Canonical master data" title="Parça & ürün grupları" description="Parçaları varyant bağlamında ana ürün, alt parça ve ilgili parçalar olarak hiyerarşik yapılandırın." actions={<Button onClick={() => tab === 'parts' ? setPartDialog('new') : setGroupDialog('new')}><Plus size={17} /> {tab === 'parts' ? 'Parça ekle' : 'Ürün grubu ekle'}</Button>} />
+    <PageHeader eyebrow="Ana Veri Yönetimi" title="Parça & Ürün Grupları" description="Parçaları varyant bağlamında ana ürün, alt parça ve ilgili parçalar olarak hiyerarşik yapılandırın." actions={<Button onClick={() => tab === 'parts' ? setPartDialog('new') : setGroupDialog('new')}><Plus size={17} /> {tab === 'parts' ? 'Parça ekle' : 'Ürün grubu ekle'}</Button>} />
     <div className="segmented">
-      <button className={tab === 'parts' ? 'active' : ''} onClick={() => setTab('parts')}>Canonical Parçalar <span>{parts.data?.length}</span></button>
+      <button className={tab === 'parts' ? 'active' : ''} onClick={() => setTab('parts')}>Parça Kataloğu <span>{parts.data?.length}</span></button>
       <button className={tab === 'groups' ? 'active' : ''} onClick={() => setTab('groups')}>Ürün Grupları <span>{groups.data?.length}</span></button>
     </div>
     <Panel>

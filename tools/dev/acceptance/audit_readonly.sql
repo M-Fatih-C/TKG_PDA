@@ -46,4 +46,5 @@ SELECT json_agg(q ORDER BY q.machine,q.variant) FROM (
 ) q;
 
 SELECT json_agg(p ORDER BY operation_code) FROM master.production_end_priorities p;
+SELECT json_agg(p ORDER BY product_group_id, layout_slot_id, part_id) FROM master.production_end_area_priorities p;
 SELECT json_agg(s) FROM ops.production_sessions s WHERE ended_at IS NULL;

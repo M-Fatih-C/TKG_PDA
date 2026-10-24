@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using TkgPda.Api;
@@ -53,6 +54,16 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Null(system.DeviceId);
         Assert.Null(system.RequestedByName);
         Assert.False(system.IsSuccess);
+
+        var summary = await client.GetFromJsonAsync<SummaryPage>(Report("summary"));
+        Assert.NotNull(summary);
+        Assert.Equal(2, summary.Total);
+        Assert.Equal(1, summary.Completed);
+        Assert.Equal(1, summary.Active);
+        Assert.Equal(1d, summary.SuccessRate);
+        Assert.Equal(239d, summary.AverageTotalSeconds);
+        Assert.Equal(131d, summary.AverageWarehouseSeconds);
+        Assert.Equal(96d, summary.AverageRobotSeconds);
     }
 
     [Fact]
@@ -84,6 +95,15 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Null(failedRow.RobotExecutionSeconds);
         Assert.Equal("RDS'ye gönderildi", Assert.Single(page.Items, item => item.RequestId == sent).StatusLabel);
         Assert.Equal("Robot çalışıyor", Assert.Single(page.Items, item => item.RequestId == running).StatusLabel);
+
+        var summary = await client.GetFromJsonAsync<SummaryPage>(Report("summary"));
+        Assert.NotNull(summary);
+        Assert.Equal(3, summary.Total);
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(2, summary.Active);
+        var failure = Assert.Single(summary.TopFailures);
+        Assert.Equal("MOTOR_CHECK_TIMEOUT", failure.Key);
+        Assert.Equal(1, failure.Count);
     }
 
     [Fact]
@@ -216,6 +236,16 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.NotEqual("Kullanıcı çıkışı", expiredRow.StatusLabel);
         Assert.Equal("UNKNOWN", expiredRow.MachineState);
         Assert.Null(expiredRow.MachineCode);
+
+        var excel = await client.GetAsync($"/api/v1/admin/reports/sessions/export.xlsx?from={Uri.EscapeDataString(WindowStart.ToString("O"))}&to={Uri.EscapeDataString(WindowEnd.ToString("O"))}&employeeNo=4455");
+        excel.EnsureSuccessStatusCode();
+        await using var excelStream = await excel.Content.ReadAsStreamAsync();
+        using var workbook = new ZipArchive(excelStream, ZipArchiveMode.Read);
+        var sheet = await ReadEntryAsync(workbook, "xl/worksheets/sheet1.xml");
+        var styles = await ReadEntryAsync(workbook, "xl/styles.xml");
+        Assert.Contains("Oturum Süresi", sheet);
+        Assert.Contains("Ayşe Demir", sheet);
+        Assert.Contains("[&lt;0.416666666666667]&quot;0&quot;[h]:mm:ss", styles);
     }
 
     [Fact]
@@ -267,6 +297,33 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Contains("'=Şişe", csv);
         Assert.DoesNotContain(second.ToString(), csv);
 
+        var excel = await client.GetAsync($"/api/v1/admin/reports/tasks/export.xlsx?from=2026-10-07T00:00:00Z&to=2026-10-08T00:00:00Z&status=FAILED&employeeNo=1234");
+        excel.EnsureSuccessStatusCode();
+        Assert.Equal(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            excel.Content.Headers.ContentType!.MediaType);
+        await using var excelStream = await excel.Content.ReadAsStreamAsync();
+        using var workbook = new ZipArchive(excelStream, ZipArchiveMode.Read);
+        var sheet = await ReadEntryAsync(workbook, "xl/worksheets/sheet1.xml");
+        var styles = await ReadEntryAsync(workbook, "xl/styles.xml");
+        var expectedHeaders = new[]
+        {
+            "Talep No", "Tarih", "Saat", "Sicil", "Kullanıcı", "Bilgisayar", "Makine", "Varyant", "İşlem", "Parça",
+            "Durum", "Depo Operatörü", "Hazırlık Alanı", "Robot", "Toplam Süre", "Depo Süresi", "Robot Süresi",
+            "Hata Kodu", "Hata Açıklaması"
+        };
+        var lastHeaderPosition = -1;
+        foreach (var header in expectedHeaders)
+        {
+            var headerPosition = sheet.IndexOf($">{header}<", StringComparison.Ordinal);
+            Assert.True(headerPosition > lastHeaderPosition, $"Expected header '{header}' in customer-approved order.");
+            lastHeaderPosition = headerPosition;
+        }
+        Assert.DoesNotContain("Depo Hazırlık Başlangıcı", sheet);
+        Assert.DoesNotContain("Robot Başlangıç", sheet);
+        Assert.Contains("Şişe", sheet);
+        Assert.Contains("[&lt;0.416666666666667]&quot;0&quot;[h]:mm:ss", styles);
+
         var hash = await fixture.ScalarAsync<string>("SELECT password_hash FROM auth.users WHERE id = @id", ("id", admin.UserId));
         var body = await client.GetStringAsync(Report("tasks"));
         Assert.DoesNotContain(hash, body);
@@ -283,6 +340,43 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
         var auditStillThere = await client.GetAsync("/api/v1/admin/audit-logs?limit=5");
         Assert.Equal(HttpStatusCode.OK, auditStillThere.StatusCode);
+    }
+
+    [Fact]
+    public async Task Reports_with_default_window_and_local_timezone_offset_do_not_throw_500()
+    {
+        await fixture.ResetAsync();
+        var admin = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+        var user = await fixture.SeedIdentityAsync(role: RoleCodes.LineOperator, machineCode: "SH-01-A");
+        var context = await fixture.ContextAsync("SH-01-A", "1");
+        await InsertRequestAsync(context, user.UserId, "COMPLETED", DateTimeOffset.UtcNow, "P1");
+
+        using var client = await fixture.AdminLoginClientAsync(admin);
+
+        // 1. Default window without parameters (uses local Turkey Standard Time offset +03:00)
+        var tasksDefault = await client.GetAsync("/api/v1/admin/reports/tasks");
+        Assert.Equal(HttpStatusCode.OK, tasksDefault.StatusCode);
+
+        // 2. Explicit +03:00 offset
+        var fromStr = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddDays(-1).ToOffset(TimeSpan.FromHours(3)).ToString("O"));
+        var toStr = Uri.EscapeDataString(DateTimeOffset.UtcNow.AddDays(1).ToOffset(TimeSpan.FromHours(3)).ToString("O"));
+        var tasksWithOffset = await client.GetAsync($"/api/v1/admin/reports/tasks?from={fromStr}&to={toStr}");
+        Assert.Equal(HttpStatusCode.OK, tasksWithOffset.StatusCode);
+
+        // 3. /sessions and /summary with default parameters
+        var sessionsDefault = await client.GetAsync("/api/v1/admin/reports/sessions");
+        Assert.Equal(HttpStatusCode.OK, sessionsDefault.StatusCode);
+
+        var summaryDefault = await client.GetAsync("/api/v1/admin/reports/summary");
+        Assert.Equal(HttpStatusCode.OK, summaryDefault.StatusCode);
+    }
+
+    private static async Task<string> ReadEntryAsync(ZipArchive archive, string name)
+    {
+        var entry = archive.GetEntry(name) ?? throw new InvalidOperationException($"{name} missing");
+        await using var stream = entry.Open();
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return await reader.ReadToEndAsync();
     }
 
     private static string Report(string kind) =>
@@ -374,4 +468,16 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
     private sealed record SessionPage(SessionRow[] Items, int Total, BlockedRow[] BlockedAttempts);
     private sealed record SessionRow(string FullName, string? EmployeeNo, string DeviceCode, string StatusLabel, long? DurationSeconds, string MachineState, string? MachineCode);
     private sealed record BlockedRow(string? EmployeeNo, string Message);
+    private sealed record SummaryPage(
+        int Total,
+        int Completed,
+        int Failed,
+        int Cancelled,
+        int Active,
+        double? SuccessRate,
+        double? AverageTotalSeconds,
+        double? AverageWarehouseSeconds,
+        double? AverageRobotSeconds,
+        ReportCountRow[] TopFailures);
+    private sealed record ReportCountRow(string Key, string Label, int Count);
 }

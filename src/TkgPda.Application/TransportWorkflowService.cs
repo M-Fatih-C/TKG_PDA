@@ -74,6 +74,12 @@ public sealed class TransportWorkflowService(ITransportWorkflowStore store)
         return store.MarkReadyAsync(requestId, actorUserId, eventContext, cancellationToken);
     }
 
+    public Task<int> ActivatePreparedPartDemandsAsync(
+        int limit,
+        OperationalEventContext? eventContext,
+        CancellationToken cancellationToken = default) =>
+        store.ActivatePreparedPartDemandsAsync(Math.Clamp(limit, 1, 100), eventContext, cancellationToken);
+
     public Task<TransportRequestSnapshot> RecordExecutionTransitionAsync(
         Guid requestId,
         TransportRequestStatus nextStatus,

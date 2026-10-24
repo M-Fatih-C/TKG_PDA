@@ -291,8 +291,8 @@ public sealed class PostgresFinishedGoodsStoreTests
 
     private Task<Guid> CreateStoreLocationAsync(int? capacity) => ScalarAsync<Guid>(
         """
-        INSERT INTO ops.store_locations (code, display_name, capacity)
-        VALUES ('TEST-STORE-LOC', 'Test Store Location', @capacity)
+        INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose, is_operator_visible)
+        VALUES ('TEST-STORE-LOC', 'Test Store Location', @capacity, 'DELIVERY', true)
         RETURNING id
         """,
         ("capacity", capacity));

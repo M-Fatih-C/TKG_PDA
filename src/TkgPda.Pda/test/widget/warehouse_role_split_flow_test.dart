@@ -160,11 +160,74 @@ void main() {
       harness.dispose();
     },
   );
+
+  testWidgets(
+    'Dedicated tablet TAB-YARI-MAMUL routes to preparation areas, shows banner and logout button',
+    (tester) async {
+      final user = AuthenticatedUser(
+        id: testUser.id,
+        username: 'dev-wh-semi',
+        fullName: 'Yarı Mamul Depo Operatörü',
+        employeeNo: '2001',
+        roles: const ['SEMI_FINISHED_WAREHOUSE_OPERATOR'],
+      );
+      final repo = FakePdaRepository()..loginUser = user;
+      final harness = await _harness(
+        tester,
+        repository: repo,
+        deviceCode: 'TAB-YARI-MAMUL',
+      );
+
+      expect(harness.controller.stage, AppStage.preparationAreas);
+      expect(find.text('Yarı Mamul Hazırlık'), findsOneWidget);
+      expect(find.byKey(const Key('operator-user-banner')), findsOneWidget);
+      expect(find.byKey(const Key('logout-button')), findsOneWidget);
+
+      // Tap logout
+      await tester.tap(find.byKey(const Key('logout-button')));
+      await tester.pumpAndSettle();
+      expect(harness.controller.stage, AppStage.login);
+
+      harness.dispose();
+    },
+  );
+
+  testWidgets(
+    'Dedicated tablet TAB-BITMIS-URUN routes to finished goods store, shows banner and logout button',
+    (tester) async {
+      final user = AuthenticatedUser(
+        id: testUser.id,
+        username: 'dev-wh-finished',
+        fullName: 'Bitmiş Ürün Depo Operatörü',
+        employeeNo: '2002',
+        roles: const ['FINISHED_GOODS_WAREHOUSE_OPERATOR'],
+      );
+      final repo = FakePdaRepository()..loginUser = user;
+      final harness = await _harness(
+        tester,
+        repository: repo,
+        deviceCode: 'TAB-BITMIS-URUN',
+      );
+
+      expect(harness.controller.stage, AppStage.finishedGoodsStore);
+      expect(find.text('Bitmiş Ürün Deposu'), findsOneWidget);
+      expect(find.byKey(const Key('operator-user-banner')), findsOneWidget);
+      expect(find.byKey(const Key('logout-button')), findsOneWidget);
+
+      // Tap logout
+      await tester.tap(find.byKey(const Key('logout-button')));
+      await tester.pumpAndSettle();
+      expect(harness.controller.stage, AppStage.login);
+
+      harness.dispose();
+    },
+  );
 }
 
 Future<_Harness> _harness(
   WidgetTester tester, {
   FakePdaRepository? repository,
+  String deviceCode = testDeviceCode,
 }) async {
   tester.view.physicalSize = const Size(1280, 800);
   tester.view.devicePixelRatio = 1;
@@ -173,7 +236,7 @@ Future<_Harness> _harness(
   final repo = repository ?? FakePdaRepository();
   final controller = AppController(
     repository: repo,
-    deviceCodeStore: MemoryDeviceCodeStore(testDeviceCode),
+    deviceCodeStore: MemoryDeviceCodeStore(deviceCode),
     session: SessionMemory(),
     enablePolling: false,
     enableProductionWorkflow: false,

@@ -60,6 +60,39 @@ void main() {
     },
   );
 
+  testWidgets(
+    'preparation displays correct label for BRING_FULL operations',
+    (tester) async {
+      final request = WarehousePreparationRequest.fromJson({
+        'requestId': 'test-bring-full',
+        'requestNo': 59,
+        'machineId': testMachine.id,
+        'machineCode': testMachine.code,
+        'machineDisplayName': testMachine.displayName,
+        'operation': 'BRING_FULL',
+        'partCode': 'ALT-PART-01',
+        'containerTypeCode': 'PALLET-01',
+        'createdAt': DateTime(2026, 9, 17, 10, 0, 0).toUtc().toIso8601String(),
+      });
+      final repository = FakePdaRepository()
+        ..loginUser = _warehouseUser
+        ..warehouseRequestsValue = [request];
+      final harness = await _harness(tester, repository: repository);
+      await _openLegacyConsole(tester, harness);
+
+      expect(find.text('Dolu malzeme / kasa hazırlanacak'), findsOneWidget);
+      expect(
+        tester
+            .widget<ElevatedButton>(
+              find.byKey(const Key('warehouse-ready-test-bring-full')),
+            )
+            .onPressed,
+        isNotNull,
+      );
+      harness.dispose();
+    },
+  );
+
   for (final timestamp in [null, 'invalid-time']) {
     testWidgets('missing/invalid timestamp stays unknown: $timestamp', (
       tester,

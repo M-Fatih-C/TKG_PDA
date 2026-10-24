@@ -98,7 +98,7 @@ export function NotificationCenter() {
         title: `Veri Kalite Uyarısı: ${issue.code}`,
         message: issue.message,
         severity: 'danger',
-        source: 'Master Data',
+        source: 'Ana Veri',
       })
     })
 
@@ -111,7 +111,7 @@ export function NotificationCenter() {
           message: rdsStatusQuery.data.errorMessage || 'SEER RDS sunucusuna erişilemiyor.',
           severity: 'danger',
           link: '/rds',
-          source: 'RDS Core',
+          source: 'RDS Altyapısı',
         })
       } else if (rdsStatusQuery.data.errorCode) {
         items.push({
@@ -120,7 +120,7 @@ export function NotificationCenter() {
           message: rdsStatusQuery.data.errorMessage || rdsStatusQuery.data.businessMessage || '',
           severity: 'warning',
           link: '/rds',
-          source: 'RDS Core',
+          source: 'RDS Altyapısı',
         })
       }
     }

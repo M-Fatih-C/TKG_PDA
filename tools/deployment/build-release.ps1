@@ -120,6 +120,10 @@ $apiProj = Join-Path $projectRoot 'src\TkgPda.Api\TkgPda.Api.csproj'
     --self-contained true `
     -p:PublishSingleFile=false `
     -p:IncludeNativeLibrariesForSelfExtract=true `
+    "-p:Version=$Version" `
+    "-p:InformationalVersion=$Version+$fullCommit" `
+    -p:IncludeSourceRevisionInInformationalVersion=false `
+    -p:TkgBuildTimestamp=$buildTimeUtc `
     -o $serverStaging
 
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
@@ -186,11 +190,15 @@ if ($pgSource) {
 Write-Host "`n--- [Step 7/8] Generating Release Manifest with SHA-256 Signatures ---" -ForegroundColor Yellow
 
 $fileSignatures = @{}
+$updateFileSignatures = @{}
 $stagedFiles = Get-ChildItem -Path $stagingDir -File -Recurse
 foreach ($f in $stagedFiles) {
     $rel = $f.FullName.Substring($stagingDir.Length).TrimStart('\', '/').Replace('\', '/')
     $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     $fileSignatures[$rel] = $hash
+    if (-not $rel.StartsWith('PostgreSQL/', [StringComparison]::OrdinalIgnoreCase)) {
+        $updateFileSignatures[$rel] = $hash
+    }
 }
 
 $manifest = @{
@@ -201,7 +209,7 @@ $manifest = @{
     fullCommit = $fullCommit
     releaseTimestamp = $buildTimeUtc
     architecture = "win-x64"
-    databaseMigrationLevel = "026"
+    databaseMigrationLevel = "036"
     components = @{
         server = "ASP.NET Core Kestrel (Native Windows Service)"
         adminWeb = "React SPA (/admin/)"
@@ -214,6 +222,24 @@ $manifest = @{
 $manifestJson = Join-Path $stagingDir 'manifest.json'
 $manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestJson -Encoding UTF8
 Copy-Item -Path $manifestJson -Destination (Join-Path $releaseDir 'manifest.json') -Force
+$updateManifest = @{
+    name = "TKG PDA Server Update Package"
+    version = $Version
+    minSupportedPreviousVersion = "1.0.0"
+    buildCommit = $commitHash
+    fullCommit = $fullCommit
+    releaseTimestamp = $buildTimeUtc
+    architecture = "win-x64"
+    databaseMigrationLevel = "036"
+    components = @{
+        server = "ASP.NET Core Kestrel (Native Windows Service)"
+        adminWeb = "React SPA (/admin/)"
+        pdaWeb = "Flutter Web SPA (/pda/)"
+    }
+    files = $updateFileSignatures
+}
+$updateManifestJson = Join-Path $stagingDir 'update_manifest.json'
+$updateManifest | ConvertTo-Json -Depth 5 | Set-Content -Path $updateManifestJson -Encoding UTF8
 Write-Host "[INFO] Manifest generated with $($fileSignatures.Count) signed files." -ForegroundColor Green
 
 # 10. Compile Inno Setup Installers

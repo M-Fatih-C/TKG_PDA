@@ -60,23 +60,24 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
         {
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartAsync(client, setup);
-        var repeated = await client.SendAsync(Demand(setup, setup.AltPart, "align-repeat"));
-        Assert.Equal(HttpStatusCode.Created, repeated.StatusCode);
-        var body = await repeated.Content.ReadFromJsonAsync<PartDemandHttpResponse>();
-        Assert.Equal("REMOVE_FULL", body!.PredecessorTaskType);
-        var predecessor = await fixture.ScalarAsync<string>("""
-            SELECT destination_business_code FROM ops.transport_requests r
-            JOIN master.task_types tt ON tt.id = r.task_type_id
-            WHERE tt.code = 'REMOVE_FULL'
-            """);
-        Assert.Equal("RETURN-01", predecessor);
-        Assert.DoesNotContain("FG-", predecessor, StringComparison.Ordinal);
-
-        await fixture.ExecuteAsync("DELETE FROM ops.transport_request_dependencies");
-        await fixture.ExecuteAsync("DELETE FROM ops.transport_requests");
         await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "EMPTY", setup.AltPart);
         var empty = await client.SendAsync(Demand(setup, setup.AltPart, "align-empty"));
         Assert.Equal(HttpStatusCode.Created, empty.StatusCode);
+        var emptyBody = await empty.Content.ReadFromJsonAsync<PartDemandHttpResponse>();
+        Assert.NotNull(emptyBody);
+        Assert.Null(emptyBody.PredecessorTaskType);
+        var emptyId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE request_no = @no",
+            ("no", emptyBody.RequestNo));
+        await fixture.ExecuteAsync(
+            """
+            UPDATE ops.slot_runtime_state s
+            SET current_container_type_id = r.container_type_id
+            FROM ops.transport_requests r
+            WHERE s.layout_slot_id = @slot AND r.id = @request
+            """,
+            ("slot", setup.Slot), ("request", emptyId));
+        await ReadyAndActivateAsync(emptyId);
         var emptyCode = await fixture.ScalarAsync<string>("""
             SELECT destination_business_code FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
@@ -117,9 +118,10 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
         Assert.Equal("FG-01", await fixture.ScalarAsync<string>("""
             SELECT l.code FROM ops.store_units u
             JOIN ops.store_locations l ON l.id = u.store_location_id
+            WHERE u.load_state = 'FULL' AND u.removed_at IS NULL
             """));
         await store.RecordExecutionTransitionAsync(mamulId, TransportRequestStatus.Completed);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events WHERE event_type = 'UNIT_DELIVERED'"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
         }
@@ -203,8 +205,9 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             Assert.Equal("FG-01", await fixture.ScalarAsync<string>("""
                 SELECT l.code FROM ops.store_units u
                 JOIN ops.store_locations l ON l.id = u.store_location_id
+                WHERE u.load_state = 'FULL' AND u.removed_at IS NULL
                 """));
-            Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+            Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
             Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events WHERE event_type = 'UNIT_DELIVERED'"));
             Assert.Equal("ENDED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_sessions WHERE id = @id", ("id", sessionId)));
             Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
@@ -216,7 +219,7 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
     }
 
     [Fact]
-    public async Task Source_backed_variants_are_classified_without_calling_missing_field_data_a_software_defect()
+    public async Task Source_backed_variants_and_current_customer_data_are_internally_consistent()
     {
         await fixture.ResetAsync();
         Assert.Equal(9L, await fixture.ScalarAsync<long>("SELECT count(*) FROM master.machines WHERE is_active"));
@@ -237,7 +240,14 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             """));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_worksites"));
         Assert.Equal(4L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.preparation_areas WHERE area_number BETWEEN 1 AND 4"));
-        Assert.Equal(19L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_locations WHERE code LIKE 'FG-%' AND is_enabled"));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("""
+            SELECT count(*) FROM ops.store_locations
+            WHERE code LIKE 'FG-%' AND is_enabled AND area_purpose = 'DELIVERY' AND is_operator_visible
+            """));
+        Assert.Equal(6L, await fixture.ScalarAsync<long>("""
+            SELECT count(*) FROM ops.preparation_areas
+            WHERE warehouse_scope = 'FINISHED_GOODS' AND is_enabled
+            """));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("""
             SELECT count(*)
             FROM master.product_groups pg
@@ -252,8 +262,8 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             SELECT count(*) FROM master.product_group_parts
             WHERE relation_type = 'ALT_PART' AND is_active AND container_type_id IS NULL
             """);
-        Assert.True(altParts > incomplete);
-        Assert.True(incomplete > 0);
+        Assert.True(altParts > 0);
+        Assert.Equal(0L, incomplete);
         Assert.Equal(96L, await fixture.ScalarAsync<long>("""
             SELECT count(*) FROM (
                 SELECT DISTINCT t.variant_id, tt.code
@@ -317,6 +327,12 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", slot), ("part", alt));
         await fixture.SetSlotAsync(slot, occupancy, load, occupancy == "OCCUPIED" ? alt : null);
+        if (occupancy == "OCCUPIED")
+        {
+            await fixture.ExecuteAsync(
+                "UPDATE ops.slot_runtime_state SET current_container_type_id = @container WHERE layout_slot_id = @slot",
+                ("container", container), ("slot", slot));
+        }
         var oper = await fixture.SeedIdentityAsync();
         return new Scene(context.MachineId, context.VariantId, context.LayoutId, navigationId, group, main, alt, slot, position, oper);
     }
@@ -466,6 +482,15 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             Content = JsonContent.Create(new PalletVersionHttpRequest(pallet.RowVersion))
         };
         Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(ready)).StatusCode);
+    }
+
+    private async Task ReadyAndActivateAsync(Guid requestId)
+    {
+        await fixture.ExecuteAsync(
+            "UPDATE ops.transport_requests SET readiness_state = 'READY', ready_at = now() WHERE id = @id",
+            ("id", requestId));
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        Assert.Equal(1, await store.ActivatePreparedPartDemandsAsync(100, null));
     }
 
     private sealed record Scene(

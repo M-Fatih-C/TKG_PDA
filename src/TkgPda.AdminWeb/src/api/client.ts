@@ -25,6 +25,7 @@ import type {
   RdsTaskTemplate,
   RdsTaskTemplateValidation,
   ProductionEndPriority,
+  ProductionEndAreaPriority,
   TransportEvidence,
   TaskReportPage,
   VariantOperationReadiness,
@@ -233,6 +234,14 @@ export const createAdminApi = (token: string) => ({
     (await request<ProductionEndPriority[]>('/api/v1/admin/production-end-priorities', { token, signal })).data,
   setProductionEndPriority: async (operationCode: string, priority: number | null) =>
     (await request<ProductionEndPriority[]>('/api/v1/admin/production-end-priorities', { method: 'PUT', token, body: { operationCode, priority } })).data,
+  productionEndAreaPriorities: async (signal?: AbortSignal) =>
+    (await request<ProductionEndAreaPriority[]>('/api/v1/admin/production-end-area-priorities', { token, signal })).data,
+  setProductionEndAreaPriority: async (productGroupId: string, layoutSlotId: string, partId: string, priority: number | null) =>
+    (await request<ProductionEndAreaPriority[]>('/api/v1/admin/production-end-area-priorities', {
+      method: 'PUT',
+      token,
+      body: { productGroupId, layoutSlotId, partId, priority },
+    })).data,
   transportEvidence: async (requestId: string, signal?: AbortSignal) =>
     (await request<TransportEvidence>(`/api/v1/admin/transport-requests/${requestId}/evidence`, { token, signal })).data,
   reportTasks: async (filters: ReportWindow, signal?: AbortSignal) =>
@@ -244,10 +253,10 @@ export const createAdminApi = (token: string) => ({
   reportSummary: async (filters: ReportWindow, signal?: AbortSignal) =>
     (await request<OperationsSummary>(`/api/v1/admin/reports/summary?${reportSearch(filters)}`, { token, signal })).data,
   downloadReport: async (kind: 'tasks' | 'sessions', filters: ReportWindow, fileName: string) => {
-    const response = await fetch(`/api/v1/admin/reports/${kind}/export.csv?${reportSearch(filters)}`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'text/csv' },
+    const response = await fetch(`/api/v1/admin/reports/${kind}/export.xlsx?${reportSearch(filters)}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
     })
-    if (!response.ok) throw new ApiProblem({ status: response.status, title: 'Rapor indirilemedi', detail: 'CSV raporu oluşturulamadı.', code: 'REPORT_EXPORT_FAILED' })
+    if (!response.ok) throw new ApiProblem({ status: response.status, title: 'Rapor indirilemedi', detail: 'Excel raporu oluşturulamadı.', code: 'REPORT_EXPORT_FAILED' })
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')

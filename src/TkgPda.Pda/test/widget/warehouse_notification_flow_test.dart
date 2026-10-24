@@ -61,6 +61,24 @@ void main() {
       expect(coordinator.notifications, hasLength(1));
     });
 
+    test(
+      'finished-goods demand notification opens the finished-goods store',
+      () {
+        coordinator.notifyDemand(
+          requestId: 'req-empty-1',
+          machineCode: 'SH-01-A',
+          partCode: '67185BN050-40',
+          needsMaterial: false,
+          requestNo: 43,
+          targetStage: AppStage.finishedGoodsStore,
+        );
+
+        final notification = coordinator.notifications.single;
+        expect(notification.message, contains('Boş Kasa'));
+        expect(notification.targetStage, AppStage.finishedGoodsStore);
+      },
+    );
+
     test('new delivery notification creates valid delivery entry', () {
       coordinator.notifyDelivery(
         unitId: 'unit-99',

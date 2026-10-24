@@ -194,4 +194,85 @@ public sealed class PartDemandRulesTests
 
         Assert.Equal("SLOT_STATE_MISMATCH", error.Code);
     }
+
+    [Theory]
+    [InlineData(OccupancyState.Occupied, LoadState.Full)]
+    [InlineData(OccupancyState.Occupied, LoadState.Empty)]
+    [InlineData(OccupancyState.Unknown, LoadState.Unknown)]
+    public void Deferred_preparation_demand_validates_mapping_without_claiming_current_capacity(
+        OccupancyState occupancy,
+        LoadState load)
+    {
+        var machineId = Guid.NewGuid();
+        var layoutId = Guid.NewGuid();
+        var requestedPart = Guid.NewGuid();
+        var slot = new SlotSnapshot(
+            Guid.NewGuid(),
+            machineId,
+            layoutId,
+            SlotRole.Drop,
+            true,
+            null,
+            new HashSet<Guid> { requestedPart },
+            new SlotState(occupancy, load, Guid.NewGuid(), Guid.NewGuid()));
+        var request = new CreateTransportRequest(
+            "separate-pallet",
+            RequestOrigin.Api,
+            Guid.NewGuid(),
+            machineId,
+            Guid.NewGuid(),
+            layoutId,
+            null,
+            Guid.NewGuid(),
+            requestedPart,
+            null,
+            TransportTaskType.BringFull,
+            null,
+            slot.Id,
+            RequiresPreparation: true)
+        {
+            DefersMachineSlotReservation = true
+        };
+
+        TransportRules.ValidateDeferredMachineEndpoint(request, slot);
+    }
+
+    [Fact]
+    public void Deferred_preparation_demand_still_requires_authoritative_part_slot_mapping()
+    {
+        var machineId = Guid.NewGuid();
+        var layoutId = Guid.NewGuid();
+        var slot = new SlotSnapshot(
+            Guid.NewGuid(),
+            machineId,
+            layoutId,
+            SlotRole.Drop,
+            true,
+            null,
+            new HashSet<Guid>(),
+            new SlotState(OccupancyState.Vacant, LoadState.Unknown, null, null));
+        var request = new CreateTransportRequest(
+            "missing-map",
+            RequestOrigin.Api,
+            Guid.NewGuid(),
+            machineId,
+            Guid.NewGuid(),
+            layoutId,
+            null,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            null,
+            TransportTaskType.BringFull,
+            null,
+            slot.Id,
+            RequiresPreparation: true)
+        {
+            DefersMachineSlotReservation = true
+        };
+
+        var error = Assert.Throws<WorkflowRuleException>(
+            () => TransportRules.ValidateDeferredMachineEndpoint(request, slot));
+
+        Assert.Equal("PART_SLOT_NOT_CONFIGURED", error.Code);
+    }
 }

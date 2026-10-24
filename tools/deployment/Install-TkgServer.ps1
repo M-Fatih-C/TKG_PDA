@@ -38,10 +38,26 @@ param(
     [bool]$RdsDispatchEnabled = $true,
     [string]$Version = '1.0.0',
     [string]$SecretsFile = '',
-    [switch]$SkipServiceRegistration = $false
+    [string]$ServiceName = '',
+    [string]$PgServiceName = '',
+    [switch]$SkipServiceRegistration = $false,
+    [switch]$DemoMode = $false
 )
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+
+if ($DemoMode) {
+    if ($InstallDir -eq 'C:\Program Files\TKG PDA') { $InstallDir = 'C:\Program Files\TKG PDA Demo' }
+    if ($ProgramDataDir -eq 'C:\ProgramData\TKG PDA') { $ProgramDataDir = 'C:\ProgramData\TKG PDA Demo' }
+    if ($DbPort -eq 5432) { $DbPort = 55452 }
+    if ($DbName -eq 'tkg_pda') { $DbName = 'tkg_pda_demo' }
+    if ([string]::IsNullOrWhiteSpace($ServiceName)) { $ServiceName = 'TKG PDA Demo Server' }
+    if ([string]::IsNullOrWhiteSpace($PgServiceName)) { $PgServiceName = 'tkg-pda-demo-postgres' }
+} else {
+    if ([string]::IsNullOrWhiteSpace($ServiceName)) { $ServiceName = 'TKG PDA Server' }
+    if ([string]::IsNullOrWhiteSpace($PgServiceName)) { $PgServiceName = 'tkg-pda-postgres' }
+}
 
 if ([string]::IsNullOrWhiteSpace($SourceDir)) {
     $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -116,7 +132,14 @@ try {
 
     # Validate Admin Password on fresh install
     if ([string]::IsNullOrWhiteSpace($AdminPassword)) {
-        throw "ADMIN_PASSWORD_REQUIRED: A non-empty secure administrator password is required for initial installation."
+        if ($DemoMode) {
+            $tokenBytes = New-Object byte[] 12
+            [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($tokenBytes)
+            $AdminPassword = "Demo-" + [Convert]::ToBase64String($tokenBytes).Replace('/','_').Replace('+','-').TrimEnd('=')
+            Log-Message "Generated random secure administrator password for demo installation: $AdminPassword"
+        } else {
+            throw "ADMIN_PASSWORD_REQUIRED: A non-empty secure administrator password is required for initial installation."
+        }
     }
     if ($AdminPassword.Length -lt 8) {
         throw "ADMIN_PASSWORD_TOO_SHORT: Administrator password must be at least 8 characters long."
@@ -144,39 +167,50 @@ try {
         }
     }
 
+    if ($DemoMode) {
+        $credFile = Join-Path $configDir 'initial_admin_credentials.txt'
+        "Username: dev-admin`r`nPassword: $AdminPassword`r`nGeneratedAt: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))" | Set-Content -Path $credFile -Encoding UTF8
+        try {
+            & icacls "$credFile" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:F" "BUILTIN\Administrators:F" | Out-Null
+        } catch { }
+        Log-Message "Demo administrator credentials written to $credFile (restricted ACL)."
+    }
+
     # 4. Copy Application Files from Source
     Log-Message "Deploying application server binaries..."
     $srcServer = Join-Path $SourceDir 'Server'
     if (Test-Path $srcServer) {
-        Copy-Item -Path "$srcServer\*" -Destination $serverDir -Recurse -Force
+        if ($srcServer -ne $serverDir) {
+            Copy-Item -Path "$srcServer\*" -Destination $serverDir -Recurse -Force
+        }
     } else {
         throw "Server binaries missing from source: $srcServer"
     }
 
     Log-Message "Deploying web client interfaces..."
     $srcWebAdmin = Join-Path $SourceDir 'Web\admin'
-    if (Test-Path $srcWebAdmin) {
+    if ((Test-Path $srcWebAdmin) -and ($srcWebAdmin -ne $webAdminDir)) {
         Copy-Item -Path "$srcWebAdmin\*" -Destination $webAdminDir -Recurse -Force
     }
 
     $srcWebPda = Join-Path $SourceDir 'Web\pda'
-    if (Test-Path $srcWebPda) {
+    if ((Test-Path $srcWebPda) -and ($srcWebPda -ne $webPdaDir)) {
         Copy-Item -Path "$srcWebPda\*" -Destination $webPdaDir -Recurse -Force
     }
 
     $srcWebRoot = Join-Path $SourceDir 'Web\root'
-    if (Test-Path $srcWebRoot) {
+    if ((Test-Path $srcWebRoot) -and ($srcWebRoot -ne $webRootDir)) {
         Copy-Item -Path "$srcWebRoot\*" -Destination $webRootDir -Recurse -Force
     }
 
     $srcTools = Join-Path $SourceDir 'Tools'
-    if (Test-Path $srcTools) {
+    if ((Test-Path $srcTools) -and ($srcTools -ne $toolsDir)) {
         Copy-Item -Path "$srcTools\*" -Destination $toolsDir -Recurse -Force
     }
 
     $srcPg = Join-Path $SourceDir 'PostgreSQL'
     $destPg = Join-Path $InstallDir 'PostgreSQL'
-    if (Test-Path $srcPg) {
+    if ((Test-Path $srcPg) -and ($srcPg -ne $destPg)) {
         Log-Message "Deploying bundled PostgreSQL runtime..."
         if (-not (Test-Path $destPg)) {
             New-Item -ItemType Directory -Path $destPg -Force | Out-Null
@@ -236,20 +270,48 @@ try {
         -DataDir $pgDataDir `
         -MigrationsDir $migrationsDir `
         -SeedsDir $seedsDir `
+        -ServiceName $PgServiceName `
+        -DemoMode:$DemoMode `
         -SkipServiceRegistration:$SkipServiceRegistration
 
     Log-Message "Database initialization verified with dedicated app user '$($dbResult.AppUser)'."
 
+    $effectiveDbHost = if ($dbResult.Host) { $dbResult.Host } else { $DbHost }
+    $effectiveDbPort = if ($dbResult.Port) { $dbResult.Port } else { $DbPort }
+    $effectiveDbUser = if ($dbResult.Username) { $dbResult.Username } else { $DbUser }
+    $effectiveDbPassword = if ($dbResult.Password) { $dbResult.Password } else { $DbPassword }
+
+    if ($DemoMode) {
+        Log-Message "Applying demo seed data for offline demonstration (port $effectiveDbPort)..."
+        $demoSeed = Join-Path $SourceDir 'db\seeds\demo\demo_seed.sql'
+        if (-not (Test-Path $demoSeed)) { $demoSeed = Join-Path $toolsDir 'db\seeds\demo\demo_seed.sql' }
+        if (Test-Path $demoSeed) {
+            $psqlBin = if ($candidatePgBin) { Join-Path $candidatePgBin 'psql.exe' } else { 'psql.exe' }
+            $adminPsql = @('-X', '-h', $effectiveDbHost, '-p', "$effectiveDbPort", '-U', $effectiveDbUser, '-w', '-v', 'ON_ERROR_STOP=1')
+            if (![string]::IsNullOrWhiteSpace($effectiveDbPassword)) {
+                $env:PGPASSWORD = $effectiveDbPassword
+            }
+            & $psqlBin @adminPsql -d $DbName -f $demoSeed | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Demo seed application reported exit code $LASTEXITCODE."
+            } else {
+                Log-Message "Demo accounts, devices, and runtime state seeded successfully."
+            }
+        }
+    }
+
     # 7. Secure Server Configuration Generation (DPAPI Fail Closed)
-    Log-Message "Generating production configuration with DPAPI protection..."
-    $connectionString = "Host=$DbHost;Port=$DbPort;Database=$DbName;Username=$($dbResult.AppUser);Password=$($dbResult.AppPassword);Pooling=true;Maximum Pool Size=50"
+    Log-Message "Generating production configuration with DPAPI protection (DB port $effectiveDbPort)..."
+    $connectionString = "Host=$effectiveDbHost;Port=$effectiveDbPort;Database=$DbName;Username=$($dbResult.AppUser);Password=$($dbResult.AppPassword);Pooling=true;Maximum Pool Size=50"
 
     # DPAPI Protection: MUST FAIL CLOSED. No fallback to plaintext or constant zero key!
-    if (![System.OperatingSystem]::IsWindows()) {
+    $isWin = ($env:OS -eq 'Windows_NT') -or ([System.Environment]::OSVersion.Platform -in @([System.PlatformID]::Win32NT, [System.PlatformID]::Win32Windows))
+    if (-not $isWin) {
         throw "PLATFORM_ERROR: Production installation requires Windows DPAPI."
     }
 
     try {
+        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
         $csBytes = [System.Text.Encoding]::UTF8.GetBytes($connectionString)
         $encCs = [System.Security.Cryptography.ProtectedData]::Protect($csBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
         $encConnectionString = "dpapi:" + [Convert]::ToBase64String($encCs)
@@ -279,7 +341,21 @@ try {
         throw "DPAPI_ENCRYPTION_FAILED: DPAPI protection failed ($($_.Exception.Message)). Installation aborted to prevent insecure configuration."
     }
 
+    if ($DemoMode) {
+        $RdsBaseUrl = ''
+        $RdsCoreBaseUrl = ''
+        $RdsDispatchEnabled = $false
+        Log-Message "DemoMode enabled: RDS field integration disabled, offline simulation runner configured."
+    }
+
     $prodConfig = @{
+        DemoMode = @{
+            Enabled = [bool]$DemoMode
+            SimulationDelaySeconds = 3
+            RunningDurationSeconds = 30
+            AutoPrepareWarehouseDemands = $false
+            SimulatedAgvId = "DEMO-AGV-01"
+        }
         ConnectionStrings = @{
             TkgPda = $encConnectionString
         }
@@ -352,8 +428,8 @@ try {
 
     # Save Separate Maintenance Database Configuration (DPAPI protected, restricted ACL)
     $maintConfig = @{
-        Host = $DbHost
-        Port = $DbPort
+        Host = $effectiveDbHost
+        Port = $effectiveDbPort
         Database = $DbName
         MaintenanceUser = $maintUser
         MaintenancePassword = $encMaintPassword
@@ -370,24 +446,24 @@ try {
         Log-Message "Configuring Windows Firewall for port $ServerPort..."
         $fwScript = Join-Path $toolsDir 'Configure-Firewall.ps1'
         if (-not (Test-Path $fwScript)) { $fwScript = Join-Path $SourceDir 'Tools\Configure-Firewall.ps1' }
-        & $fwScript -Port $ServerPort -Action Add
+        & $fwScript -Port $ServerPort -Action Add -RuleName "$ServiceName (HTTP)"
 
         # 9. Install & Start Windows Service
-        Log-Message "Registering and starting Windows Service 'TKG PDA Server'..."
+        Log-Message "Registering and starting Windows Service '$ServiceName'..."
         $serviceScript = Join-Path $toolsDir 'Install-Service.ps1'
         if (-not (Test-Path $serviceScript)) { $serviceScript = Join-Path $SourceDir 'Tools\Install-Service.ps1' }
 
         $apiExe = Join-Path $serverDir 'TkgPda.Api.exe'
-        & $serviceScript -Action Install -BinaryPath $apiExe -ServiceName 'TKG PDA Server'
+        & $serviceScript -Action Install -BinaryPath $apiExe -ServiceName $ServiceName
 
         # Configure Service Dependency on local PostgreSQL if local service exists
-        $localPgSvc = Get-Service -Name 'tkg-pda-postgres' -ErrorAction SilentlyContinue
+        $localPgSvc = Get-Service -Name $PgServiceName -ErrorAction SilentlyContinue
         if ($localPgSvc) {
-            Log-Message "Configuring service dependency: 'TKG PDA Server' -> 'tkg-pda-postgres'..."
-            & sc.exe config "TKG PDA Server" depend= "tkg-pda-postgres" | Out-Null
+            Log-Message "Configuring service dependency: '$ServiceName' -> '$PgServiceName'..."
+            & sc.exe config $ServiceName depend= $PgServiceName | Out-Null
         }
 
-        & $serviceScript -Action Start -ServiceName 'TKG PDA Server'
+        & $serviceScript -Action Start -ServiceName $ServiceName
 
         # 10. Verify Installation Health
         Log-Message "Performing deployment smoke tests..."
@@ -396,7 +472,7 @@ try {
         $testScript = Join-Path $toolsDir 'test-installed-server.ps1'
         if (-not (Test-Path $testScript)) { $testScript = Join-Path $SourceDir 'Tools\test-installed-server.ps1' }
 
-        & $testScript -ServerHost '127.0.0.1' -Port $ServerPort -ServiceName 'TKG PDA Server'
+        & $testScript -ServerHost '127.0.0.1' -Port $ServerPort -ServiceName $ServiceName
         Log-Message "Deployment smoke tests PASSED!"
     } else {
         Log-Message "SkipServiceRegistration is active: skipping firewall, Windows service, and smoke test."
@@ -420,7 +496,7 @@ try {
 catch {
     Log-Message "INSTALLATION FAILED: $($_.Exception.Message)" "ERROR"
     Log-Message $_.ScriptStackTrace "ERROR"
-    throw
+    exit 1
 }
 finally {
     Remove-Item Env:TKG_SETUP_DB_PASSWORD -ErrorAction SilentlyContinue

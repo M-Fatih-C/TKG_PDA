@@ -6,7 +6,6 @@ import {
   LogOut,
   Menu,
   RadioTower,
-  ListChecks,
   ListOrdered,
   ShieldCheck,
   Smartphone,
@@ -24,10 +23,9 @@ const links = [
   { to: '/devices', label: 'Cihazlar', icon: Smartphone },
   { to: '/machines', label: 'Makine & Varyantlar', icon: DatabaseZap },
   { to: '/reports', label: 'Operasyon Kayıtları & Raporlar', icon: FileText },
-  { to: '/audit', label: 'Audit Geçmişi', icon: ClipboardList },
+  { to: '/audit', label: 'Denetim Geçmişi', icon: ClipboardList },
   { to: '/production-end-priorities', label: 'Üretim Bitiş Önceliği', icon: ListOrdered },
   { to: '/rds', label: 'RDS Entegrasyonu', icon: RadioTower },
-  { to: '/commissioning', label: 'Devreye Alma Hazırlığı', icon: ListChecks },
 ]
 
 export function AppShell({ children }: PropsWithChildren) {
@@ -40,7 +38,7 @@ export function AppShell({ children }: PropsWithChildren) {
     <div className="app-shell">
       <aside className={`sidebar ${open ? 'sidebar--open' : ''}`}>
         <div className="brand"><span className="brand__mark">TKG</span><div><strong>PDA</strong><small>Yönetim Merkezi</small></div><button className="sidebar__close" onClick={() => setOpen(false)} aria-label="Menüyü kapat"><X /></button></div>
-        <div className="environment"><span /> Yapılandırma ortamı</div>
+        <div className="environment"><span /> Canlı Operasyon & Yönetim</div>
         <nav aria-label="Ana menü">
           {links.map(({ to, label, icon: Icon, end }) => (
             <NavLink key={to} to={to} end={end} onClick={() => setOpen(false)}><Icon size={19} /><span>{label}</span></NavLink>
@@ -59,14 +57,14 @@ export function AppShell({ children }: PropsWithChildren) {
               <Menu />
             </button>
             <div>
-              <small>TKG PDA / Admin Web</small>
+              <small>TKG PDA / Yönetim Paneli</small>
               <strong>{current?.label ?? 'Yönetim'}</strong>
             </div>
           </div>
           <div className="topbar__right">
             <NotificationCenter />
             <span className="topbar__scope">
-              <ShieldCheck size={16} /> ADMIN_WEB
+              <ShieldCheck size={16} /> Sistem Yöneticisi
             </span>
           </div>
         </header>

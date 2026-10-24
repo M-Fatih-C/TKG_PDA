@@ -214,6 +214,7 @@ public static class OperationalReportText
         "REQUEST_CREATED" => "Talep oluşturuldu",
         "WAREHOUSE_PREPARATION_STARTED" => "Depo operatörü hazırlamaya başladı",
         "WAREHOUSE_PREPARATION_READY" => "Malzeme hazır",
+        "WAREHOUSE_PREPARATION_WITHDRAWN" => "Hazırlık geri alındı",
         "ROBOT_TASK_DISPATCHED" => "RDS'ye gönderildi",
         "ROBOT_TASK_STARTED" => "Robot göreve başladı",
         "ROBOT_TASK_COMPLETED" => "Robot görevi bitti",

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAdminApi } from '../api/ApiContext'
 import { Button, EmptyState, ErrorState, LoadingState, PageHeader, Panel, PanelHeader, StatusPill, compactNumber, formatDate } from '../components/ui'
+import { auditActionLabel, auditEntityLabel } from '../displayLabels'
 
 export function DashboardPage() {
   const api = useAdminApi()
@@ -19,7 +20,7 @@ export function DashboardPage() {
   const robots = useQuery({ queryKey: ['rds-robots'], queryFn: ({ signal }) => api.rdsRobots(signal), refetchOnWindowFocus: false })
   const alarms = useQuery({ queryKey: ['rds-alarms'], queryFn: ({ signal }) => api.rdsRobotAlarms(signal), refetchOnWindowFocus: false })
 
-  const all = [users, devices, machines, containers, audit, rdsStatus, robots, alarms]
+  const requiredQueries = [users, devices, machines, containers, audit]
 
   const refreshAll = async () => {
     setRefreshing(true)
@@ -50,8 +51,8 @@ export function DashboardPage() {
     alarms.dataUpdatedAt || 0,
   )
 
-  if (all.some((query) => query.isLoading && !query.data)) return <LoadingState label="Yönetim özeti hazırlanıyor…" />
-  const failure = all.find((query) => query.error)?.error
+  if (requiredQueries.some((query) => query.isLoading && !query.data)) return <LoadingState label="Yönetim özeti hazırlanıyor…" />
+  const failure = requiredQueries.find((query) => query.error)?.error
   if (failure) return <ErrorState error={failure} onRetry={refreshAll} />
 
   const criticalAlarms = alarms.data?.filter((alarm) => alarm.severity === 'fatal' || alarm.severity === 'error').length ?? 0
@@ -78,19 +79,19 @@ export function DashboardPage() {
     },
     {
       label: 'Robot Filosu',
-      value: totalRobots ? `${onlineRobots}/${totalRobots}` : '—',
-      meta: totalRobots ? `${activeRobots} görevde · ${onlineRobots} çevrimiçi` : 'Bağlantı bekleniyor',
+      value: robots.error ? '—' : totalRobots ? `${onlineRobots}/${totalRobots}` : '—',
+      meta: robots.error ? 'Robot durumu okunamadı' : totalRobots ? `${activeRobots} görevde · ${onlineRobots} çevrimiçi` : 'Bağlantı bekleniyor',
       icon: Bot,
       to: '/rds',
-      tone: totalRobots > 0 && onlineRobots < totalRobots ? 'warning' : 'normal',
+      tone: robots.error || (totalRobots > 0 && onlineRobots < totalRobots) ? 'warning' : 'normal',
     },
     {
       label: 'Kritik Robot Alarmı',
-      value: criticalAlarms,
-      meta: `${alarms.data?.length ?? 0} görünen alarm`,
+      value: alarms.error ? '—' : criticalAlarms,
+      meta: alarms.error ? 'Alarm bilgisi okunamadı' : `${alarms.data?.length ?? 0} görünen alarm`,
       icon: AlertTriangle,
       to: '/rds',
-      tone: criticalAlarms > 0 ? 'danger' : 'normal',
+      tone: alarms.error ? 'warning' : criticalAlarms > 0 ? 'danger' : 'normal',
     },
   ]
 
@@ -146,7 +147,7 @@ export function DashboardPage() {
             <div>
               <span><RadioTower /> RDS Entegrasyon Sunucusu</span>
               <StatusPill
-                value={rdsStatus.data?.reachable ? 'CONNECTED' : rdsStatus.data?.enabled ? 'UNAVAILABLE' : 'DISABLED'}
+                value={rdsStatus.error ? 'UNAVAILABLE' : rdsStatus.data?.reachable ? 'CONNECTED' : rdsStatus.data?.enabled ? 'UNAVAILABLE' : 'DISABLED'}
                 tone={rdsStatus.data?.reachable ? 'success' : 'warning'}
               />
             </div>
@@ -172,7 +173,7 @@ export function DashboardPage() {
         <Panel>
           <PanelHeader
             title="Son Sistem Hareketleri"
-            description="Audit geçmişinin son operasyonel kayıtları"
+            description="Denetim geçmişinin son operasyonel kayıtları"
             action={<Link className="text-link" to="/audit">Tümünü gör <ArrowUpRight size={15} /></Link>}
           />
           {audit.data?.length ? (
@@ -181,15 +182,15 @@ export function DashboardPage() {
                 <div key={item.id}>
                   <span className="activity-dot" />
                   <div>
-                    <strong>{item.action.replaceAll('_', ' ')}</strong>
-                    <small>{item.actorUsername ?? 'Sistem'} · {item.entityType}</small>
+                    <strong>{auditActionLabel(item.action)}</strong>
+                    <small>{item.actorUsername ?? 'Sistem'} · {auditEntityLabel(item.entityType)}</small>
                   </div>
                   <time>{formatDate(item.createdAt)}</time>
                 </div>
               ))}
             </div>
           ) : (
-            <EmptyState title="Audit kaydı yok" description="İlk yapılandırma değişikliği burada görünecek." />
+            <EmptyState title="Denetim kaydı yok" description="İlk yapılandırma değişikliği burada görünecek." />
           )}
         </Panel>
       </div>

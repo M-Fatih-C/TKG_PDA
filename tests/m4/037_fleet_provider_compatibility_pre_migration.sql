@@ -1,4 +1,4 @@
--- Historical RDS row created before migration 027.
+-- Historical RDS row created before migration 037.
 INSERT INTO master.layouts (id, machine_id, code, name, status)
 SELECT
     '02700000-0000-0000-0000-000000000001'::uuid,

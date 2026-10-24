@@ -1,4 +1,4 @@
--- Explicit rollback for migration 027.
+-- Explicit rollback for migration 037.
 --
 -- This script intentionally refuses rollback after any M4-owned data exists.
 -- Existing RDS operational tables and their records are never removed.
@@ -11,7 +11,7 @@ BEGIN
        OR EXISTS (SELECT 1 FROM integration.fleet_orders WHERE provider <> 'RDS')
        OR EXISTS (SELECT 1 FROM integration.external_endpoints WHERE provider <> 'RDS')
        OR EXISTS (SELECT 1 FROM integration.fleet_callback_inbox WHERE provider <> 'RDS') THEN
-        RAISE EXCEPTION 'M4_DATA_PRESENT: migration 027 cannot be rolled back while M4-owned data exists';
+        RAISE EXCEPTION 'M4_DATA_PRESENT: migration 037 cannot be rolled back while M4-owned data exists';
     END IF;
 END $$;
 

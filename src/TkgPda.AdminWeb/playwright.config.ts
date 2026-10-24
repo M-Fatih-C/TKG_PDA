@@ -16,7 +16,7 @@ export default defineConfig({
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   use: {
-    baseURL: 'http://127.0.0.1:4173',
+    baseURL: 'http://127.0.0.1:4173/admin/',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off',
@@ -24,7 +24,7 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], channel: 'chromium' } }],
   webServer: {
     command: 'npm run dev',
-    url: 'http://127.0.0.1:4173',
+    url: 'http://127.0.0.1:4173/admin/',
     reuseExistingServer: false,
     timeout: 60_000,
     env: { TKG_API_TARGET: API_URL },

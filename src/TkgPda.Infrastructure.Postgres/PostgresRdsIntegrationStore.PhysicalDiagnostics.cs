@@ -24,7 +24,8 @@ public sealed partial class PostgresRdsIntegrationStore
                 SELECT s.code, s.slot_role, s.id, COALESCE(rs.occupancy_state,'UNKNOWN'),
                        integration.resolve_slot_worksite(s.id,@nav),
                        EXISTS (SELECT 1 FROM ops.transport_requests r WHERE (r.source_slot_id = s.id OR r.destination_slot_id = s.id)
-                         AND r.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING'))
+                         AND r.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')
+                         AND r.machine_slot_reservation_active)
                 FROM master.layout_slots s JOIN master.layouts l ON l.id = s.layout_id
                 JOIN master.navigation_profiles n ON n.id = @nav AND n.machine_id = l.machine_id
                 LEFT JOIN ops.slot_runtime_state rs ON rs.layout_slot_id = s.id

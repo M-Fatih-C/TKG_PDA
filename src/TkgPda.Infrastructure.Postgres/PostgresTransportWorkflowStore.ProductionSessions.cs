@@ -152,7 +152,20 @@ public sealed partial class PostgresTransportWorkflowStore : IProductionSessionS
     private static async Task EnsureNoProductionTransportAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         Guid machineId, CancellationToken cancellationToken)
     {
-        await using var command = new NpgsqlCommand($"SELECT 1 FROM ops.transport_requests WHERE machine_id = @machine AND status IN ({ActiveStatusesSql}) LIMIT 1", connection, transaction);
+        await using var command = new NpgsqlCommand(
+            $"""
+             SELECT 1
+             FROM ops.transport_requests r
+             WHERE r.machine_id = @machine
+               AND r.status IN ({ActiveStatusesSql})
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM ops.production_end_run_items item
+                   WHERE item.transport_request_id = r.id)
+             LIMIT 1
+             """,
+            connection,
+            transaction);
         command.Parameters.AddWithValue("machine", machineId);
         if (await command.ExecuteScalarAsync(cancellationToken) is not null)
             throw new WorkflowRuleException("ACTIVE_TRANSPORT_EXISTS", "Açık taşıma talepleri tamamlanmadan veya ayrıca iptal edilmeden üretim başlatılamaz/bitirilemez.");

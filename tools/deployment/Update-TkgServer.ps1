@@ -54,9 +54,11 @@ function Get-DecryptedConfigValue {
     param([string]$RawValue)
     if ([string]::IsNullOrWhiteSpace($RawValue)) { return '' }
     if ($RawValue.StartsWith('dpapi:', [StringComparison]::OrdinalIgnoreCase)) {
-        if (![System.OperatingSystem]::IsWindows()) {
+        $isWin = ($env:OS -eq 'Windows_NT') -or ([System.Environment]::OSVersion.Platform -in @([System.PlatformID]::Win32NT, [System.PlatformID]::Win32Windows))
+        if (-not $isWin) {
             throw "DPAPI_DECRYPTION_FAILED: DPAPI is only supported on Windows operating systems."
         }
+        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
         $cipherB64 = $RawValue.Substring(6)
         $cipherBytes = [Convert]::FromBase64String($cipherB64)
         try {
@@ -117,6 +119,11 @@ try {
 
     foreach ($prop in $manifest.files.PSObject.Properties) {
         $relPath = $prop.Name
+        # In update packages, PostgreSQL runtime is already installed on the host and is not part of the update payload
+        if ($relPath.StartsWith('PostgreSQL/', [StringComparison]::OrdinalIgnoreCase) -or 
+            $relPath.StartsWith('PostgreSQL\', [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
         $expectedHash = $prop.Value.ToLowerInvariant()
         $fullPath = Join-Path $SourceDir $relPath
         if (-not (Test-Path $fullPath)) {
@@ -129,21 +136,55 @@ try {
     }
     Log-Update "Package integrity verified: All files match cryptographic SHA-256 signatures."
 
-    # 3. Validate Existing Installation
+    # 3. Validate Existing Installation and Auto-Detect Configuration Location
     $serverDir = Join-Path $InstallDir 'Server'
     $webDir = Join-Path $InstallDir 'Web'
-    $configDir = Join-Path $ProgramDataDir 'Config'
-    $prodConfigPath = Join-Path $configDir 'appsettings.Production.json'
 
     if (-not (Test-Path (Join-Path $serverDir 'TkgPda.Api.exe'))) {
         throw "Existing TKG PDA installation not found at $InstallDir"
+    }
+
+    $configDir = Join-Path $ProgramDataDir 'Config'
+    $prodConfigPath = Join-Path $configDir 'appsettings.Production.json'
+
+    # Auto-detect ProgramData directory if not present at initial path
+    if (-not (Test-Path $prodConfigPath)) {
+        $candidateDataDirs = @(
+            'C:\ProgramData\TKG PDA Demo',
+            'C:\ProgramData\TKG PDA',
+            (Join-Path $InstallDir 'Data')
+        )
+        foreach ($cDir in $candidateDataDirs) {
+            $testPath = Join-Path $cDir 'Config\appsettings.Production.json'
+            if (Test-Path $testPath) {
+                $ProgramDataDir = $cDir
+                $configDir = Join-Path $ProgramDataDir 'Config'
+                $prodConfigPath = $testPath
+                Log-Update "Auto-detected ProgramData directory: $ProgramDataDir"
+                break
+            }
+        }
     }
 
     if (-not (Test-Path $prodConfigPath)) {
         throw "Existing configuration file not found at $prodConfigPath"
     }
 
-    Log-Update "Found existing installation at $InstallDir"
+    # Auto-detect Windows Service Name
+    $activeSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $activeSvc) {
+        $candidateServices = @('TKG PDA Demo Server', 'TKG PDA Server')
+        foreach ($cSvc in $candidateServices) {
+            $foundSvc = Get-Service -Name $cSvc -ErrorAction SilentlyContinue
+            if ($foundSvc) {
+                $ServiceName = $cSvc
+                Log-Update "Auto-detected active Windows Service: $ServiceName"
+                break
+            }
+        }
+    }
+
+    Log-Update "Found existing installation at $InstallDir (Service: $ServiceName, ProgramData: $ProgramDataDir)"
 
     # 4. Read & Decrypt Real Database Configuration
     Log-Update "Reading and decrypting installed production configuration..."
@@ -196,15 +237,36 @@ try {
     }
 
     $serverPort = 5000
-    if ($rawConfig.Kestrel?.Endpoints?.Http?.Url) {
+    if ($rawConfig.Kestrel -and $rawConfig.Kestrel.Endpoints -and $rawConfig.Kestrel.Endpoints.Http -and $rawConfig.Kestrel.Endpoints.Http.Url) {
         $url = $rawConfig.Kestrel.Endpoints.Http.Url
         if ($url -match ':(\d+)') { $serverPort = [int]$matches[1] }
     }
 
+    # 4c. Refresh DemoMode Simulation Parameters if DemoMode is active
+    if ($rawConfig.DemoMode -and $rawConfig.DemoMode.Enabled) {
+        $setProp = {
+            param($TargetObj, [string]$PropName, $PropValue)
+            if ($null -ne $TargetObj.PSObject.Properties[$PropName]) {
+                $TargetObj.$PropName = $PropValue
+            } else {
+                $TargetObj | Add-Member -NotePropertyName $PropName -NotePropertyValue $PropValue -Force
+            }
+        }
+
+        & $setProp $rawConfig.DemoMode 'SimulationDelaySeconds' 3
+        & $setProp $rawConfig.DemoMode 'RunningDurationSeconds' 30
+        & $setProp $rawConfig.DemoMode 'AutoPrepareWarehouseDemands' $false
+        if (-not $rawConfig.DemoMode.SimulatedAgvId) {
+            & $setProp $rawConfig.DemoMode 'SimulatedAgvId' "DEMO-AGV-01"
+        }
+        $rawConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $prodConfigPath -Encoding UTF8
+        Log-Update "Refreshed DemoMode simulation parameters in $prodConfigPath (Duration: 30s, AutoPrepare: false)."
+    }
+
     # 5. Stop Windows Service (Quiesce Application) BEFORE backup
     Log-Update "Stopping Windows Service '$ServiceName' to quiesce application before backup..."
-    $svcScript = Join-Path $InstallDir 'Tools\Install-Service.ps1'
-    if (-not (Test-Path $svcScript)) { $svcScript = Join-Path $SourceDir 'Tools\Install-Service.ps1' }
+    $svcScript = Join-Path $SourceDir 'Tools\Install-Service.ps1'
+    if (-not (Test-Path $svcScript)) { $svcScript = Join-Path $InstallDir 'Tools\Install-Service.ps1' }
 
     if (Test-Path $svcScript) {
         & $svcScript -Action Stop -ServiceName $ServiceName
@@ -214,8 +276,8 @@ try {
 
     # 6. Create Timestamped Pre-Update Backup
     Log-Update "Creating pre-update backup at quiesced boundary..."
-    $backupScript = Join-Path $InstallDir 'Tools\Backup-TkgServer.ps1'
-    if (-not (Test-Path $backupScript)) { $backupScript = Join-Path $SourceDir 'Tools\Backup-TkgServer.ps1' }
+    $backupScript = Join-Path $SourceDir 'Tools\Backup-TkgServer.ps1'
+    if (-not (Test-Path $backupScript)) { $backupScript = Join-Path $InstallDir 'Tools\Backup-TkgServer.ps1' }
 
     $backupDest = Join-Path $ProgramDataDir "Backups\$timestamp"
     $backupInfo = & $backupScript `
@@ -233,8 +295,8 @@ try {
 
     # 7. Apply Forward-Only Database Migrations and Seeds
     Log-Update "Checking and applying database migrations and seeds..."
-    $dbScript = Join-Path $InstallDir 'Tools\Install-Database.ps1'
-    if (-not (Test-Path $dbScript)) { $dbScript = Join-Path $SourceDir 'Tools\Install-Database.ps1' }
+    $dbScript = Join-Path $SourceDir 'Tools\Install-Database.ps1'
+    if (-not (Test-Path $dbScript)) { $dbScript = Join-Path $InstallDir 'Tools\Install-Database.ps1' }
 
     $migrationsDir = Join-Path $SourceDir 'db\migrations'
     $seedsDir = Join-Path $SourceDir 'db\seeds'
@@ -249,14 +311,44 @@ try {
         -AppPassword $runtimePassword `
         -MigrationsDir $migrationsDir `
         -SeedsDir $seedsDir `
-        -IsUpdate `
-        -RotateAppPassword:$false
+        -IsUpdate
 
     $migrationApplied = $true
     Log-Update "Database migrations applied and master data verified."
 
+    # 7b. If DemoMode is active, apply updated demo seeds (two delivery locations,
+    # six empty-container preparation areas, and universal accounts)
+    if ($rawConfig.DemoMode -and $rawConfig.DemoMode.Enabled) {
+        $demoSeed = Join-Path $SourceDir 'db\seeds\demo\demo_seed.sql'
+        if (-not (Test-Path $demoSeed)) { $demoSeed = Join-Path $SourceDir 'Tools\db\seeds\demo\demo_seed.sql' }
+        if (Test-Path $demoSeed) {
+            Log-Update "Applying updated demo seeds (2 finished-goods delivery locations, 6 empty-container preparation areas, universal demo accounts)..."
+            $psqlBin = 'psql.exe'
+            $chkPsql = Get-Command 'psql.exe' -ErrorAction SilentlyContinue
+            if ($chkPsql) { $psqlBin = $chkPsql.Source }
+            else {
+                $pgBinCandidates = @(
+                    (Join-Path $InstallDir 'PostgreSQL\bin\psql.exe'),
+                    'C:\Program Files\PostgreSQL\18\bin\psql.exe'
+                )
+                foreach ($c in $pgBinCandidates) { if (Test-Path $c) { $psqlBin = $c; break } }
+            }
+            if (![string]::IsNullOrWhiteSpace($maintPassword)) {
+                $env:PGPASSWORD = $maintPassword
+            }
+            $demoErr = & $psqlBin -X -h $dbHost -p "$dbPort" -U $maintUser -d $dbName -f $demoSeed 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Log-Update "Demo master seeds failed with exit code $($LASTEXITCODE). Error: $($demoErr | Out-String)" "ERROR"
+                throw "Demo master seeds failed with exit code $($LASTEXITCODE). Error: $($demoErr | Out-String)"
+            }
+            Log-Update "Demo master seeds verified and applied successfully."
+        }
+    }
+
     # 8. Replace Server Binaries and Web Assets
     Log-Update "Replacing application server binaries..."
+    Get-Process -Name 'TkgPda.Api' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
     $srcServer = Join-Path $SourceDir 'Server'
     if (Test-Path $srcServer) {
         Copy-Item -Path "$srcServer\*" -Destination $serverDir -Recurse -Force
@@ -302,8 +394,8 @@ try {
     Log-Update "Running post-update smoke tests..."
     Start-Sleep -Seconds 3
 
-    $testScript = Join-Path $InstallDir 'Tools\test-installed-server.ps1'
-    if (-not (Test-Path $testScript)) { $testScript = Join-Path $SourceDir 'Tools\test-installed-server.ps1' }
+    $testScript = Join-Path $SourceDir 'Tools\test-installed-server.ps1'
+    if (-not (Test-Path $testScript)) { $testScript = Join-Path $InstallDir 'Tools\test-installed-server.ps1' }
 
     if (Test-Path $testScript) {
         & $testScript -ServerHost '127.0.0.1' -Port $serverPort -ServiceName $ServiceName
@@ -314,12 +406,7 @@ try {
     Log-Update "UPDATE COMPLETED SUCCESSFULLY (Version $TargetVersion)"
     Log-Update "=================================================="
 
-    return @{
-        Status = "SUCCESS"
-        Version = $TargetVersion
-        BackupDir = $backupPath
-        LogFile = $logFile
-    }
+    exit 0
 }
 catch {
     Log-Update "UPDATE FAILED: $($_.Exception.Message)" "ERROR"
@@ -388,7 +475,7 @@ catch {
                         & $rPsql -X -h $maintHost -p $maintPort -U $maintUser -w -v ON_ERROR_STOP=1 -d $dbName -f $dumpFile | Out-Null
                         if ($LASTEXITCODE -eq 0) {
                             $dbRestoreSucceeded = $true
-                            foreach ($s in @('public', 'auth', 'master', 'transport', 'ops')) {
+                            foreach ($s in @('public', 'auth', 'master', 'integration', 'ops')) {
                                 & $rPsql -X -h $maintHost -p $maintPort -U $maintUser -w -d $dbName -c "GRANT USAGE ON SCHEMA $s TO $runtimeUser; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA $s TO $runtimeUser; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA $s TO $runtimeUser; GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA $s TO $runtimeUser;" 2>$null | Out-Null
                             }
                             Log-Update "Database '$dbName' restored to pre-update snapshot successfully using maintenance identity."

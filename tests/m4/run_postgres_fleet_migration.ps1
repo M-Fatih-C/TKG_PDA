@@ -48,25 +48,25 @@ try {
     $psql = Join-Path $PgBin 'psql.exe'
     $common = @('-X', '-h', '127.0.0.1', '-p', "$Port", '-U', 'postgres', '-d', $database, '-v', 'ON_ERROR_STOP=1')
     $migrations = Get-ChildItem -LiteralPath (Join-Path $projectRoot 'db\migrations') -Filter '*.sql' |
-        Where-Object Name -LT '027_fleet_provider_compatibility.sql' |
+        Where-Object Name -LT '037_fleet_provider_compatibility.sql' |
         Sort-Object Name
     foreach ($migration in $migrations) {
         Invoke-Checked $psql ($common + @('-f', $migration.FullName))
     }
 
-    Invoke-Checked $psql ($common + @('-f', (Join-Path $PSScriptRoot '027_fleet_provider_compatibility_pre_migration.sql')))
-    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\027_fleet_provider_compatibility.sql')))
-    Invoke-Checked $psql ($common + @('-f', (Join-Path $PSScriptRoot '027_fleet_provider_compatibility_test.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $PSScriptRoot '037_fleet_provider_compatibility_pre_migration.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\037_fleet_provider_compatibility.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $PSScriptRoot '037_fleet_provider_compatibility_test.sql')))
 
     # Replay after both RDS and M4 records exist must be harmless.
-    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\027_fleet_provider_compatibility.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\037_fleet_provider_compatibility.sql')))
     $fleetCount = & $psql @common -Atc "SELECT count(*) FROM integration.fleet_orders"
     if ($LASTEXITCODE -ne 0 -or [int]$fleetCount -ne 2) {
         throw "Migration replay changed fleet order cardinality: $fleetCount"
     }
 
     # Rollback is expected to fail closed while M4-owned rows exist.
-    & $psql @common -f (Join-Path $projectRoot 'db\rollback\027_fleet_provider_compatibility.sql') 2>$null | Out-Null
+    & $psql @common -f (Join-Path $projectRoot 'db\rollback\037_fleet_provider_compatibility.sql') 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
         throw 'Rollback unexpectedly succeeded while M4 data existed'
     }
@@ -78,7 +78,7 @@ DELETE FROM ops.transport_requests WHERE execution_provider = 'M4';
 DELETE FROM integration.external_endpoints WHERE provider = 'M4';
 DELETE FROM master.navigation_profiles WHERE execution_provider = 'M4';
 "@))
-    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\rollback\027_fleet_provider_compatibility.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\rollback\037_fleet_provider_compatibility.sql')))
 
     $verification = & $psql @common -Atc @"
 SELECT json_build_object(

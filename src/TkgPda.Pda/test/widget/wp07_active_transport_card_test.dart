@@ -21,6 +21,7 @@ ActiveTransportRequest _request({
   int? executionElapsedSeconds,
   bool canCancel = true,
   String state = 'WAITING_FOR_ROBOT',
+  String? chainState,
 }) => ActiveTransportRequest.fromJson({
   'requestId': id,
   'requestNo': requestNo,
@@ -43,6 +44,7 @@ ActiveTransportRequest _request({
       ? null
       : 'Bu talebi iptal etme yetkiniz bulunmuyor.',
   'execution': {'state': state},
+  'chainState': chainState,
 });
 
 Future<void> _pump(
@@ -216,6 +218,30 @@ void main() {
       expect(find.text('Hazırlık: Depo hazırlığı bekleniyor'), findsOneWidget);
       expect(find.text('Hazırlık: Hazır'), findsOneWidget);
       expect(find.text('Hazırlık: Hazırlık gerekmiyor'), findsOneWidget);
+    });
+
+    testWidgets('ready pallet waiting for its machine slot has a clear label', (
+      tester,
+    ) async {
+      await _pump(tester, [
+        _request(readinessState: 'READY', chainState: 'WAITING_MACHINE_SLOT'),
+      ]);
+      await tester.tap(find.byKey(const Key('transport-detail-req-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Makine alanı bekleniyor'), findsOneWidget);
+    });
+
+    testWidgets('queued request waiting for warehouse capacity has a clear label', (
+      tester,
+    ) async {
+      await _pump(tester, [
+        _request(chainState: 'WAITING_STORE_CAPACITY'),
+      ]);
+      await tester.tap(find.byKey(const Key('transport-detail-req-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Depo alanı bekleniyor'), findsOneWidget);
     });
 
     testWidgets('part fallbacks never print an id or an empty placeholder', (

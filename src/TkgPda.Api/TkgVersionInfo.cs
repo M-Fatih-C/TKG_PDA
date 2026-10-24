@@ -2,12 +2,12 @@ namespace TkgPda.Api;
 
 public static class TkgVersionInfo
 {
-    public const string Version = "1.0.0";
+    public static string Version { get; private set; } = "1.0.0";
     public const string ServiceName = "TKG PDA Server";
     public const string DisplayName = "TKG PDA Server";
 
-    public static string CommitHash { get; set; } = "10cf9de7";
-    public static string BuildTimestamp { get; set; } = "2026-10-12T09:00:00Z";
+    public static string CommitHash { get; set; } = "unknown";
+    public static string BuildTimestamp { get; set; } = "unknown";
 
     static TkgVersionInfo()
     {
@@ -19,14 +19,22 @@ public static class TkgVersionInfo
         if (!string.IsNullOrWhiteSpace(infoVer))
         {
             var parts = infoVer.Split('+');
+            if (!string.IsNullOrWhiteSpace(parts[0]))
+            {
+                Version = parts[0];
+            }
             if (parts.Length > 1)
             {
                 CommitHash = parts[1];
             }
-            else if (!string.IsNullOrWhiteSpace(parts[0]))
-            {
-                CommitHash = parts[0];
-            }
+        }
+
+        var embeddedBuildTime = asm.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+            .OfType<System.Reflection.AssemblyMetadataAttribute>()
+            .FirstOrDefault(attribute => attribute.Key == "TkgBuildTimestamp")?.Value;
+        if (!string.IsNullOrWhiteSpace(embeddedBuildTime))
+        {
+            BuildTimestamp = embeddedBuildTime;
         }
 
         var envCommit = Environment.GetEnvironmentVariable("TKG_BUILD_COMMIT");

@@ -28,34 +28,62 @@ ProductionSession productionRecord({
   status: ended ? 'ENDED' : status,
 );
 
-void main() {
-  test('ENDING recovery with no active transport uses a fresh End key', () async {
-    final ending = productionRecord(status: 'ENDING');
-    final repo = FakePdaRepository()
-      ..productionValue = ending
-      ..productionEndSession = ending
-      ..contextValue = testContext();
-    final c = await controller(repo);
-    expect(c.canStartProduction, isFalse);
-    expect(c.canEndProduction, isTrue);
-    await c.endProduction();
-    await c.endProduction();
-    expect(repo.productionEndIds, ['production-1', 'production-1']);
-    expect(repo.productionEndKeys.toSet(), hasLength(2));
-    expect(c.production.active!.isEnding, isTrue);
-    expect(repo.productionStartCount, 0);
-  });
+final testProductionEndRequest = ActiveTransportRequest(
+  requestId: '90000000-0000-0000-0000-000000000099',
+  requestNo: 99,
+  operation: 'REMOVE_FULL',
+  status: testActiveRequest.status,
+  requestedBy: testActiveRequest.requestedBy,
+  requestedByUsername: testActiveRequest.requestedByUsername,
+  isMine: testActiveRequest.isMine,
+  sourceSlotId: testActiveRequest.destinationSlotId,
+  destinationSlotId: null,
+  productGroupId: testActiveRequest.productGroupId,
+  partId: testActiveRequest.partId,
+  containerTypeId: testActiveRequest.containerTypeId,
+  priority: 40,
+  createdAt: testActiveRequest.createdAt,
+  canCancel: testActiveRequest.canCancel,
+  cancelDisabledCode: testActiveRequest.cancelDisabledCode,
+  cancelDisabledMessage: testActiveRequest.cancelDisabledMessage,
+  execution: testActiveRequest.execution,
+  productionEnd: true,
+);
 
-  test('ENDING recovery stays blocked while a child transport is active', () async {
-    final repo = FakePdaRepository()
-      ..productionValue = productionRecord(status: 'ENDING')
-      ..contextValue = testContext(activeRequests: [testActiveRequest]);
-    final c = await controller(repo);
-    expect(c.canEndProduction, isFalse);
-    await c.endProduction();
-    expect(repo.productionEndCount, 0);
-    expect(repo.contextValue.activeTransportRequests, hasLength(1));
-  });
+void main() {
+  test(
+    'ENDING recovery with no active transport uses a fresh End key',
+    () async {
+      final ending = productionRecord(status: 'ENDING');
+      final repo = FakePdaRepository()
+        ..productionValue = ending
+        ..productionEndSession = ending
+        ..contextValue = testContext();
+      final c = await controller(repo);
+      expect(c.canStartProduction, isFalse);
+      expect(c.canEndProduction, isTrue);
+      await c.endProduction();
+      await c.endProduction();
+      expect(repo.productionEndIds, ['production-1', 'production-1']);
+      expect(repo.productionEndKeys.toSet(), hasLength(2));
+      expect(c.production.active!.isEnding, isTrue);
+      expect(repo.productionStartCount, 0);
+    },
+  );
+
+  test(
+    'ENDING recovery stays blocked while a child transport is active',
+    () async {
+      final repo = FakePdaRepository()
+        ..productionValue = productionRecord(status: 'ENDING')
+        ..contextValue = testContext(activeRequests: [testActiveRequest]);
+      final c = await controller(repo);
+      expect(c.canEndProduction, isFalse);
+      await c.endProduction();
+      expect(repo.productionEndCount, 0);
+      expect(repo.contextValue.activeTransportRequests, hasLength(1));
+    },
+  );
 
   test('alt part demand does not retarget the mamul container', () async {
     final repo = FakePdaRepository();
@@ -396,28 +424,29 @@ void main() {
     expect(session.endedAt, isNull);
   });
 
-  test('successful end plan keeps production and reuses one end key', () async {
-    final ending = ProductionSession(
-      id: 'production-1',
-      machineId: testMachine.id,
-      variantId: testVariantV1Id,
-      productGroupId: testProductGroupId,
-      mainPartId: testMainPartId,
-      startedAt: DateTime.utc(2026, 9, 15, 8),
-      status: 'ENDING',
-    );
+  test('production-end cleanup does not block starting the next job', () async {
+    final ended = productionRecord(ended: true);
     final repo = FakePdaRepository()
       ..productionValue = productionRecord()
-      ..productionEndSession = ending
-      ..contextValue = testContext();
+      ..productionEndSession = ended
+      ..contextValue = testContext(activeRequests: [testProductionEndRequest]);
     final c = await controller(repo);
-    await c.refreshContext();
     expect(c.canEndProduction, isTrue);
     await c.endProduction();
-    expect(c.production.active?.isEnding, isTrue);
+    expect(c.production.active, isNull);
     expect(c.mamulActionsReady, isFalse);
     expect(repo.productionEndKeys, hasLength(1));
     expect(repo.productionEndKeys.single, startsWith('production-end:'));
+    expect(
+      repo.contextValue.activeTransportRequests.single.productionEnd,
+      isTrue,
+    );
+
+    await c.selectMainPartOption(testMainPartOption);
+    expect(c.canStartProduction, isTrue);
+    await c.startProduction();
+    expect(repo.productionStartCount, 1);
+    expect(c.production.active, isNotNull);
   });
 }
 

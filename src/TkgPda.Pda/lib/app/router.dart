@@ -17,6 +17,19 @@ GoRouter buildRouter(AppController controller) => GoRouter(
   refreshListenable: controller,
   redirect: (context, state) {
     final stage = controller.stage;
+    if (controller.isWarehouseOnly &&
+        (stage == AppStage.machines || stage == AppStage.operation)) {
+      if (controller.canAccessSemiFinishedWarehouse &&
+          !controller.canAccessFinishedGoodsWarehouse) {
+        return '/warehouse/preparation-areas';
+      }
+      if (controller.canAccessFinishedGoodsWarehouse &&
+          !controller.canAccessSemiFinishedWarehouse) {
+        return '/warehouse/store';
+      }
+      return '/warehouse';
+    }
+
     if (stage == AppStage.preparationAreas &&
         !controller.canAccessSemiFinishedWarehouse) {
       return controller.canAccessAnyWarehouse ? '/warehouse' : '/machines';
@@ -88,7 +101,9 @@ GoRouter buildRouter(AppController controller) => GoRouter(
       path: '/warehouse/store',
       builder: (context, state) => StoreScreen(
         coordinator: controller.store,
+        operatorLabel: _operatorLabel(controller.user),
         onBack: controller.leaveFinishedGoodsStore,
+        onLogout: controller.logout,
         onNavigate: (stage) {
           if (stage == AppStage.tasks) {
             controller.enterTasks();
@@ -105,6 +120,7 @@ GoRouter buildRouter(AppController controller) => GoRouter(
         coordinator: controller.preparation,
         operatorLabel: _operatorLabel(controller.user),
         onBack: controller.leavePreparationAreas,
+        onLogout: controller.logout,
         onNavigate: (stage) {
           if (stage == AppStage.tasks) {
             controller.enterTasks();

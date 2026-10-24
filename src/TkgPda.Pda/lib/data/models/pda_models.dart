@@ -741,7 +741,8 @@ class ActiveTransportRequest {
   final int? executionElapsedSeconds;
 
   /// Server chain label: WAITING_PREDECESSOR, REMOVING_EXISTING,
-  /// PREPARING_SUCCESSOR, PREPARING, or null. Never a robot percentage.
+  /// PREPARING_SUCCESSOR, PREPARING, WAITING_MACHINE_SLOT,
+  /// WAITING_STORE_CAPACITY, or null. Never a robot percentage.
   final String? chainState;
 
   /// True when the server created this request as part of production-end cleanup.

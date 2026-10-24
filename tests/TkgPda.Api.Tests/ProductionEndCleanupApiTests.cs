@@ -23,7 +23,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         var requests = await IdsAsync("SELECT transport_request_id FROM ops.production_end_run_items ORDER BY sequence_no");
         Assert.Equal(3, requests.Length);
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
         await api.RestartAsync();
         using var restarted = await api.LoginAsync(setup.User);
         var replay = await ReadAsync(await EndAsync(restarted, setup, session.Id, "restart-multi"));
@@ -33,7 +33,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         for (var index = 0; index < requests.Length; index++)
         {
             await CompleteAsync(store, requests[index]); // Isolated outcome evidence, no robot call.
-            Assert.Equal(index == requests.Length - 1 ? "ENDED" : "ENDING", await StatusAsync(session.Id));
+            Assert.Equal("ENDED", await StatusAsync(session.Id));
         }
         await api.RestartAsync();
         using var final = await api.LoginAsync(setup.User);
@@ -42,13 +42,13 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         Assert.NotNull(ended.Session.EndedAt);
         Assert.Equal("COMPLETED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
-        Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Restart_failed_or_cancelled_cleanup_replays_old_key_and_replans_new_key(bool cancel)
+    public async Task Restart_failed_or_cancelled_cleanup_replays_without_duplicating_background_work(bool cancel)
     {
         await using var api = new RestartApiProcess(fixture.ConnectionString);
         var setup = await OccupyAsync(2, "FULL");
@@ -67,20 +67,18 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         }
         Assert.Equal("FAILED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
         Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id=@id", ("id", original[1])));
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
         await api.RestartAsync();
         using var restarted = await api.LoginAsync(setup.User);
         Assert.True((await ReadAsync(await EndAsync(restarted, setup, session.Id, "failed-original"))).WasIdempotentReplay);
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-        (await EndAsync(restarted, setup, session.Id, "failed-new-key")).EnsureSuccessStatusCode();
-        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
-        var retried = await IdsAsync("SELECT i.transport_request_id FROM ops.production_end_run_items i JOIN ops.production_end_runs r ON r.id=i.run_id WHERE r.status='RUNNING' ORDER BY i.sequence_no");
-        Assert.Equal(2, retried.Length);
-        Assert.DoesNotContain(retried, id => original.Contains(id));
-        foreach (var request in retried) await CompleteAsync(store, request);
+        var retry = await ReadAsync(await EndAsync(restarted, setup, session.Id, "failed-new-key"));
+        Assert.True(retry.WasIdempotentReplay);
         Assert.Equal("ENDED", await StatusAsync(session.Id));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs WHERE status='FAILED'"));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs WHERE status='COMPLETED'"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs WHERE status='COMPLETED'"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action='PRODUCTION_ENDED'"));
     }
 
@@ -169,13 +167,13 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         Assert.Equal(childBefore, await fixture.ScalarAsync<string>("SELECT row_to_json(r)::text FROM ops.transport_requests r WHERE id=@id", ("id", request)));
         Assert.Equal(slotBefore, await fixture.ScalarAsync<string>("SELECT row_to_json(s)::text FROM ops.slot_runtime_state s WHERE layout_slot_id=@slot", ("slot", setup.Slots[0])));
         Assert.Equal("RUNNING", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_events WHERE event_type='REQUEST_CANCELLED'"));
         await api.StartAsync();
         using var restarted = await api.LoginAsync(setup.User);
         (await restarted.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{request}/cancel", null)).EnsureSuccessStatusCode();
         Assert.Equal("FAILED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
     }
 
     [Fact]
@@ -189,8 +187,9 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         await AddReturnSlotAsync(setup, genericGroup, priority: 1, displayOrder: 9801);
         await SeedAltRemovalAsync(setup, specificGroup);
         await fixture.ExecuteAsync("""
-            INSERT INTO master.task_templates (variant_id, task_type_id, destination_slot_group_id, is_active)
-            SELECT @variant, id, @destination, true FROM master.task_types WHERE code = 'REMOVE_FULL'
+            INSERT INTO master.task_templates (variant_id, task_type_id, destination_slot_group_id, is_active, config_json)
+            SELECT @variant, id, @destination, true, '{"testScope":"PRODUCTION_END"}'::jsonb
+            FROM master.task_types WHERE code = 'REMOVE_FULL'
             """, ("variant", setup.Context.VariantId), ("destination", genericGroup));
         using var client = await fixture.LoginClientAsync(setup.User);
         var session = await StartAsync(client, setup);
@@ -226,8 +225,8 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
 
         var ending = await ReadAsync(await EndAsync(client, setup, session.Id, "end-full"));
 
-        Assert.Equal("ENDING", ending.Session.Status);
-        Assert.Null(ending.Session.EndedAt);
+        Assert.Equal("ENDED", ending.Session.Status);
+        Assert.NotNull(ending.Session.EndedAt);
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal("REMOVE_FULL", await fixture.ScalarAsync<string>("SELECT tt.code FROM ops.transport_requests r JOIN master.task_types tt ON tt.id = r.task_type_id"));
         Assert.Equal(40, await fixture.ScalarAsync<int>("SELECT priority FROM ops.transport_requests"));
@@ -235,17 +234,48 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
         await store.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds);
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
         await store.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running);
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
         await store.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Completed);
 
         Assert.Equal("ENDED", await StatusAsync(session.Id));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events WHERE event_type = 'UNIT_DELIVERED'"));
         Assert.Equal("COMPLETED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
+    }
+
+    [Fact]
+    public async Task Exact_area_priority_orders_cleanup_before_operation_default()
+    {
+        var setup = await OccupyAsync(2, "FULL");
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO master.production_end_area_priorities
+                (product_group_id, layout_slot_id, part_id, priority)
+            VALUES
+                (@group, @first, @part, 90),
+                (@group, @second, @part, 10)
+            """,
+            ("group", setup.Group),
+            ("first", setup.Slots[0]),
+            ("second", setup.Slots[1]),
+            ("part", setup.MainPart));
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var session = await StartAsync(client, setup);
+
+        (await EndAsync(client, setup, session.Id, "area-priority-order")).EnsureSuccessStatusCode();
+
+        var ordered = await IdsAsync("SELECT layout_slot_id FROM ops.production_end_run_items ORDER BY sequence_no");
+        Assert.Equal([setup.Slots[1], setup.Slots[0]], ordered);
+        Assert.Equal("10,90", await fixture.ScalarAsync<string>(
+            """
+            SELECT string_agg(r.priority::text, ',' ORDER BY item.sequence_no)
+            FROM ops.production_end_run_items item
+            JOIN ops.transport_requests r ON r.id = item.transport_request_id
+            """));
     }
 
     [Fact]
@@ -260,13 +290,59 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
 
         var ending = await ReadAsync(await EndAsync(client, setup, session.Id, "end-empty"));
 
-        Assert.Equal("ENDING", ending.Session.Status);
+        Assert.Equal("ENDED", ending.Session.Status);
         Assert.Equal("REMOVE_EMPTY", await fixture.ScalarAsync<string>("SELECT tt.code FROM ops.transport_requests r JOIN master.task_types tt ON tt.id = r.task_type_id"));
         Assert.Equal(70, await fixture.ScalarAsync<int>("SELECT priority FROM ops.transport_requests"));
         Assert.Equal("EMPTY_STORAGE", await fixture.ScalarAsync<string>("""
             SELECT ls.slot_role FROM ops.transport_requests r
             JOIN master.layout_slots ls ON ls.id = r.destination_slot_id
             """));
+    }
+
+    [Fact]
+    public async Task Full_pallets_are_removed_before_empty_material_containers_by_approved_priority()
+    {
+        var setup = await SetupAsync(slotCount: 2);
+        var originalOrder = new List<(Guid Slot, int Order)>();
+        foreach (var slot in setup.Slots)
+            originalOrder.Add((slot, await fixture.ScalarAsync<int>(
+                "SELECT display_order FROM master.layout_slots WHERE id = @id", ("id", slot))));
+
+        try
+        {
+            await fixture.ExecuteAsync(
+                "UPDATE master.layout_slots SET display_order = 1 WHERE id = @id",
+                ("id", setup.Slots[0]));
+            await fixture.ExecuteAsync(
+                "UPDATE master.layout_slots SET display_order = 2 WHERE id = @id",
+                ("id", setup.Slots[1]));
+            await fixture.SetSlotAsync(setup.Slots[0], "OCCUPIED", "EMPTY", setup.MainPart);
+            await fixture.SetSlotAsync(setup.Slots[1], "OCCUPIED", "FULL", setup.MainPart);
+            await SeedPriorityAsync("REMOVE_FULL", 40);
+            await SeedPriorityAsync("REMOVE_EMPTY", 70);
+            await SeedTemplateAsync(setup, "REMOVE_FULL");
+            await SeedTemplateAsync(setup, "REMOVE_EMPTY");
+            using var client = await fixture.LoginClientAsync(setup.User);
+            var session = await StartAsync(client, setup);
+
+            (await EndAsync(client, setup, session.Id, "end-priority-order")).EnsureSuccessStatusCode();
+
+            var operations = await StringsAsync("""
+                SELECT tt.code
+                FROM ops.production_end_run_items i
+                JOIN ops.transport_requests r ON r.id = i.transport_request_id
+                JOIN master.task_types tt ON tt.id = r.task_type_id
+                ORDER BY i.sequence_no
+                """);
+            Assert.Equal(["REMOVE_FULL", "REMOVE_EMPTY"], operations);
+        }
+        finally
+        {
+            foreach (var (slot, order) in originalOrder)
+                await fixture.ExecuteAsync(
+                    "UPDATE master.layout_slots SET display_order = @order WHERE id = @id",
+                    ("order", order), ("id", slot));
+        }
     }
 
     [Fact]
@@ -334,11 +410,77 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         queued = await QueuedAsync();
         Assert.Equal(requests[1], Assert.Single(queued));
         Assert.DoesNotContain(requests[2], queued);
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
     }
 
     [Fact]
-    public async Task Queued_sent_to_rds_and_running_do_not_end_production()
+    public async Task Demo_queue_skips_waiting_preparation_rows_and_dispatches_only_one_runnable_request()
+    {
+        var setup = await SetupAsync();
+        await SeedTemplateAsync(setup, "BRING_FULL");
+        await SeedTemplateAsync(setup, "REMOVE_FULL");
+        await fixture.SetSlotAsync(setup.Slots[0], "OCCUPIED", "FULL", setup.MainPart);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        await StartAsync(client, setup);
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+
+        for (var index = 0; index < 25; index++)
+        {
+            var waiting = new CreateTransportRequest(
+                $"demo-waiting-{index}",
+                RequestOrigin.Api,
+                setup.User.UserId,
+                setup.Context.MachineId,
+                setup.Context.VariantId,
+                setup.Context.LayoutId,
+                null,
+                setup.Group,
+                setup.MainPart,
+                null,
+                TransportTaskType.BringFull,
+                null,
+                setup.Slots[0],
+                RequiresPreparation: true)
+            {
+                DefersMachineSlotReservation = true
+            };
+            await store.CreateAndQueueAsync(waiting);
+        }
+
+        var runnable = await store.CreateAndQueueAsync(new CreateTransportRequest(
+            "demo-runnable",
+            RequestOrigin.Api,
+            setup.User.UserId,
+            setup.Context.MachineId,
+            setup.Context.VariantId,
+            setup.Context.LayoutId,
+            null,
+            setup.Group,
+            setup.MainPart,
+            null,
+            TransportTaskType.RemoveFull,
+            setup.Slots[0],
+            null));
+
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        var selected = await DemoSimulationWorker.ListCandidatesAsync(
+            connection,
+            autoPrepareWarehouseDemands: false,
+            CancellationToken.None);
+        Assert.Equal(runnable.Request.Id, Assert.Single(selected).Id);
+
+        await store.RecordExecutionTransitionAsync(runnable.Request.Id, TransportRequestStatus.SentToRds);
+        selected = await DemoSimulationWorker.ListCandidatesAsync(
+            connection,
+            autoPrepareWarehouseDemands: false,
+            CancellationToken.None);
+        Assert.Equal(runnable.Request.Id, Assert.Single(selected).Id);
+        Assert.Equal("SENT_TO_RDS", selected[0].Status);
+    }
+
+    [Fact]
+    public async Task Queued_sent_to_rds_and_running_cleanup_continues_after_production_ends()
     {
         var setup = await OccupyAsync(1, "FULL");
         using var client = await fixture.LoginClientAsync(setup.User);
@@ -346,19 +488,19 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         (await EndAsync(client, setup, session.Id, "end-inflight")).EnsureSuccessStatusCode();
         var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
         Assert.Equal("QUEUED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
-        Assert.True(await fixture.ScalarAsync<bool>("SELECT ended_at IS NULL FROM ops.production_sessions WHERE id = @id", ("id", session.Id)));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
+        Assert.True(await fixture.ScalarAsync<bool>("SELECT ended_at IS NOT NULL FROM ops.production_sessions WHERE id = @id", ("id", session.Id)));
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
 
         await store.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.SentToRds);
-        Assert.True(await fixture.ScalarAsync<bool>("SELECT ended_at IS NULL FROM ops.production_sessions WHERE id = @id", ("id", session.Id)));
+        Assert.True(await fixture.ScalarAsync<bool>("SELECT ended_at IS NOT NULL FROM ops.production_sessions WHERE id = @id", ("id", session.Id)));
         await store.RecordExecutionTransitionAsync(requestId, TransportRequestStatus.Running);
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
-        Assert.True(await fixture.ScalarAsync<bool>("SELECT ended_at IS NULL FROM ops.production_sessions WHERE id = @id", ("id", session.Id)));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
+        Assert.True(await fixture.ScalarAsync<bool>("SELECT ended_at IS NOT NULL FROM ops.production_sessions WHERE id = @id", ("id", session.Id)));
     }
 
     [Fact]
-    public async Task Only_the_final_authoritative_completion_ends_production()
+    public async Task Only_the_final_authoritative_completion_finishes_the_background_cleanup_run()
     {
         var setup = await OccupyAsync(2, "FULL");
         using var client = await fixture.LoginClientAsync(setup.User);
@@ -367,9 +509,11 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         var requests = await IdsAsync("SELECT transport_request_id FROM ops.production_end_run_items ORDER BY sequence_no");
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
         await CompleteAsync(store, requests[0]);
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
+        Assert.Equal("RUNNING", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
         await CompleteAsync(store, requests[1]);
         Assert.Equal("ENDED", await StatusAsync(session.Id));
+        Assert.Equal("COMPLETED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
     }
 
     [Fact]
@@ -529,7 +673,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     }
 
     [Fact]
-    public async Task Predecessor_failure_blocks_later_cleanup_and_a_new_attempt_skips_completed_slots()
+    public async Task Post_dispatch_predecessor_failure_cancels_later_cleanup_without_duplicate_replan()
     {
         var setup = await OccupyAsync(3, "FULL");
         using var client = await fixture.LoginClientAsync(setup.User);
@@ -542,7 +686,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         await store.RecordExecutionTransitionAsync(requests[1], TransportRequestStatus.SentToRds);
         await store.RecordExecutionOutcomeAsync(requests[1], new ExecutionOutcome(TransportRequestStatus.Failed, "TEST", "cleanup failed"));
 
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
         Assert.Equal("FAILED", await fixture.ScalarAsync<string>("SELECT status FROM ops.production_end_runs"));
         Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requests[2])));
         Assert.DoesNotContain(requests[1], await QueuedAsync());
@@ -550,17 +694,12 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
 
         (await EndAsync(client, setup, session.Id, "end-fail")).EnsureSuccessStatusCode();
         Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-        var retry = await EndAsync(client, setup, session.Id, "end-retry");
-        retry.EnsureSuccessStatusCode();
-        var retrySlots = await IdsAsync("""
-            SELECT i.layout_slot_id
-            FROM ops.production_end_run_items i
-            JOIN ops.production_end_runs r ON r.id = i.run_id
-            WHERE r.idempotency_key = 'end-retry'
-            ORDER BY i.sequence_no
-            """);
-        Assert.DoesNotContain(slots[0], retrySlots);
-        Assert.Equal(2, retrySlots.Length);
+        var retry = await ReadAsync(await EndAsync(client, setup, session.Id, "end-retry"));
+        Assert.True(retry.WasIdempotentReplay);
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", slots[1])));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
+        Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
     [Fact]
@@ -602,14 +741,16 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         await SeedPriorityAsync("REMOVE_FULL", 40);
         using var client = await fixture.LoginClientAsync(setup.User);
         var session = await StartAsync(client, setup);
-        (await EndAsync(client, setup, session.Id, "end-alt")).EnsureSuccessStatusCode();
+        var end = await EndAsync(client, setup, session.Id, "end-alt");
+        Assert.True(end.IsSuccessStatusCode, await end.Content.ReadAsStringAsync());
 
         Assert.Equal(destination, await fixture.ScalarAsync<Guid>("SELECT destination_slot_id FROM ops.transport_requests"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_location_delivery_slots WHERE layout_slot_id = @id", ("id", destination)));
         var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
         await CompleteAsync(store, requestId);
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL' OR transport_request_id IS NOT NULL"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_events"));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.notification_outbox"));
         Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", setup.Slots[0])));
@@ -642,7 +783,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
             """);
         Assert.Equal([first, second], destinations);
         Assert.Equal(2, destinations.Distinct().Count());
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
     }
 
     [Fact]
@@ -739,7 +880,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     }
 
     [Fact]
-    public async Task Failed_or_cancelled_alt_removal_does_not_occupy_the_return_slot()
+    public async Task Failed_post_dispatch_alt_removal_marks_its_endpoints_unknown_while_queued_successor_is_cancelled()
     {
         var setup = await SetupAsync(slotCount: 2);
         await MapAltAsync(setup, setup.Slots);
@@ -757,16 +898,16 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
 
         Assert.Equal("FAILED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requests[0])));
         Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requests[1])));
-        Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
         Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
         Assert.Equal("VACANT", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
         Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>("SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL'"));
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
     }
 
     [Fact]
-    public async Task New_end_attempt_does_not_reuse_an_occupied_return_slot()
+    public async Task New_end_attempt_after_background_failure_does_not_duplicate_cleanup()
     {
         var setup = await SetupAsync(slotCount: 2);
         var alt = await MapAltAsync(setup, setup.Slots);
@@ -786,72 +927,79 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
 
         Assert.Equal("OCCUPIED", await fixture.ScalarAsync<string>("SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
         Assert.Equal(alt, await fixture.ScalarAsync<Guid>("SELECT current_part_id FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", firstReturn)));
-        var retry = await EndAsync(client, setup, session.Id, "end-retry-return-2");
-        retry.EnsureSuccessStatusCode();
-        var retryDestinations = await IdsAsync("""
-            SELECT r.destination_slot_id
-            FROM ops.production_end_run_items i
-            JOIN ops.transport_requests r ON r.id = i.transport_request_id
-            JOIN ops.production_end_runs run ON run.id = i.run_id
-            WHERE run.idempotency_key = 'end-retry-return-2'
-            ORDER BY i.sequence_no
-            """);
-        var retrySources = await IdsAsync("""
-            SELECT i.layout_slot_id
-            FROM ops.production_end_run_items i
-            JOIN ops.production_end_runs run ON run.id = i.run_id
-            WHERE run.idempotency_key = 'end-retry-return-2'
-            ORDER BY i.sequence_no
-            """);
-        Assert.Equal([sources[1]], retrySources);
-        Assert.Equal([secondReturn], retryDestinations);
-        Assert.DoesNotContain(firstReturn, retryDestinations);
-        Assert.DoesNotContain(sources[0], retrySources);
+        var retry = await ReadAsync(await EndAsync(client, setup, session.Id, "end-retry-return-2"));
+        Assert.True(retry.WasIdempotentReplay);
+        Assert.Equal("ENDED", retry.Session.Status);
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", sources[1])));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @id", ("id", secondReturn)));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_runs"));
     }
 
     [Fact]
-    public async Task Ending_rejects_a_new_alt_part_demand()
+    public async Task New_production_can_create_an_independent_demand_while_old_cleanup_runs()
     {
         var setup = await OccupyAsync(1, "FULL");
         var alt = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code) VALUES (@code) RETURNING id", ("code", "PE-ALT-" + Guid.NewGuid().ToString("N")[..8]));
+        var container = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
         await fixture.ExecuteAsync("""
-            INSERT INTO master.product_group_parts (product_group_id, part_id, relation_type)
-            VALUES (@group, @part, 'ALT_PART')
-            """, ("group", setup.Group), ("part", alt));
+            INSERT INTO master.product_group_parts (product_group_id, part_id, relation_type, container_type_id)
+            VALUES (@group, @part, 'ALT_PART', @container)
+            """, ("group", setup.Group), ("part", alt), ("container", container));
+        await fixture.ExecuteAsync(
+            "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
+            ("slot", setup.Slots[0]),
+            ("part", alt));
         using var client = await fixture.LoginClientAsync(setup.User);
-        var session = await StartAsync(client, setup);
-        (await EndAsync(client, setup, session.Id, "end-block-alt")).EnsureSuccessStatusCode();
+        var oldSession = await StartAsync(client, setup, "production-start-old");
+        (await EndAsync(client, setup, oldSession.Id, "end-background-alt")).EnsureSuccessStatusCode();
+        var cleanupId = await fixture.ScalarAsync<Guid>("SELECT transport_request_id FROM ops.production_end_run_items");
+        var newSession = await StartAsync(client, setup, "production-start-new");
 
         var demand = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.Context.MachineId}/part-demands")
         {
             Content = JsonContent.Create(new PartDemandHttpRequest(alt))
         };
-        demand.Headers.Add(ApiHeaders.IdempotencyKey, "alt-while-ending");
+        demand.Headers.Add(ApiHeaders.IdempotencyKey, "alt-after-background-end");
         var response = await client.SendAsync(demand);
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("PRODUCTION_ENDING", await ApiTestFixture.ErrorCodeAsync(response));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(oldSession.Id, await fixture.ScalarAsync<Guid>(
+            "SELECT production_session_id FROM ops.transport_requests WHERE id = @id", ("id", cleanupId)));
+        Assert.Equal(newSession.Id, await fixture.ScalarAsync<Guid>(
+            "SELECT production_session_id FROM ops.transport_requests WHERE idempotency_key = 'alt-after-background-end'"));
+        Assert.False(await fixture.ScalarAsync<bool>(
+            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE idempotency_key = 'alt-after-background-end'"));
+
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        await CompleteAsync(store, cleanupId);
+        Assert.Equal("ACTIVE", await StatusAsync(newSession.Id));
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT ended_at IS NULL FROM ops.production_sessions WHERE id = @id", ("id", newSession.Id)));
     }
 
     [Fact]
-    public async Task Ending_rejects_a_new_mamul_action()
+    public async Task Stale_old_session_action_cannot_attach_to_the_new_job()
     {
         var setup = await OccupyAsync(1, "FULL");
         using var client = await fixture.LoginClientAsync(setup.User);
         var session = await StartAsync(client, setup);
         (await EndAsync(client, setup, session.Id, "end-block-mamul")).EnsureSuccessStatusCode();
+        var newSession = await StartAsync(client, setup, "production-start-after-mamul-end");
         var before = await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests");
 
         var response = await BringAsync(client, setup, "mamul-while-ending", session.Id);
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("PRODUCTION_ENDING", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal("PRODUCTION_SESSION_CHANGED", await ApiTestFixture.ErrorCodeAsync(response));
         Assert.Equal(before, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal("ACTIVE", await StatusAsync(newSession.Id));
     }
 
     [Fact]
-    public async Task Ending_rejects_a_variant_or_layout_change()
+    public async Task Background_cleanup_does_not_block_variant_or_layout_change()
     {
         var setup = await OccupyAsync(1, "FULL", canChangeVariant: true, role: RoleCodes.Supervisor);
         using var client = await fixture.LoginClientAsync(setup.User);
@@ -863,9 +1011,8 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
             $"/api/v1/machines/{setup.Context.MachineId}/variant-selection",
             new VariantSwitchHttpRequest(other.VariantId, other.LayoutId, null));
 
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("PRODUCTION_SESSION_ACTIVE", await ApiTestFixture.ErrorCodeAsync(response));
-        Assert.Equal("ENDING", await StatusAsync(session.Id));
+        response.EnsureSuccessStatusCode();
+        Assert.Equal("ENDED", await StatusAsync(session.Id));
     }
 
     [Fact]
@@ -989,13 +1136,16 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         FROM master.task_types tt WHERE tt.code = @code
         """, ("variant", setup.Context.VariantId), ("group", setup.Group), ("code", operation));
 
-    private static async Task<ProductionSessionRecord> StartAsync(HttpClient client, Setup setup)
+    private static async Task<ProductionSessionRecord> StartAsync(
+        HttpClient client,
+        Setup setup,
+        string key = "production-start")
     {
         var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.Context.MachineId}/production-sessions")
         {
             Content = JsonContent.Create(new StartProductionSessionHttpRequest(setup.Context.VariantId, setup.Group, setup.MainPart))
         };
-        request.Headers.Add(ApiHeaders.IdempotencyKey, "production-start");
+        request.Headers.Add(ApiHeaders.IdempotencyKey, key);
         var response = await client.SendAsync(request);
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<ProductionSessionResult>())!.Session;
@@ -1050,6 +1200,21 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         while (await reader.ReadAsync())
         {
             values.Add(reader.GetGuid(0));
+        }
+
+        return values.ToArray();
+    }
+
+    private async Task<string[]> StringsAsync(string sql)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        var values = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            values.Add(reader.GetString(0));
         }
 
         return values.ToArray();

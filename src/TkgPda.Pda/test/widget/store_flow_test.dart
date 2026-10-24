@@ -7,9 +7,8 @@ import 'package:tkg_pda/features/warehouse/store_screen.dart';
 
 import '../support/fakes.dart';
 
-/// The finished-goods screen. It reports what the robot left and records what
-/// the operator took; nothing here can add a container, because only a
-/// completing transport puts one in the store.
+/// Two robot delivery areas and six request-bound empty-container preparation
+/// areas form the finished-goods warehouse screen.
 void main() {
   late FakePdaRepository repository;
   late StoreCoordinator coordinator;
@@ -53,7 +52,7 @@ void main() {
 
     expect(find.textContaining('Bu alan boş.'), findsOneWidget);
     expect(find.byKey(const Key('clear-location-STORE-1')), findsNothing);
-    expect(find.byKey(const Key('record-empty-STORE-1')), findsOneWidget);
+    expect(find.text('Robot teslim alanı'), findsOneWidget);
   });
 
   testWidgets('a delivered container shows what it is and where from', (
@@ -96,7 +95,9 @@ void main() {
     expect(repository.removedUnits.single['expectedRowVersion'], 4);
   });
 
-  testWidgets('clearing a location names it once', (tester) async {
+  testWidgets('multiple pallets require physical reconciliation', (
+    tester,
+  ) async {
     repository.storeLocationsValue = [
       fakeStoreLocation(
         capacity: 3,
@@ -108,13 +109,12 @@ void main() {
     ];
     await pump(tester);
 
-    expect(find.text('Tümünü Aldım (2)'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('clear-location-STORE-1')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('confirm-clear-location')));
-    await tester.pumpAndSettle();
-
-    expect(repository.clearedLocations, ['location-STORE-1']);
+    expect(find.text('Fiziksel sayım gerekli'), findsOneWidget);
+    final button = tester.widget<OutlinedButton>(
+      find.byKey(const Key('clear-location-STORE-1')),
+    );
+    expect(button.onPressed, isNull);
+    expect(repository.clearedLocations, isEmpty);
   });
 
   testWidgets('a full location warns the operator to empty it', (tester) async {
@@ -133,6 +133,25 @@ void main() {
     expect(find.textContaining('doldu'), findsOneWidget);
     expect(find.text('2 / 2'), findsOneWidget);
   });
+
+  testWidgets(
+    'an empty pallet in a single-pallet area stays available without a clear warning',
+    (tester) async {
+      repository.storeLocationsValue = [
+        fakeStoreLocation(
+          capacity: 1,
+          units: [fakeStoreUnit(id: 'empty-pallet', loadState: 'EMPTY')],
+        ),
+      ];
+      await pump(tester);
+
+      expect(find.text('BOŞ KASA VAR'), findsOneWidget);
+      expect(find.byKey(const Key('store-full-warning')), findsNothing);
+      expect(find.byKey(const Key('store-nearly-full-warning')), findsNothing);
+      expect(coordinator.fullLocations, isEmpty);
+      expect(coordinator.nearlyFullLocations, isEmpty);
+    },
+  );
 
   testWidgets('one short of capacity warns before the store stops', (
     tester,
@@ -249,50 +268,245 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('nineteen locations use a readable grid without overflow', (
-    tester,
-  ) async {
+  testWidgets(
+    'two delivery and six preparation areas form the approved layout',
+    (tester) async {
+      repository.storeLocationsValue = [
+        for (var number = 1; number <= 2; number++)
+          fakeStoreLocation(code: 'AREA-${number.toString().padLeft(2, '0')}'),
+      ];
+      repository.finishedGoodsPreparationAreasValue = [
+        for (var number = 1; number <= 6; number++) fakeArea(number: number),
+      ];
+      await pump(tester, size: const Size(1024, 600));
+
+      expect(find.byKey(const Key('store-location-list')), findsOneWidget);
+      expect(find.text('Mamul Teslim Alanları'), findsOneWidget);
+      expect(find.text('Boş Kasa Hazırlık Alanları'), findsOneWidget);
+      final first = tester.getTopLeft(
+        find.byKey(const Key('store-location-AREA-01')),
+      );
+      final second = tester.getTopLeft(
+        find.byKey(const Key('store-location-AREA-02')),
+      );
+      expect((second.dy - first.dy).abs(), lessThan(2));
+      expect(second.dx, greaterThan(first.dx));
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('empty-preparation-6')),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.byKey(const Key('empty-preparation-6')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('1280x800 shows three preparation columns', (tester) async {
     repository.storeLocationsValue = [
-      for (var number = 1; number <= 19; number++)
+      for (var number = 1; number <= 2; number++)
         fakeStoreLocation(code: 'AREA-${number.toString().padLeft(2, '0')}'),
     ];
-    await pump(tester, size: const Size(1024, 600));
-
-    expect(find.byKey(const Key('store-location-list')), findsOneWidget);
-    expect(find.text('ALAN BOŞ'), findsWidgets);
-    final first = tester.getTopLeft(
-      find.byKey(const Key('store-location-AREA-01')),
-    );
-    final second = tester.getTopLeft(
-      find.byKey(const Key('store-location-AREA-02')),
-    );
-    expect((second.dy - first.dy).abs(), lessThan(2));
-    expect(second.dx, greaterThan(first.dx));
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('store-location-AREA-19')),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
-    expect(find.byKey(const Key('store-location-AREA-19')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('1280x800 shows three finished-goods columns', (tester) async {
-    repository.storeLocationsValue = [
-      for (var number = 1; number <= 19; number++)
-        fakeStoreLocation(code: 'AREA-${number.toString().padLeft(2, '0')}'),
+    repository.finishedGoodsPreparationAreasValue = [
+      for (var number = 1; number <= 6; number++) fakeArea(number: number),
     ];
     await pump(tester, size: const Size(1280, 800));
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('empty-preparation-3')),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
 
     final wideFirst = tester.getTopLeft(
-      find.byKey(const Key('store-location-AREA-01')),
+      find.byKey(const Key('empty-preparation-1')),
     );
     final wideThird = tester.getTopLeft(
-      find.byKey(const Key('store-location-AREA-03')),
+      find.byKey(const Key('empty-preparation-3')),
     );
     expect((wideThird.dy - wideFirst.dy).abs(), lessThan(2));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('empty pallet preparation binds the selected request', (
+    tester,
+  ) async {
+    repository.storeLocationsValue = [
+      fakeStoreLocation(code: 'FG-01'),
+      fakeStoreLocation(code: 'FG-02'),
+    ];
+    repository.finishedGoodsPreparationAreasValue = [
+      for (var number = 1; number <= 6; number++) fakeArea(number: number),
+    ];
+    repository.finishedGoodsPreparationDemandsValue = [
+      fakeDemand(requestNo: 77, requestedLoad: 'EMPTY'),
+    ];
+    await pump(tester);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('select-empty-demand-1')),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byKey(const Key('select-empty-demand-1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('empty-demand-request-77')));
+    await tester.pumpAndSettle();
+
+    expect(repository.placedPallets.single['transportRequestId'], 'request-77');
+    expect(repository.placedPallets.single['load'], 'EMPTY');
+  });
+
+  testWidgets(
+    'operator can select the confirmed alternative empty-container type',
+    (tester) async {
+      repository.storeLocationsValue = [fakeStoreLocation(code: 'FG-01')];
+      repository.finishedGoodsPreparationAreasValue = [fakeArea(number: 1)];
+      repository.finishedGoodsPreparationDemandsValue = [
+        fakeDemand(
+          requestNo: 78,
+          requestedLoad: 'EMPTY',
+          containerTypeId: 'container-primary',
+          containerCode: 'CLK_121213',
+          alternativeContainerTypeId: 'container-alternative',
+          alternativeContainerCode: 'CLK_1284',
+        ),
+      ];
+
+      await pump(tester);
+      expect(
+        find.textContaining('Ana: CLK_121213 · Alternatif: CLK_1284'),
+        findsOneWidget,
+      );
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('select-empty-demand-1')),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byKey(const Key('select-empty-demand-1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('empty-demand-request-78')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Hazırlanacak Kasa Tipini Seç'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const Key('alternative-container-request-78')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        repository.placedPallets.single['containerTypeId'],
+        'container-alternative',
+      );
+      expect(
+        repository.placedPallets.single['transportRequestId'],
+        'request-78',
+      );
+    },
+  );
+
+  testWidgets(
+    'dimensions-only finished-goods demand remains selectable without inventing a container code',
+    (tester) async {
+      repository.storeLocationsValue = [fakeStoreLocation(code: 'FG-01')];
+      repository.finishedGoodsPreparationAreasValue = [fakeArea(number: 1)];
+      repository.finishedGoodsPreparationDemandsValue = [
+        fakeDemand(
+          requestNo: 150,
+          requestedLoad: 'EMPTY',
+          containerTypeId: null,
+          containerCode: null,
+          containerDimensions: '1200/1000/1370',
+        ),
+      ];
+
+      await pump(tester);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('select-empty-demand-1')),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byKey(const Key('select-empty-demand-1')));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Ölçü: 1200 × 1000 × 1370'), findsNWidgets(2));
+      await tester.tap(find.byKey(const Key('empty-demand-request-150')));
+      await tester.pumpAndSettle();
+
+      expect(
+        repository.placedPallets.single['transportRequestId'],
+        'request-150',
+      );
+      expect(repository.placedPallets.single['containerTypeId'], isNull);
+      expect(repository.placedPallets.single['load'], 'EMPTY');
+    },
+  );
+
+  testWidgets(
+    'incoming empty-container demands show machine variant part and preparation state',
+    (tester) async {
+      repository.storeLocationsValue = [
+        fakeStoreLocation(code: 'FG-01'),
+        fakeStoreLocation(code: 'FG-02'),
+      ];
+      repository.finishedGoodsPreparationAreasValue = [
+        for (var number = 1; number <= 6; number++) fakeArea(number: number),
+      ];
+      repository.finishedGoodsPreparationDemandsValue = [
+        fakeDemand(
+          requestNo: 91,
+          requestedLoad: 'EMPTY',
+          variantName: 'Varyant 4',
+          containerCode: '4322',
+          claimedByAreaNumber: 3,
+          requestedAt: DateTime.now().subtract(const Duration(minutes: 7)),
+        ),
+      ];
+
+      await pump(tester);
+
+      expect(
+        find.byKey(const Key('finished-goods-demand-panel')),
+        findsOneWidget,
+      );
+      expect(find.text('Gelen Talepler'), findsOneWidget);
+      expect(find.byKey(const Key('finished-goods-demand-91')), findsOneWidget);
+      expect(find.text('67185BN050-40'), findsOneWidget);
+      expect(find.text('SH-01-A · Talep #91'), findsOneWidget);
+      expect(find.text('Varyant: Varyant 4'), findsOneWidget);
+      expect(find.text('Palet/Kasa: 4322'), findsOneWidget);
+      expect(find.text('Hazırlık Alanı 3 hazırlıyor'), findsOneWidget);
+      expect(find.textContaining('7 dk'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'a demand arriving between polls stays marked until acknowledged',
+    (tester) async {
+      repository.storeLocationsValue = [fakeStoreLocation(code: 'FG-01')];
+      repository.finishedGoodsPreparationAreasValue = [fakeArea(number: 1)];
+      await pump(tester);
+
+      repository.finishedGoodsPreparationDemandsValue = [
+        fakeDemand(requestNo: 92, requestedLoad: 'EMPTY'),
+      ];
+      await coordinator.refresh(silent: true);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const Key('acknowledge-finished-goods-demands')),
+        findsOneWidget,
+      );
+      expect(find.text('1 yeni'), findsOneWidget);
+
+      await tester.tap(
+        find.byKey(const Key('acknowledge-finished-goods-demands')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('acknowledge-finished-goods-demands')),
+        findsNothing,
+      );
+    },
+  );
 
   testWidgets('store states use words and icons, not color alone', (
     tester,

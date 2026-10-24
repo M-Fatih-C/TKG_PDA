@@ -147,6 +147,7 @@ OperationalContext testContext({
             'queuePosition': request.queuePosition,
             'ageSeconds': request.ageSeconds,
             'executionElapsedSeconds': request.executionElapsedSeconds,
+            'productionEnd': request.productionEnd,
             'canCancel': request.canCancel,
             'cancelDisabledCode': request.cancelDisabledCode,
             'cancelDisabledMessage': request.cancelDisabledMessage,
@@ -391,7 +392,7 @@ class FakePdaRepository implements PdaDataSource {
     if (productionEndCompleter case final completer?) return completer.future;
     final current = productionValue!;
     if (productionEndSession case final ending?) {
-      productionValue = ending;
+      productionValue = ending.isActive ? ending : null;
       return ending;
     }
     productionValue = null;
@@ -925,6 +926,8 @@ class FakePdaRepository implements PdaDataSource {
   final List<Map<String, Object?>> placedPallets = [];
   final List<Map<String, Object?>> readiedPallets = [];
   final List<Map<String, Object?>> releasedPallets = [];
+  List<PreparationArea> finishedGoodsPreparationAreasValue = const [];
+  List<WarehouseDemand> finishedGoodsPreparationDemandsValue = const [];
 
   @override
   Future<List<PreparationArea>> preparationAreas() async {
@@ -944,7 +947,7 @@ class FakePdaRepository implements PdaDataSource {
   Future<PreparationPallet> placePallet({
     required String areaId,
     required String load,
-    required String containerTypeId,
+    String? containerTypeId,
     String? partId,
     String? transportRequestId,
     required String idempotencyKey,
@@ -992,6 +995,48 @@ class FakePdaRepository implements PdaDataSource {
     if (releaseAreaError case final error?) throw error;
     return fakePallet(id: palletId);
   }
+
+  @override
+  Future<List<PreparationArea>> finishedGoodsPreparationAreas() async =>
+      finishedGoodsPreparationAreasValue;
+
+  @override
+  Future<List<WarehouseDemand>> finishedGoodsPreparationDemands() async =>
+      finishedGoodsPreparationDemandsValue;
+
+  @override
+  Future<PreparationPallet> placeFinishedGoodsPreparation({
+    required String areaId,
+    String? containerTypeId,
+    required String transportRequestId,
+    required String idempotencyKey,
+  }) => placePallet(
+    areaId: areaId,
+    load: 'EMPTY',
+    containerTypeId: containerTypeId,
+    transportRequestId: transportRequestId,
+    idempotencyKey: idempotencyKey,
+  );
+
+  @override
+  Future<PreparationPallet> markFinishedGoodsPreparationReady({
+    required String palletId,
+    required int expectedRowVersion,
+  }) => markPalletReady(
+    palletId: palletId,
+    expectedRowVersion: expectedRowVersion,
+  );
+
+  @override
+  Future<PreparationPallet> releaseFinishedGoodsPreparation({
+    required String palletId,
+    required int expectedRowVersion,
+    required String reason,
+  }) => releasePreparationArea(
+    palletId: palletId,
+    expectedRowVersion: expectedRowVersion,
+    reason: reason,
+  );
 
   // ---- Warehouse tablet: the finished-goods store ----
   List<StoreLocation> storeLocationsValue = const [];
@@ -1321,6 +1366,7 @@ PreparationPallet fakePallet({
   String? targetMachineCode,
   DateTime? readyAt,
   int rowVersion = 0,
+  String? requestStatus = 'QUEUED',
 }) => PreparationPallet(
   id: id,
   containerTypeId: 'container-1',
@@ -1334,6 +1380,7 @@ PreparationPallet fakePallet({
   placedAt: DateTime.utc(2026, 1, 1),
   readyAt: readyAt,
   rowVersion: rowVersion,
+  requestStatus: requestStatus,
 );
 
 PreparationArea fakeArea({
@@ -1353,6 +1400,13 @@ WarehouseDemand fakeDemand({
   String requestId = '',
   String machineCode = 'SH-01-A',
   String? partCode = '67185BN050-40',
+  String? variantCode,
+  String? variantName,
+  String? containerCode = '4311',
+  String? containerTypeId = 'container-1',
+  String? alternativeContainerCode,
+  String? alternativeContainerTypeId,
+  String? containerDimensions,
   String requestedLoad = 'FULL',
   DateTime? requestedAt,
   int? claimedByAreaNumber,
@@ -1363,8 +1417,11 @@ WarehouseDemand fakeDemand({
   machineCode: machineCode,
   partId: 'part-1',
   partCode: partCode,
-  containerTypeId: 'container-1',
-  containerCode: '4311',
+  containerTypeId: containerTypeId,
+  containerCode: containerCode,
+  alternativeContainerTypeId: alternativeContainerTypeId,
+  alternativeContainerCode: alternativeContainerCode,
+  containerDimensions: containerDimensions,
   operation: requestedLoad == 'FULL' ? 'BRING_FULL' : 'BRING_EMPTY',
   requestedLoad: requestedLoad,
   requestedAt: requestedAt,
@@ -1372,6 +1429,8 @@ WarehouseDemand fakeDemand({
       ? null
       : 'area-$claimedByAreaNumber',
   claimedByAreaNumber: claimedByAreaNumber,
+  variantCode: variantCode,
+  variantName: variantName,
 );
 
 StoreUnit fakeStoreUnit({

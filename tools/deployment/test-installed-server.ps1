@@ -34,8 +34,9 @@ Write-Host "=================================================="
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 $svcRunning = ($null -ne $svc -and $svc.Status -eq 'Running')
 if (-not $svcRunning) { $allPassed = $false }
-Write-CheckResult "Windows Service ($ServiceName)" $svcRunning ($svc ? $svc.Status.ToString() : "Not Installed")
-$results.Add([PSCustomObject]@{ Check = 'Windows Service'; Passed = $svcRunning; Details = ($svc ? $svc.Status.ToString() : "Not Installed") })
+$svcStatusStr = if ($svc) { $svc.Status.ToString() } else { "Not Installed" }
+Write-CheckResult "Windows Service ($ServiceName)" $svcRunning $svcStatusStr
+$results.Add([PSCustomObject]@{ Check = 'Windows Service'; Passed = $svcRunning; Details = $svcStatusStr })
 
 # 2. Check Port Listening
 $portListening = $false
@@ -49,7 +50,8 @@ try {
     $portListening = $false
 }
 if (-not $portListening) { $allPassed = $false }
-Write-CheckResult "TCP Port Listening ($Port)" $portListening ($portListening ? "Listening" : "Port closed")
+$portStatusStr = if ($portListening) { "Listening" } else { "Port closed" }
+Write-CheckResult "TCP Port Listening ($Port)" $portListening $portStatusStr
 $results.Add([PSCustomObject]@{ Check = 'TCP Port'; Passed = $portListening; Details = "Port $Port" })
 
 # 3. Check Live Endpoint (/health/live)

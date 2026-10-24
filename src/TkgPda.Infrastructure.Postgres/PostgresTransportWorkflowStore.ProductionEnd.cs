@@ -12,7 +12,8 @@ public sealed partial class PostgresTransportWorkflowStore
     /// <summary>
     /// Plans pallet removal for the active production layout. Display order is
     /// only a stable sequence; transport priority comes from
-    /// master.production_end_priorities. Nothing is inserted until every
+    /// the exact area/part rule, with the approved operation priority as a
+    /// compatibility fallback. Nothing is inserted until every
     /// removal has passed the same checks.
     /// </summary>
     private async Task<ProductionSessionResult> PlanProductionEndAsync(
@@ -73,18 +74,19 @@ public sealed partial class PostgresTransportWorkflowStore
         var observed = ApplyLockedPositionState(positions, locked);
         var removals = ClassifyProductionEnd(before, observed);
         await ValidateProductionEndPlanAsync(connection, transaction, before, layoutId, removals, locked, returnSlots, cancellationToken);
+        removals.Sort(static (left, right) =>
+        {
+            var priority = left.Priority.CompareTo(right.Priority);
+            if (priority != 0) return priority;
+            var display = left.DisplayOrder.CompareTo(right.DisplayOrder);
+            if (display != 0) return display;
+            var code = string.Compare(left.Code, right.Code, StringComparison.Ordinal);
+            return code != 0 ? code : left.SlotId.CompareTo(right.SlotId);
+        });
 
         var runId = Guid.NewGuid();
-        if (removals.Count == 0)
-        {
-            await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, "COMPLETED", cancellationToken);
-            var ended = await CompleteProductionSessionAsync(connection, transaction, before, command.ActorUserId, command.DeviceId, cancellationToken);
-            await AuditProductionAsync(connection, transaction, "PRODUCTION_ENDED", command.ActorUserId, command.DeviceId, before, ended, cancellationToken);
-            await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, ended.Status, cancellationToken);
-            return new(ended, false);
-        }
-
-        await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, "RUNNING", cancellationToken);
+        var runStatus = removals.Count == 0 ? "COMPLETED" : "RUNNING";
+        await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, runStatus, cancellationToken);
         Guid? previousRequestId = null;
         for (var index = 0; index < removals.Count; index++)
         {
@@ -135,9 +137,15 @@ public sealed partial class PostgresTransportWorkflowStore
             previousRequestId = created.Request.Id;
         }
 
-        var ending = await SetProductionStatusAsync(connection, transaction, before, "ENDING", cancellationToken);
-        await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, "RUNNING", cancellationToken);
-        return new(ending, false);
+        // The production session represents the operator's current job. Once
+        // every cleanup request has been validated and durably queued, that job
+        // is closed in the same transaction. The cleanup run and its requests
+        // retain the old session identity and continue independently, allowing
+        // a new job to start without losing ownership or audit history.
+        var ended = await CompleteProductionSessionAsync(connection, transaction, before, command.ActorUserId, command.DeviceId, cancellationToken);
+        await AuditProductionAsync(connection, transaction, "PRODUCTION_ENDED", command.ActorUserId, command.DeviceId, before, ended, cancellationToken);
+        await AuditProductionEndPlanAsync(connection, transaction, command, runId, before, layoutId, observed, removals, runStatus, cancellationToken);
+        return new(ended, false);
     }
 
     private static List<CleanupRemoval> ClassifyProductionEnd(
@@ -179,6 +187,7 @@ public sealed partial class PostgresTransportWorkflowStore
             removals.Add(new CleanupRemoval(
                 position.SlotId,
                 position.Code,
+                position.DisplayOrder,
                 position.Occupancy,
                 position.Load,
                 partId,
@@ -202,18 +211,20 @@ public sealed partial class PostgresTransportWorkflowStore
         IReadOnlyList<ConfiguredReturnSlot> returnSlots,
         CancellationToken cancellationToken)
     {
-        var priorities = new Dictionary<TransportTaskType, int>();
         var emptyCount = 0;
         var activeNavigation = await ActiveNavigationAsync(connection, transaction, session.MachineId, cancellationToken);
         var registryProfile = await IsCommissioningRegistryProfileAsync(connection, transaction, activeNavigation, cancellationToken);
         for (var index = 0; index < removals.Count; index++)
         {
             var removal = removals[index];
-            if (!priorities.TryGetValue(removal.Operation, out var priority))
-            {
-                priority = await RequireProductionEndPriorityAsync(connection, transaction, removal.Operation, cancellationToken);
-                priorities[removal.Operation] = priority;
-            }
+            var priority = await RequireProductionEndPriorityAsync(
+                connection,
+                transaction,
+                session.ProductGroupId,
+                removal.SlotId,
+                removal.PartId,
+                removal.Operation,
+                cancellationToken);
 
             await RequireTaskTemplateAsync(connection, transaction, session, removal.Operation, cancellationToken);
             if (removal.FinishedGoods && !registryProfile)
@@ -296,13 +307,36 @@ public sealed partial class PostgresTransportWorkflowStore
     private static async Task<int> RequireProductionEndPriorityAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
+        Guid productGroupId,
+        Guid layoutSlotId,
+        Guid partId,
         TransportTaskType operation,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
-            "SELECT priority FROM master.production_end_priorities WHERE operation_code = @code",
+            """
+            SELECT priority
+            FROM master.production_end_area_priorities
+            WHERE product_group_id = @group
+              AND layout_slot_id = @slot
+              AND part_id = @part
+            UNION ALL
+            SELECT priority
+            FROM master.production_end_priorities
+            WHERE operation_code = @code
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM master.production_end_area_priorities
+                  WHERE product_group_id = @group
+                    AND layout_slot_id = @slot
+                    AND part_id = @part)
+            LIMIT 1
+            """,
             connection,
             transaction);
+        command.Parameters.AddWithValue("group", productGroupId);
+        command.Parameters.AddWithValue("slot", layoutSlotId);
+        command.Parameters.AddWithValue("part", partId);
         command.Parameters.AddWithValue("code", operation.ToDatabase());
         if (await command.ExecuteScalarAsync(cancellationToken) is int priority)
         {
@@ -311,7 +345,7 @@ public sealed partial class PostgresTransportWorkflowStore
 
         throw new WorkflowRuleException(
             "PRODUCTION_END_PRIORITY_NOT_CONFIGURED",
-            $"Üretimi Bitir için {operation.ToDatabase()} önceliği tanımlanmamış.");
+            "Üretimi Bitir için alan/parça önceliği veya işlem varsayılanı tanımlanmamış.");
     }
 
     private static async Task RequireTaskTemplateAsync(
@@ -487,11 +521,13 @@ public sealed partial class PostgresTransportWorkflowStore
              SELECT source_slot_id
              FROM ops.transport_requests
              WHERE status IN ({ActiveStatusesSql})
+               AND machine_slot_reservation_active
                AND source_slot_id = ANY(@slot_ids)
              UNION
              SELECT destination_slot_id
              FROM ops.transport_requests
              WHERE status IN ({ActiveStatusesSql})
+               AND machine_slot_reservation_active
                AND destination_slot_id = ANY(@slot_ids)
              """,
             connection,
@@ -612,6 +648,7 @@ public sealed partial class PostgresTransportWorkflowStore
                AND NOT EXISTS (
                    SELECT 1 FROM ops.transport_requests tr
                    WHERE tr.status IN ({ActiveStatusesSql})
+                     AND tr.machine_slot_reservation_active
                      AND (tr.source_slot_id = ls.id OR tr.destination_slot_id = ls.id))
              """,
             connection,
@@ -1203,6 +1240,7 @@ public sealed partial class PostgresTransportWorkflowStore
     private sealed record CleanupRemoval(
         Guid SlotId,
         string Code,
+        int DisplayOrder,
         OccupancyState Occupancy,
         LoadState Load,
         Guid PartId,

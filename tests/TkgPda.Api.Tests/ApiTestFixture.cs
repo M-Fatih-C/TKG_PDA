@@ -46,7 +46,17 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("024_operational_reporting.sql"));
         await ExecuteScriptAsync(MigrationFile("025_profile_scoped_shared_endpoints.sql"));
         await ExecuteScriptAsync(MigrationFile("026_canonical_shared_endpoint_identities.sql"));
-        await ExecuteScriptAsync(MigrationFile("027_fleet_provider_compatibility.sql"));
+        await ExecuteScriptAsync(MigrationFile("027_store_location_unit_capacity_constraint.sql"));
+        await ExecuteScriptAsync(MigrationFile("028_store_reservations_and_source_endpoint.sql"));
+        await ExecuteScriptAsync(MigrationFile("029_store_reservation_integrity.sql"));
+        await ExecuteScriptAsync(MigrationFile("030_deferred_part_demand_slot_reservation.sql"));
+        await ExecuteScriptAsync(MigrationFile("031_physical_reconciliation_and_removal_audit.sql"));
+        await ExecuteScriptAsync(MigrationFile("032_finished_goods_preparation_areas.sql"));
+        await ExecuteScriptAsync(MigrationFile("033_finished_goods_untyped_empty_preparation.sql"));
+        await ExecuteScriptAsync(MigrationFile("034_finished_product_container_options.sql"));
+        await ExecuteScriptAsync(MigrationFile("035_area_based_production_end_priorities.sql"));
+        await ExecuteScriptAsync(MigrationFile("036_deferred_transport_resources.sql"));
+        await ExecuteScriptAsync(MigrationFile("037_fleet_provider_compatibility.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
@@ -59,6 +69,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
                 integration.robot_alarm_observation_state,
                 integration.notification_outbox,
                 integration.device_notification_registrations,
+                ops.store_reservations,
                 ops.store_events,
                 ops.store_units,
                 integration.rds_tasks,
@@ -69,6 +80,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
                 ops.machine_runtime_state
             RESTART IDENTITY CASCADE;
             DELETE FROM audit.audit_logs;
+            DELETE FROM master.production_end_area_priorities;
             DELETE FROM master.production_end_priorities;
             DELETE FROM integration.layout_slot_rds_mapping
             WHERE rds_worksite_id IN (
@@ -144,7 +156,27 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             DELETE FROM master.navigation_profiles WHERE code LIKE 'DEV-RDS-SIM-%';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'P08A-%';
             DELETE FROM master.task_templates
-            WHERE config_json ->> 'testScope' IN ('P07A', 'TEST-NAV-GATE');
+            WHERE config_json ->> 'testScope' IN ('P07A', 'TEST-NAV-GATE', 'PRODUCTION_END');
+            DELETE FROM master.slot_group_members m
+            USING master.slot_groups g
+            WHERE m.slot_group_id = g.id AND g.code LIKE 'PE-GROUP-%';
+            DELETE FROM master.slot_groups WHERE code LIKE 'PE-GROUP-%';
+            DELETE FROM master.layout_slot_parts m
+            USING master.parts p
+            WHERE m.part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_group_parts m
+            USING master.parts p
+            WHERE m.part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_group_parts m
+            USING master.product_groups g, master.parts p
+            WHERE m.product_group_id = g.id
+              AND g.main_part_id = p.id
+              AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_groups g
+            USING master.parts p
+            WHERE g.main_part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.layout_slots WHERE code LIKE 'PE-RETURN-%';
+            DELETE FROM master.parts WHERE part_code LIKE 'PE-%';
             DELETE FROM auth.user_sessions;
             DELETE FROM auth.user_machine_permissions;
             DELETE FROM auth.user_roles;
@@ -324,7 +356,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     /// API suite have no DROP role (simulation DROP-001 is seed 002d, not
     /// loaded here), so a test-only DROP is inserted when the layout has none.
     /// The mapping then follows the same first-enabled-DROP rule as dispatch.
-    /// Customer names, the 19 FG areas and capacity are not modelled.
+    /// Customer names are not modelled. The test surface exposes only the two
+    /// approved finished-goods delivery positions.
     /// </summary>
     private async Task EnsureDefaultFinishedGoodsDestinationAsync(Guid layoutId)
     {
@@ -341,9 +374,20 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
             WHERE layout_id = @layout_id AND slot_role = 'DROP'
             ON CONFLICT (layout_slot_id) DO NOTHING;
-            INSERT INTO ops.store_locations (code, display_name, capacity)
-            VALUES (@location_code, 'Test Finished Goods Location', NULL)
-            ON CONFLICT (code) DO UPDATE SET is_enabled = true;
+            INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
+            VALUES (@location_code, 'Test Finished Goods Location', 1, 'DELIVERY')
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
+            INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
+            SELECT CASE WHEN i = 1 THEN 'TEST-FG-EMPTY' ELSE 'TEST-FG-EMPTY-' || lpad(i::text, 2, '0') END,
+                   'Test Empty Pallet Location ' || i,
+                   1,
+                   'DELIVERY'
+            FROM generate_series(1, 6) i
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
+            INSERT INTO ops.store_units (store_location_id, load_state, delivered_at)
+            SELECT id, 'EMPTY', now() FROM ops.store_locations
+            WHERE (code = 'TEST-FG-EMPTY' OR code ~ '^TEST-FG-EMPTY-[0-9]{2}$')
+              AND NOT EXISTS (SELECT 1 FROM ops.store_units u WHERE u.store_location_id = ops.store_locations.id AND u.removed_at IS NULL);
             INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
             SELECT drop_slot.id, sl.id
             FROM (
@@ -359,6 +403,37 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             ("layout_id", layoutId),
             ("code", FinishedGoodsTestDropCode),
             ("location_code", FinishedGoodsTestLocationCode));
+
+        for (var i = 2; i <= 6; i++)
+        {
+            var slotCode = $"{FinishedGoodsTestDropCode}-{i:00}";
+            var locationCode = $"{FinishedGoodsTestLocationCode}-{i:00}";
+            await ExecuteAsync(
+                """
+                INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
+                VALUES (@layout_id, @slot_code, @display_name, 'DROP', @display_order)
+                ON CONFLICT (layout_id, code) DO UPDATE SET is_enabled = true;
+                INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+                SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
+                WHERE layout_id = @layout_id AND code = @slot_code
+                ON CONFLICT (layout_slot_id) DO NOTHING;
+                INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
+                VALUES (@location_code, @display_name, 1, 'DELIVERY')
+                ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
+                INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
+                SELECT ls.id, sl.id
+                FROM master.layout_slots ls
+                CROSS JOIN ops.store_locations sl
+                WHERE ls.layout_id = @layout_id AND ls.code = @slot_code
+                  AND sl.code = @location_code
+                ON CONFLICT (layout_slot_id) DO UPDATE SET store_location_id = EXCLUDED.store_location_id;
+                """,
+                ("layout_id", layoutId),
+                ("slot_code", slotCode),
+                ("location_code", locationCode),
+                ("display_name", $"Test Finished Goods Location {i}"),
+                ("display_order", 9100 + i));
+        }
     }
 
     public Task<Guid> FinishedGoodsDropSlotAsync(Guid layoutId) => ScalarAsync<Guid>(

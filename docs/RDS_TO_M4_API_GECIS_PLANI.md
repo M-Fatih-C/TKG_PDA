@@ -803,7 +803,7 @@ RDS mevcut davranışla çalışmaya devam eder ve domain katmanı M4 sınıflar
 
 ### WP-M4-02 — SQL compatibility migration
 
-**Uygulama durumu — 19 Ekim 2026:** Tamamlandı. `027_fleet_provider_compatibility.sql` ile mevcut navigation profile ve transport request kayıtları `RDS` olarak geriye dönük dolduruldu; provider-neutral order, endpoint, slot mapping, callback inbox ve physical evidence tabloları eklendi. Mevcut `integration.rds_tasks` kayıtları `integration.fleet_orders` tablosuna backfill edilir ve compatibility trigger ile güncel tutulur. Provider/request, external order, upstream identity, callback dedupe ve profile/provider eşleşme constraint'leri fail-close çalışır. Ayrı rollback script'i M4 verisi varsa geri dönüşü reddeder ve yalnız RDS verisi varken provider-neutral ekleri kaldırır. Geçici PostgreSQL kümesindeki migration, replay, coexistence, constraint ve rollback testi geçmiştir.
+**Uygulama durumu — 19 Ekim 2026:** Tamamlandı. `037_fleet_provider_compatibility.sql` ile mevcut navigation profile ve transport request kayıtları `RDS` olarak geriye dönük dolduruldu; provider-neutral order, endpoint, slot mapping, callback inbox ve physical evidence tabloları eklendi. Mevcut `integration.rds_tasks` kayıtları `integration.fleet_orders` tablosuna backfill edilir ve compatibility trigger ile güncel tutulur. Provider/request, external order, upstream identity, callback dedupe ve profile/provider eşleşme constraint'leri fail-close çalışır. Ayrı rollback script'i M4 verisi varsa geri dönüşü reddeder ve yalnız RDS verisi varken provider-neutral ekleri kaldırır. Geçici PostgreSQL kümesindeki migration, replay, coexistence, constraint ve rollback testi geçmiştir.
 
 **İşler**
 
