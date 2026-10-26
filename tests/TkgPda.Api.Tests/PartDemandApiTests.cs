@@ -66,12 +66,12 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         await StartProductionAsync(client, setup);
         var created = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "restart-alt"));
         var successor = await RequestIdAsync(created.RequestNo);
+        var predecessor = await PredecessorIdAsync(successor);
         await MarkPreparedAsync(setup, successor);
         await using (var activationStore = new PostgresTransportWorkflowStore(fixture.ConnectionString))
         {
-            Assert.Equal(1, await activationStore.ActivatePreparedPartDemandsAsync(10, null));
+            Assert.Equal(0, await activationStore.ActivatePreparedPartDemandsAsync(10, null));
         }
-        var predecessor = await PredecessorIdAsync(successor);
         Assert.Equal(0L, await EligibleCountAsync(successor));
         await api.RestartAsync();
         using var restarted = await api.LoginAsync(setup.Operator);
@@ -245,12 +245,19 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "again-empty"));
         var successorId = await RequestIdAsync(body.RequestNo);
 
-        Assert.Null(body.PredecessorTaskType);
         Assert.Equal("BRING_FULL", body.TaskType);
-        await MarkPreparedAsync(setup, successorId);
-        Assert.Equal(1, await ActivatePreparedAsync());
-        Assert.Equal("REMOVE_EMPTY", await TaskTypeAsync(await PredecessorIdAsync(successorId)));
+        Assert.Equal("REMOVE_EMPTY", body.PredecessorTaskType);
+        var predecessorId = await PredecessorIdAsync(successorId);
+        Assert.Equal("WAITING_PREPARATION", body.Readiness);
+        Assert.Equal("REMOVE_EMPTY", await TaskTypeAsync(predecessorId));
+        Assert.Equal(1L, await EligibleCountAsync(predecessorId));
+        Assert.Equal(0L, await EligibleCountAsync(successorId));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
+
+        await MarkPreparedAsync(setup, successorId);
+        Assert.Equal(0, await ActivatePreparedAsync());
+        Assert.Equal(0L, await EligibleCountAsync(successorId));
     }
 
     [Fact]
@@ -261,10 +268,10 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         await StartProductionAsync(client, setup);
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "chain-gate"));
         var successorId = await RequestIdAsync(body.RequestNo);
+        var predecessorId = await PredecessorIdAsync(successorId);
 
         await MarkPreparedAsync(setup, successorId);
-        Assert.Equal(1, await ActivatePreparedAsync());
-        var predecessorId = await PredecessorIdAsync(successorId);
+        Assert.Equal(0, await ActivatePreparedAsync());
         Assert.Equal(0L, await EligibleCountAsync(successorId));
 
         await CompleteAsync(predecessorId);
@@ -273,7 +280,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task Unprepared_demand_does_not_claim_the_machine_slot_or_create_a_predecessor()
+    public async Task Unprepared_demand_starts_empty_removal_and_reserves_the_dependent_delivery()
     {
         var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
         using var client = await fixture.LoginClientAsync(setup.Operator);
@@ -284,10 +291,11 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         Assert.Equal(0, await ActivatePreparedAsync());
         Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>(
             "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", successorId)));
-        Assert.False(await ReservationActiveAsync(successorId));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+        Assert.True(await ReservationActiveAsync(successorId));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.transport_request_dependencies WHERE successor_request_id = @id", ("id", successorId)));
         Assert.Equal(0L, await EligibleCountAsync(successorId));
+        Assert.Equal(1L, await EligibleCountAsync(await PredecessorIdAsync(successorId)));
     }
 
     [Fact]
@@ -544,7 +552,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "not-finished-goods"));
         var successorId = await RequestIdAsync(body.RequestNo);
         await MarkPreparedAsync(setup, successorId);
-        Assert.Equal(1, await ActivatePreparedAsync());
+        Assert.Equal(0, await ActivatePreparedAsync());
         var predecessorId = await PredecessorIdAsync(successorId);
 
         Assert.Equal("EMPTY_STORAGE", await fixture.ScalarAsync<string>(
@@ -571,7 +579,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "cancel-chain"));
         var successorId = await RequestIdAsync(body.RequestNo);
         await MarkPreparedAsync(setup, successorId);
-        Assert.Equal(1, await ActivatePreparedAsync());
+        Assert.Equal(0, await ActivatePreparedAsync());
         var predecessorId = await PredecessorIdAsync(successorId);
 
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
@@ -598,7 +606,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "cancel-successor"));
         var successorId = await RequestIdAsync(body.RequestNo);
         await MarkPreparedAsync(setup, successorId);
-        Assert.Equal(1, await ActivatePreparedAsync());
+        Assert.Equal(0, await ActivatePreparedAsync());
         var predecessorId = await PredecessorIdAsync(successorId);
 
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
@@ -628,7 +636,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         var body = await ReadDemandAsync(await DemandAsync(client, setup, setup.AltPart, "fail-chain"));
         var successorId = await RequestIdAsync(body.RequestNo);
         await MarkPreparedAsync(setup, successorId);
-        Assert.Equal(1, await ActivatePreparedAsync());
+        Assert.Equal(0, await ActivatePreparedAsync());
         var predecessorId = await PredecessorIdAsync(successorId);
 
         await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);

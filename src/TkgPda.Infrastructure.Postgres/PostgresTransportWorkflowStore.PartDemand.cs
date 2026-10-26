@@ -194,6 +194,54 @@ public sealed partial class PostgresTransportWorkflowStore
             command.PartId,
             cancellationToken);
 
+        var destinationSlot = await LockSlotAsync(
+            connection,
+            transaction,
+            destinationSlotId,
+            cancellationToken);
+        var activePositionRequest = await FindLatestActivePositionRequestAsync(
+            connection,
+            transaction,
+            destinationSlotId,
+            cancellationToken);
+
+        TransportRequestSnapshot? predecessor = activePositionRequest?.TaskType == TransportTaskType.RemoveEmpty
+            ? activePositionRequest
+            : null;
+        if (activePositionRequest is null
+            && destinationSlot.State.Occupancy == OccupancyState.Occupied
+            && destinationSlot.State.Load == LoadState.Empty
+            && destinationSlot.State.CurrentPartId is { } currentPartId
+            && destinationSlot.State.CurrentContainerTypeId is { } currentContainerTypeId)
+        {
+            var remove = new CreateTransportRequest(
+                command.IdempotencyKey.Trim() + ":slot-remove",
+                RequestOrigin.Api,
+                command.ActorUserId,
+                command.MachineId,
+                session.VariantId,
+                session.LayoutId,
+                null,
+                session.ProductGroupId,
+                currentPartId,
+                currentContainerTypeId,
+                TransportTaskType.RemoveEmpty,
+                destinationSlotId,
+                null,
+                100,
+                RequiresPreparation: false)
+            {
+                QueuesWhenResourcesUnavailable = true
+            };
+            predecessor = (await CreateAndQueueWithinTransactionAsync(
+                connection,
+                transaction,
+                remove,
+                batchId,
+                command.EventContext,
+                cancellationToken)).Request;
+        }
+
         var bring = new CreateTransportRequest(
             command.IdempotencyKey.Trim(),
             RequestOrigin.Api,
@@ -211,13 +259,30 @@ public sealed partial class PostgresTransportWorkflowStore
             100,
             RequiresPreparation: true)
         {
-            DefersMachineSlotReservation = true,
+            AllowsDependentMachineOccupancy = predecessor is not null,
+            DefersMachineSlotReservation = predecessor is null,
             QueuesWhenResourcesUnavailable = true
         };
         var created = await CreateAndQueueWithinTransactionAsync(
-            connection, transaction, bring, batchId, command.EventContext, cancellationToken);
+            connection,
+            transaction,
+            bring,
+            batchId,
+            command.EventContext,
+            cancellationToken,
+            reservationOwnedByRequestId: predecessor?.Id);
 
-        return new PartDemandResult(created.Request, Predecessor: null, created.WasIdempotentReplay);
+        if (predecessor is not null)
+        {
+            await InsertTransportDependencyAsync(
+                connection,
+                transaction,
+                predecessor.Id,
+                created.Request.Id,
+                cancellationToken);
+        }
+
+        return new PartDemandResult(created.Request, predecessor, created.WasIdempotentReplay);
     }
 
     private static async Task<TransportRequestSnapshot?> FindPredecessorSnapshotAsync(
