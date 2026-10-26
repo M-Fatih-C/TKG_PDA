@@ -206,7 +206,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task Occupied_full_area_keeps_the_new_order_queued_until_the_current_pallet_is_empty()
+    public async Task Repeated_demand_reports_the_current_same_part_pallet_empty_and_creates_removal_immediately()
     {
         var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
         using var client = await fixture.LoginClientAsync(setup.Operator);
@@ -216,23 +216,25 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         var successorId = await RequestIdAsync(body.RequestNo);
 
         Assert.Equal("BRING_FULL", body.TaskType);
-        Assert.Null(body.PredecessorTaskType);
+        Assert.Equal("REMOVE_EMPTY", body.PredecessorTaskType);
         Assert.Equal("WAITING_PREPARATION", body.Readiness);
-        Assert.False(await ReservationActiveAsync(successorId));
-        await MarkPreparedAsync(setup, successorId);
-        Assert.Equal(0, await ActivatePreparedAsync());
-        Assert.False(await ReservationActiveAsync(successorId));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-
-        await fixture.ExecuteAsync(
-            "UPDATE ops.slot_runtime_state SET load_state = 'EMPTY', row_version = row_version + 1 WHERE layout_slot_id = @slot",
-            ("slot", setup.Slot));
-        Assert.Equal(1, await ActivatePreparedAsync());
         var predecessorId = await PredecessorIdAsync(successorId);
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
         Assert.Equal("REMOVE_EMPTY", await TaskTypeAsync(predecessorId));
         Assert.True(await ReservationActiveAsync(successorId));
+        Assert.Equal("EMPTY", await fixture.ScalarAsync<string>(
+            "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot", ("slot", setup.Slot)));
+        Assert.Equal(1L, await EligibleCountAsync(predecessorId));
+        Assert.Equal(0L, await EligibleCountAsync(successorId));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'PART_DEMAND_CURRENT_PALLET_REPORTED_EMPTY'",
+            ("id", predecessorId)));
+
+        await MarkPreparedAsync(setup, successorId);
+        Assert.Equal(0, await ActivatePreparedAsync());
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(0L, await EligibleCountAsync(successorId));
     }
 
     [Fact]
@@ -537,10 +539,14 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
 
         var body = await ReadDemandAsync(response);
         var requestId = await RequestIdAsync(body.RequestNo);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        var predecessorId = await PredecessorIdAsync(requestId);
+        Assert.Equal("REMOVE_EMPTY", body.PredecessorTaskType);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal(setup.Slot, await fixture.ScalarAsync<Guid>(
             "SELECT destination_slot_id FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
-        Assert.False(await ReservationActiveAsync(requestId));
+        Assert.Equal(setup.Slot, await fixture.ScalarAsync<Guid>(
+            "SELECT source_slot_id FROM ops.transport_requests WHERE id = @id", ("id", predecessorId)));
+        Assert.True(await ReservationActiveAsync(requestId));
     }
 
     [Fact]

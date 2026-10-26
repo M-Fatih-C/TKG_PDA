@@ -11,6 +11,7 @@ public static class TransportEventTypes
     public const string WarehousePreparationStarted = "WAREHOUSE_PREPARATION_STARTED";
     public const string WarehousePreparationReady = "WAREHOUSE_PREPARATION_READY";
     public const string WarehousePreparationWithdrawn = "WAREHOUSE_PREPARATION_WITHDRAWN";
+    public const string PartDemandCurrentPalletReportedEmpty = "PART_DEMAND_CURRENT_PALLET_REPORTED_EMPTY";
     public const string MachineSlotReservationActivated = "MACHINE_SLOT_RESERVATION_ACTIVATED";
     public const string RobotTaskDispatched = "ROBOT_TASK_DISPATCHED";
     public const string RobotTaskStarted = "ROBOT_TASK_STARTED";
