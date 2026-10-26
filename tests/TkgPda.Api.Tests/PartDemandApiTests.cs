@@ -144,6 +144,26 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
+    public async Task Alt_demand_never_uses_a_slot_that_is_also_a_mamul_position()
+    {
+        var setup = await SetupAsync();
+        await fixture.ExecuteAsync(
+            "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
+            ("slot", setup.Slot), ("part", setup.MainPart));
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var response = await DemandAsync(client, setup, setup.AltPart, "separate-mamul-alt");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PART_SLOT_NOT_CONFIGURED", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal("VACANT", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+    }
+
+    [Fact]
     public async Task Same_idempotency_key_returns_the_same_request()
     {
         var setup = await SetupAsync();
@@ -321,13 +341,14 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     public async Task Batch_creates_one_request_per_alt_part_and_rolls_back_when_one_part_is_not_alt()
     {
         var setup = await SetupAsync();
-        var secondSlot = await NextSlotAsync(setup.Context.LayoutId, setup.Slot);
+        var secondSlot = await NextAltSlotAsync(setup.Context.LayoutId, setup.Context.VariantId, setup.Slot);
         var second = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code, description) VALUES ('P05-ALT-B', 'Alt B') RETURNING id");
         await fixture.ExecuteAsync(
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", secondSlot), ("part", second));
         await fixture.SetSlotAsync(secondSlot, "VACANT", "UNKNOWN");
         var containerTypeId = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+        await AlignSlotContainerAsync(secondSlot, containerTypeId);
         await fixture.ExecuteAsync(
             """
             INSERT INTO master.product_group_parts (product_group_id, part_id, container_type_id, relation_type, is_active)
@@ -463,11 +484,12 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
         var other = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code) VALUES ('P05-OTHER') RETURNING id");
         await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "FULL", other);
-        var vacant = await NextSlotAsync(setup.Context.LayoutId, setup.Slot);
+        var vacant = await NextAltSlotAsync(setup.Context.LayoutId, setup.Context.VariantId, setup.Slot);
         await fixture.ExecuteAsync(
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", vacant), ("part", setup.AltPart));
         await fixture.SetSlotAsync(vacant, "VACANT", "UNKNOWN");
+        await AlignSlotContainerAsync(vacant);
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
 
@@ -526,11 +548,12 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     public async Task Multiple_mapped_slots_choose_one_preparation_destination_deterministically()
     {
         var setup = await SetupAsync(occupancy: "OCCUPIED", load: "FULL");
-        var second = await NextSlotAsync(setup.Context.LayoutId, setup.Slot);
+        var second = await NextAltSlotAsync(setup.Context.LayoutId, setup.Context.VariantId, setup.Slot);
         await fixture.ExecuteAsync(
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", second), ("part", setup.AltPart));
         await fixture.SetSlotAsync(second, "OCCUPIED", "EMPTY", setup.AltPart);
+        await AlignSlotContainerAsync(second);
         await SetOccupiedContainerAsync(second);
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
@@ -773,13 +796,14 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
-        var slot = await NextSlotAsync(context.LayoutId, null);
+        var slot = await NextAltSlotAsync(context.LayoutId, context.VariantId, null);
         var main = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code, description) VALUES ('P05-MAMUL', 'Mamul') RETURNING id");
         var alt = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code, description) VALUES ('P05-ALT-A', 'Alt A') RETURNING id");
         var group = await fixture.ScalarAsync<Guid>(
             "INSERT INTO master.product_groups (variant_id, main_part_id, name) VALUES (@variant, @part, 'Demo group') RETURNING id",
             ("variant", context.VariantId), ("part", main));
         var containerTypeId = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+        await AlignSlotContainerAsync(slot, containerTypeId);
         await fixture.ExecuteAsync(
             """
             INSERT INTO master.product_group_parts (product_group_id, part_id, container_type_id, relation_type, is_active)
@@ -798,24 +822,50 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         return new Setup(context, oper, group, main, alt, slot);
     }
 
-    private Task<Guid> NextSlotAsync(Guid layoutId, Guid? except) => except is null
+    private Task<Guid> NextAltSlotAsync(Guid layoutId, Guid variantId, Guid? except) => except is null
         ? fixture.ScalarAsync<Guid>(
             """
-            SELECT id FROM master.layout_slots
-            WHERE layout_id = @layout AND is_enabled AND slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-            ORDER BY display_order, code
-            LIMIT 1
-            """,
-            ("layout", layoutId))
-        : fixture.ScalarAsync<Guid>(
-            """
-            SELECT id FROM master.layout_slots
-            WHERE layout_id = @layout AND is_enabled AND slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-              AND id <> @except
-            ORDER BY display_order, code
+            SELECT ls.id
+            FROM master.layout_slots ls
+            WHERE ls.layout_id = @layout
+              AND ls.is_enabled
+              AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM master.layout_slot_parts lsp
+                  JOIN master.product_groups pg
+                    ON pg.main_part_id = lsp.part_id
+                   AND pg.variant_id = @variant
+                   AND pg.is_active
+                  WHERE lsp.layout_slot_id = ls.id
+              )
+            ORDER BY ls.display_order, ls.code
             LIMIT 1
             """,
             ("layout", layoutId),
+            ("variant", variantId))
+        : fixture.ScalarAsync<Guid>(
+            """
+            SELECT ls.id
+            FROM master.layout_slots ls
+            WHERE ls.layout_id = @layout
+              AND ls.is_enabled
+              AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+              AND ls.id <> @except
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM master.layout_slot_parts lsp
+                  JOIN master.product_groups pg
+                    ON pg.main_part_id = lsp.part_id
+                   AND pg.variant_id = @variant
+                   AND pg.is_active
+                  WHERE lsp.layout_slot_id = ls.id
+              )
+            ORDER BY ls.display_order, ls.code
+            LIMIT 1
+            """,
+            ("layout", layoutId),
+            ("variant", variantId),
             ("except", except.Value));
 
     private static async Task StartProductionAsync(HttpClient client, Setup setup)
@@ -863,7 +913,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
 
     private async Task<Guid> AddAltPartAsync(Setup setup, string code)
     {
-        var slot = await NextSlotAsync(setup.Context.LayoutId, setup.Slot);
+        var slot = await NextAltSlotAsync(setup.Context.LayoutId, setup.Context.VariantId, setup.Slot);
         await fixture.SetSlotAsync(slot, "VACANT", "UNKNOWN");
         return await AddAltPartToSlotAsync(setup, code, slot);
     }
@@ -877,6 +927,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
             ("slot", slot), ("part", part));
         var containerTypeId = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+        await AlignSlotContainerAsync(slot, containerTypeId);
         await fixture.ExecuteAsync(
             """
             INSERT INTO master.product_group_parts (product_group_id, part_id, container_type_id, relation_type, is_active)
@@ -974,6 +1025,15 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             "SELECT id FROM master.container_types ORDER BY code LIMIT 1");
         await fixture.ExecuteAsync(
             "UPDATE ops.slot_runtime_state SET current_container_type_id = @container WHERE layout_slot_id = @slot",
+            ("container", resolved), ("slot", slotId));
+    }
+
+    private async Task AlignSlotContainerAsync(Guid slotId, Guid? containerTypeId = null)
+    {
+        var resolved = containerTypeId ?? await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM master.container_types ORDER BY code LIMIT 1");
+        await fixture.ExecuteAsync(
+            "UPDATE master.layout_slots SET default_container_type_id = @container WHERE id = @slot",
             ("container", resolved), ("slot", slotId));
     }
 

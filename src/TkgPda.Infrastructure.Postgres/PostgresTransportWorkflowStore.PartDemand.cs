@@ -191,6 +191,7 @@ public sealed partial class PostgresTransportWorkflowStore
             connection,
             transaction,
             session.LayoutId,
+            session.VariantId,
             command.PartId,
             cancellationToken);
 
@@ -912,6 +913,7 @@ public sealed partial class PostgresTransportWorkflowStore
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid layoutId,
+        Guid variantId,
         Guid partId,
         CancellationToken cancellationToken)
     {
@@ -924,6 +926,16 @@ public sealed partial class PostgresTransportWorkflowStore
             WHERE ls.layout_id = @layout
               AND ls.is_enabled
               AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM master.layout_slot_parts main_lsp
+                  JOIN master.product_groups main_pg
+                    ON main_pg.main_part_id = main_lsp.part_id
+                   AND main_pg.variant_id = @variant
+                   AND main_pg.is_active
+                  WHERE main_lsp.layout_slot_id = ls.id
+                    AND main_lsp.part_id <> @part
+              )
             ORDER BY
               CASE
                 WHEN rs.occupancy_state = 'OCCUPIED' AND rs.current_part_id = @part THEN 0
@@ -937,6 +949,7 @@ public sealed partial class PostgresTransportWorkflowStore
             connection,
             transaction);
         command.Parameters.AddWithValue("layout", layoutId);
+        command.Parameters.AddWithValue("variant", variantId);
         command.Parameters.AddWithValue("part", partId);
         return await command.ExecuteScalarAsync(cancellationToken) is Guid slotId
             ? slotId
