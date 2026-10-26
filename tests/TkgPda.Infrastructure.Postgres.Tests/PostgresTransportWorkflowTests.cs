@@ -1048,10 +1048,14 @@ public sealed class PostgresTransportWorkflowTests
             Assert.True(isRegComplete, "Commissioning registry must be classified complete despite live collisions and absent areaId.");
 
             // 4. Verify downstream steps proceed:
-            //    - 004 FG locations: exactly 19
+            //    - Customer-approved finished-goods layout: two delivery
+            //      locations and six empty-container preparation areas.
             var fgCount = await ScalarAsync<long>(
-                "SELECT count(*) FROM ops.store_locations WHERE code ~ '^FG-(0[1-9]|1[0-9])$' AND is_enabled");
-            Assert.Equal(19, fgCount);
+                "SELECT count(*) FROM ops.store_locations WHERE code IN ('FG-01', 'FG-02') AND area_purpose = 'DELIVERY' AND is_enabled");
+            var fgPreparationCount = await ScalarAsync<long>(
+                "SELECT count(*) FROM ops.preparation_areas WHERE warehouse_scope = 'FINISHED_GOODS' AND is_enabled");
+            Assert.Equal(2, fgCount);
+            Assert.Equal(6, fgPreparationCount);
 
             //    - 005 Task templates: exactly 96 (24 * 4)
             var templateCount = await ScalarAsync<long>(
@@ -1387,6 +1391,13 @@ public sealed class PostgresTransportWorkflowTests
             DELETE FROM master.layout_slot_parts
             WHERE layout_slot_id IN (SELECT id FROM master.layout_slots WHERE code LIKE 'SLOTPART-%');
             UPDATE master.layout_slots SET is_enabled = true WHERE code LIKE 'SLOTPART-%';
+            INSERT INTO ops.store_units (store_location_id, load_state)
+            SELECT location.id, 'EMPTY'
+            FROM ops.store_locations location
+            WHERE location.code LIKE 'PHASE03-EMPTY-%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_units unit
+                  WHERE unit.store_location_id = location.id AND unit.removed_at IS NULL);
             """);
     }
 

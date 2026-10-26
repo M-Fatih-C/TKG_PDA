@@ -32,32 +32,66 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
     {
         var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
         var scene = setup.SceneA;
-        await fixture.ExecuteAsync("DELETE FROM ops.store_location_delivery_slots");
-        if (blocker == 1)
-            await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_disabled = 1 WHERE navigation_profile_id = @nav", ("nav", scene.NavigationId));
-        if (blocker == 2)
-            await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_sync_at = NULL WHERE navigation_profile_id = @nav", ("nav", scene.NavigationId));
-        if (blocker == 3)
-            await fixture.ExecuteAsync("DELETE FROM integration.profile_shared_endpoint_bindings WHERE navigation_profile_id = @nav AND endpoint_class = 'FINISHED_GOODS'", ("nav", scene.NavigationId));
-        using var client = await fixture.LoginClientAsync(scene.Operator);
-        var positions = await client.GetFromJsonAsync<ContainerPositionRecord[]>(
-            $"/api/v1/machines/{scene.MachineId}/container-positions?variantId={scene.VariantId}&layoutId={scene.LayoutId}&productGroupId={scene.Group}&partId={scene.MainPart}");
-        var position = Assert.Single(positions!);
-        Assert.Equal(enabled, position.FullAction.Enabled);
-        Assert.True(position.EmptyAction.Enabled);
-        if (enabled)
+        var deliveryMappings = await ReadDeliverySlotMappingsAsync();
+        try
         {
-            var response = await client.SendAsync(CreateFullContainerActionRequest(scene, "projected-full"));
-            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-            if (blocker == 0)
-                Assert.Equal("FG-01", await fixture.ScalarAsync<string>("SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @machine", ("machine", scene.MachineId)));
-            else
+            await fixture.ExecuteAsync("DELETE FROM ops.store_location_delivery_slots");
+            if (blocker == 1)
+                await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_disabled = 1 WHERE navigation_profile_id = @nav", ("nav", scene.NavigationId));
+            if (blocker == 2)
+                await fixture.ExecuteAsync("UPDATE integration.rds_worksites SET last_sync_at = NULL WHERE navigation_profile_id = @nav", ("nav", scene.NavigationId));
+            if (blocker == 3)
+                await fixture.ExecuteAsync("DELETE FROM integration.profile_shared_endpoint_bindings WHERE navigation_profile_id = @nav AND endpoint_class = 'FINISHED_GOODS'", ("nav", scene.NavigationId));
+            using var client = await fixture.LoginClientAsync(scene.Operator);
+            var positions = await client.GetFromJsonAsync<ContainerPositionRecord[]>(
+                $"/api/v1/machines/{scene.MachineId}/container-positions?variantId={scene.VariantId}&layoutId={scene.LayoutId}&productGroupId={scene.Group}&partId={scene.MainPart}");
+            var position = Assert.Single(positions!);
+            Assert.Equal(enabled, position.FullAction.Enabled);
+            Assert.False(position.EmptyAction.Enabled);
+            Assert.Equal("CONTAINER_ACTION_SEQUENCE_REQUIRED", position.EmptyAction.DisabledCode);
+            if (enabled)
             {
-                Assert.False(await fixture.ScalarAsync<bool>("SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE machine_id = @machine", ("machine", scene.MachineId)));
+                var response = await client.SendAsync(CreateFullContainerActionRequest(scene, "projected-full"));
+                Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+                if (blocker == 0)
+                    Assert.Equal("FG-01", await fixture.ScalarAsync<string>("SELECT destination_business_code FROM ops.transport_requests WHERE machine_id = @machine", ("machine", scene.MachineId)));
+                else
+                {
+                    Assert.False(await fixture.ScalarAsync<bool>("SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE machine_id = @machine", ("machine", scene.MachineId)));
+                }
+            }
+            else Assert.Equal(blocker switch { 1 => "RDS_WORKSITE_DISABLED", 2 => "RDS_WORKSITE_STALE", _ => "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED" }, position.FullAction.DisabledCode);
+        }
+        finally
+        {
+            foreach (var mapping in deliveryMappings)
+            {
+                await fixture.ExecuteAsync(
+                    "INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id) VALUES (@slot, @location) ON CONFLICT (layout_slot_id) DO UPDATE SET store_location_id = EXCLUDED.store_location_id",
+                    ("slot", mapping.LayoutSlotId),
+                    ("location", mapping.StoreLocationId));
             }
         }
-        else Assert.Equal(blocker switch { 1 => "RDS_WORKSITE_DISABLED", 2 => "RDS_WORKSITE_STALE", _ => "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED" }, position.FullAction.DisabledCode);
     }
+
+    private async Task<IReadOnlyList<DeliverySlotMapping>> ReadDeliverySlotMappingsAsync()
+    {
+        var result = new List<DeliverySlotMapping>();
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT layout_slot_id, store_location_id FROM ops.store_location_delivery_slots ORDER BY layout_slot_id",
+            connection);
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            result.Add(new(reader.GetGuid(0), reader.GetGuid(1)));
+        }
+
+        return result;
+    }
+
+    private sealed record DeliverySlotMapping(Guid LayoutSlotId, Guid StoreLocationId);
 
     [Fact]
     public async Task Two_machines_on_different_nav_profiles_competing_for_finished_goods_reserve_distinct_endpoints()

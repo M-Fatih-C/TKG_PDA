@@ -132,6 +132,7 @@ public sealed class PostgresTransportReadinessTests
         await SetSlotAsync(slotId, OccupancyState.Vacant, LoadState.Unknown);
         await using var store = new PostgresTransportWorkflowStore(_connectionString);
         var created = await store.CreateAndQueueAsync(Command(context, "mark-ready", slotId, requiresPreparation: true));
+        await InsertReadyEmptyPreparationPalletAsync(created.Request.Id);
 
         var firstMarkReady = await store.MarkReadyAsync(created.Request.Id, actorUserId: null);
         var repeated = await store.MarkReadyAsync(created.Request.Id, actorUserId: null);
@@ -199,8 +200,46 @@ public sealed class PostgresTransportReadinessTests
         await ExecuteAsync(
             """
             TRUNCATE integration.rds_tasks, ops.transport_request_events, ops.transport_requests, ops.slot_runtime_state, ops.machine_runtime_state RESTART IDENTITY CASCADE;
+            INSERT INTO ops.store_units (store_location_id, load_state)
+            SELECT location.id, 'EMPTY'
+            FROM ops.store_locations location
+            WHERE location.code LIKE 'PHASE03-EMPTY-%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_units unit
+                  WHERE unit.store_location_id = location.id AND unit.removed_at IS NULL);
             """);
     }
+
+    private Task InsertReadyEmptyPreparationPalletAsync(Guid requestId) => ExecuteAsync(
+        """
+        WITH actor AS (
+            INSERT INTO auth.users (username, password_hash, full_name, is_active)
+            VALUES ('phase03-readiness-operator', 'test-only-hash', 'Phase 03 Readiness Operator', true)
+            ON CONFLICT (username) DO UPDATE SET is_active = true
+            RETURNING id
+        ), device AS (
+            INSERT INTO audit.client_devices (device_code, name, device_type, is_active)
+            VALUES ('PHASE03-READINESS', 'Phase 03 Readiness Device', 'PDA', true)
+            ON CONFLICT (device_code) DO UPDATE SET is_active = true
+            RETURNING id
+        )
+        INSERT INTO ops.preparation_pallets (
+            preparation_area_id, container_type_id, load_state, transport_request_id,
+            placed_by, placed_device_id, placed_at, ready_at, ready_by)
+        SELECT area.id, container.id, 'EMPTY', @request_id,
+               actor.id, device.id, stamp.value, stamp.value, actor.id
+        FROM ops.preparation_areas area
+        CROSS JOIN LATERAL (
+            SELECT id FROM master.container_types WHERE is_active ORDER BY code LIMIT 1
+        ) container
+        CROSS JOIN actor
+        CROSS JOIN device
+        CROSS JOIN LATERAL (SELECT clock_timestamp() AS value) stamp
+        WHERE area.warehouse_scope = 'FINISHED_GOODS'
+        ORDER BY area.area_number
+        LIMIT 1
+        """,
+        ("request_id", requestId));
 
     private async Task<LayoutContext> ConfigureAsync(string machineCode, string variantCode)
     {
