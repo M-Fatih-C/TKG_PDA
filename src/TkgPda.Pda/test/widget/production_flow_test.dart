@@ -58,7 +58,7 @@ void main() {
     },
   );
 
-  testWidgets('active open transport explains why end is disabled', (
+  testWidgets('active open transport continues while production can end', (
     tester,
   ) async {
     final repo = FakePdaRepository()
@@ -69,9 +69,12 @@ void main() {
       tester
           .widget<OutlinedButton>(find.byKey(const Key('production-end')))
           .onPressed,
-      isNull,
+      isNotNull,
     );
     expect(find.byKey(const Key('production-open-transports')), findsOneWidget);
+    expect(find.textContaining('görev yöneticisinde devam ediyor'), findsOneWidget);
+    await tap(tester, const Key('production-end'));
+    expect(find.byKey(const Key('confirm-production-end')), findsOneWidget);
     expect(repo.productionEndCount, 0);
   });
 

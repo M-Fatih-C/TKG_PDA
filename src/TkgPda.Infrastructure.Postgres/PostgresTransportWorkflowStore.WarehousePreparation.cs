@@ -790,7 +790,7 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
     private static async Task InsertPreparationEventAsync(
         NpgsqlConnection connection, NpgsqlTransaction transaction, Guid areaId, Guid palletId,
         string eventType, Guid? partId, Guid? containerTypeId, Guid? requestId,
-        Guid actorUserId, Guid deviceId, object data, CancellationToken cancellationToken)
+        Guid? actorUserId, Guid? deviceId, object data, CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand("""
             INSERT INTO ops.preparation_events
@@ -804,8 +804,8 @@ public sealed partial class PostgresTransportWorkflowStore : IWarehousePreparati
         AddNullableUuid(command, "part", partId);
         AddNullableUuid(command, "container", containerTypeId);
         AddNullableUuid(command, "request", requestId);
-        command.Parameters.AddWithValue("actor", actorUserId);
-        command.Parameters.AddWithValue("device", deviceId);
+        AddNullableUuid(command, "actor", actorUserId);
+        AddNullableUuid(command, "device", deviceId);
         command.Parameters.Add("data", NpgsqlDbType.Jsonb).Value = JsonSerializer.Serialize(data);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

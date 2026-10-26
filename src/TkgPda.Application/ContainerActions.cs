@@ -39,10 +39,9 @@ public sealed record ContainerActionResolution(
 public static class ContainerActionResolutionPolicy
 {
     /// <summary>
-    /// Enforces the customer-approved logical-position cycle. A position may
-    /// have at most one REMOVE_FULL -> BRING_EMPTY chain. Resource shortages
-    /// may defer either request, but they never permit duplicate business
-    /// actions to be appended to the same position.
+    /// Enforces the customer-approved logical-position cycle. Active requests
+    /// may be extended without waiting for execution, but consecutive actions
+    /// on the same position must alternate REMOVE_FULL and BRING_EMPTY.
     /// </summary>
     public static ContainerActionResolution ResolveSequenced(
         OperatorContainerAction action,
@@ -90,11 +89,21 @@ public static class ContainerActionResolutionPolicy
                 "Bu konum için Kasa Doldu talebi zaten sırada. Şimdi Boş Kasa Getir talebi oluşturabilirsiniz.");
         }
 
+        if (activeTailOperation == TransportTaskType.BringEmpty
+            && action == OperatorContainerAction.Full)
+        {
+            return new ContainerActionResolution(
+                TransportTaskType.RemoveFull,
+                MarkFullBeforeCreate: true,
+                RequiresPreparation: false,
+                DefersMachineSlotReservation: true);
+        }
+
         if (activeTailOperation == TransportTaskType.BringEmpty)
         {
             throw new WorkflowRuleException(
                 "CONTAINER_EMPTY_ALREADY_QUEUED",
-                "Bu konum için boş kasa talebi zaten sırada. Yeni işlem için bu zincirin tamamlanmasını bekleyin.");
+                "Bu konum için Boş Kasa Getir talebi zaten sırada. Sıradaki işlem Kasa Doldu olmalıdır.");
         }
 
         throw new WorkflowRuleException(

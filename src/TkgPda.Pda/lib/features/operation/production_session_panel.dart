@@ -392,7 +392,7 @@ class ProductionSessionPanel extends StatelessWidget {
               if (openCount > 0) ...[
                 const SizedBox(height: 6),
                 Text(
-                  '$openCount açık taşıma var. Üretimi bitirmek için tamamlanmalarını bekleyin veya talepleri ayrıca iptal edin.',
+                  '$openCount açık taşıma görev yöneticisinde devam ediyor. Üretimi bitirdiğinizde bitiş görevleri de sıraya alınır.',
                   key: const Key('production-open-transports'),
                   style: const TextStyle(
                     fontSize: 12,
@@ -592,7 +592,7 @@ class _CompactActiveHeader extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(top: 4),
                 child: Text(
-                  '$openCount açık taşıma var. Üretimi bitirmek için tamamlanmalarını bekleyin veya talepleri ayrıca iptal edin.',
+                  '$openCount açık taşıma görev yöneticisinde devam ediyor. Üretimi bitirdiğinizde bitiş görevleri de sıraya alınır.',
                   key: const Key('production-open-transports'),
                   style: TextStyle(
                     fontSize: PdaScale.caption(context),

@@ -86,7 +86,7 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     [Theory]
     [InlineData("VACANT", "UNKNOWN")]
     [InlineData("UNKNOWN", "UNKNOWN")]
-    public async Task Kasa_doldu_persists_operator_intent_until_container_state_is_proven(string occupancy, string load)
+    public async Task Kasa_doldu_requires_a_container_or_a_queued_empty_delivery(string occupancy, string load)
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -97,18 +97,10 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
 
         var response = await SendActionAsync(client, context, mapped, "FULL", $"wp33-full-{occupancy}");
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("CONTAINER_ACTION_SEQUENCE_REQUIRED", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.transport_requests WHERE idempotency_key = @key",
-            ("key", $"wp33-full-{occupancy}")));
-        Assert.False(await fixture.ScalarAsync<bool>(
-            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE idempotency_key = @key",
-            ("key", $"wp33-full-{occupancy}")));
-        Assert.False(await fixture.ScalarAsync<bool>(
-            "SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE idempotency_key = @key",
-            ("key", $"wp33-full-{occupancy}")));
-        Assert.Equal("QUEUED", await fixture.ScalarAsync<string>(
-            "SELECT status FROM ops.transport_requests WHERE idempotency_key = @key",
             ("key", $"wp33-full-{occupancy}")));
     }
 
@@ -162,7 +154,7 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     }
 
     [Fact]
-    public async Task Kasa_bos_is_queued_for_each_position_even_when_the_position_is_still_occupied()
+    public async Task Kasa_bos_requires_a_vacant_position_or_a_queued_full_removal()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -180,8 +172,10 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
         var queuedBehindFull = await SendActionAsync(client, context, occupiedFull, "EMPTY", "wp33-empty-occupied-full");
 
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
-        Assert.Equal(HttpStatusCode.Created, queuedBehindEmpty.StatusCode);
-        Assert.Equal(HttpStatusCode.Created, queuedBehindFull.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, queuedBehindEmpty.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, queuedBehindFull.StatusCode);
+        Assert.Equal("CONTAINER_ACTION_SEQUENCE_REQUIRED", await ApiTestFixture.ErrorCodeAsync(queuedBehindEmpty));
+        Assert.Equal("CONTAINER_ACTION_SEQUENCE_REQUIRED", await ApiTestFixture.ErrorCodeAsync(queuedBehindFull));
         Assert.Equal("BRING_EMPTY", await fixture.ScalarAsync<string>(
             """
             SELECT tt.code FROM ops.transport_requests r
@@ -193,12 +187,10 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
             SELECT readiness_state FROM ops.transport_requests
             WHERE idempotency_key = 'wp33-empty-vacant'
             """));
-        Assert.Equal(2L, await fixture.ScalarAsync<long>(
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
             """
             SELECT count(*) FROM ops.transport_requests
             WHERE idempotency_key IN ('wp33-empty-occupied-empty', 'wp33-empty-occupied-full')
-              AND status = 'QUEUED'
-              AND NOT machine_slot_reservation_active
             """));
         Assert.Equal(0L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.store_reservations WHERE released_at IS NULL"));
@@ -711,7 +703,7 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     }
 
     [Fact]
-    public async Task Concurrent_identical_container_orders_with_distinct_keys_are_both_queued()
+    public async Task Concurrent_identical_container_orders_create_exactly_one_request()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -724,10 +716,12 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
             SendActionAsync(client, context, mapped, "FULL", "wp33-concurrent-a"),
             SendActionAsync(client, context, mapped, "FULL", "wp33-concurrent-b"));
 
-        Assert.All(responses, response => Assert.Equal(HttpStatusCode.Created, response.StatusCode));
-        Assert.Equal(2L, await fixture.ScalarAsync<long>(
-            "SELECT count(*) FROM ops.transport_requests WHERE idempotency_key LIKE 'wp33-concurrent-%'"));
+        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Created);
+        var duplicate = Assert.Single(responses, response => response.StatusCode == HttpStatusCode.UnprocessableEntity);
+        Assert.Equal("CONTAINER_FULL_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicate));
         Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE idempotency_key LIKE 'wp33-concurrent-%'"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.transport_request_dependencies"));
 
         var positions = await client.GetFromJsonAsync<ContainerPositionRecord[]>(
@@ -735,12 +729,12 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
             $"?variantId={context.VariantId}&layoutId={context.LayoutId}" +
             $"&productGroupId={mapped.ProductGroupId}&partId={mapped.PartId}");
         var projected = Assert.Single(positions!);
-        Assert.True(projected.FullAction.Enabled);
+        Assert.False(projected.FullAction.Enabled);
         Assert.True(projected.EmptyAction.Enabled);
     }
 
     [Fact]
-    public async Task A_new_production_job_queues_behind_an_active_request_from_the_previous_job()
+    public async Task A_new_production_job_cannot_repeat_the_previous_jobs_active_action()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -777,8 +771,9 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
 
         var response = await SendActionAsync(client, context, mapped, "FULL", "wp33-new-job");
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("CONTAINER_FULL_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
             """
             SELECT count(*)
             FROM ops.transport_request_dependencies d
@@ -815,7 +810,7 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
     }
 
     [Fact]
-    public async Task Container_action_batch_persists_an_empty_request_while_its_position_is_occupied()
+    public async Task Container_action_batch_rejects_an_empty_request_when_no_removal_precedes_it()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -827,15 +822,14 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
         var response = await SendActionBatchAsync(
             client, context, mapped, "EMPTY", "wp33-batch-deferred-empty");
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("CONTAINER_ACTION_SEQUENCE_REQUIRED", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
             """
             SELECT count(*)
             FROM ops.transport_requests request
             JOIN ops.transport_batches batch ON batch.id = request.batch_id
             WHERE batch.idempotency_key = 'wp33-batch-deferred-empty'
-              AND request.status = 'QUEUED'
-              AND NOT request.machine_slot_reservation_active
             """));
     }
 
