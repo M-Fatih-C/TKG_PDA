@@ -121,8 +121,10 @@ public static class TransportRules
     };
 
     /// <summary>
-    /// Customer Workflow — Empty Container Buffer: BRING_EMPTY draws an empty
-    /// container from a configured EMPTY_STORAGE slot (its source);
+    /// Customer Workflow — Empty Container Buffer: an unprepared BRING_EMPTY
+    /// draws an empty container from a configured EMPTY_STORAGE slot (its
+    /// source). A request with a confirmed finished-goods preparation pallet
+    /// uses that preparation area as its source instead;
     /// REMOVE_EMPTY returns one to a configured EMPTY_STORAGE slot (its
     /// destination). REMOVE_FULL never touches the buffer. Returns null for
     /// task types that have no buffer side.

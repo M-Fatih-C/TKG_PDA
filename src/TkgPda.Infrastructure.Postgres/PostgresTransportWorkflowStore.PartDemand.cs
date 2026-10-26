@@ -603,6 +603,54 @@ public sealed partial class PostgresTransportWorkflowStore
         OperationalEventContext? eventContext,
         CancellationToken cancellationToken)
     {
+        // A finished-goods operator prepares BRING_EMPTY against the exact
+        // request in one of the six preparation areas. That ready pallet is
+        // the physical source; requiring a second EMPTY_STORAGE/EMPTY_SOURCE
+        // allocation here strands the request after the warehouse has already
+        // completed its work. Lock the pallet after the request (the shared
+        // workflow lock order) so withdrawal cannot race this activation.
+        if (request.TaskType == TransportTaskType.BringEmpty
+            && await LockReadyFinishedGoodsPreparationAreaAsync(
+                connection, transaction, request.Id, cancellationToken) is { } preparationAreaId)
+        {
+            await using var activatePreparedSource = new NpgsqlCommand(
+                """
+                UPDATE ops.transport_requests
+                SET store_endpoint_reservation_active = true,
+                    updated_at = now()
+                WHERE id = @id
+                  AND status = 'QUEUED'
+                  AND readiness_state = 'READY'
+                  AND NOT store_endpoint_reservation_active
+                RETURNING id
+                """,
+                connection,
+                transaction);
+            activatePreparedSource.Parameters.AddWithValue("id", request.Id);
+            if (await activatePreparedSource.ExecuteScalarAsync(cancellationToken) is null)
+            {
+                return false;
+            }
+
+            await InsertEventAsync(
+                connection,
+                transaction,
+                request.Id,
+                eventContext?.ActorUserId,
+                "STORE_ENDPOINT_RESERVATION_ACTIVATED",
+                null,
+                null,
+                "Queued empty-container intent acquired its confirmed preparation-area source.",
+                new
+                {
+                    preparation_area_id = preparationAreaId,
+                    source_kind = "PREPARATION_AREA"
+                },
+                cancellationToken,
+                eventContext);
+            return true;
+        }
+
         var isMainPart = request.TaskType == TransportTaskType.RemoveFull
             && await IsMainPartAsync(
                 connection, transaction, request.ProductGroupId, request.PartId, cancellationToken);
@@ -706,6 +754,35 @@ public sealed partial class PostgresTransportWorkflowStore
             cancellationToken,
             eventContext);
         return true;
+    }
+
+    private static async Task<Guid?> LockReadyFinishedGoodsPreparationAreaAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            SELECT pallet.preparation_area_id
+            FROM ops.preparation_pallets pallet
+            JOIN ops.preparation_areas area
+              ON area.id = pallet.preparation_area_id
+             AND area.is_enabled
+             AND area.warehouse_scope = 'FINISHED_GOODS'
+            WHERE pallet.transport_request_id = @request
+              AND pallet.ready_at IS NOT NULL
+              AND pallet.released_at IS NULL
+            ORDER BY pallet.ready_at, pallet.id
+            LIMIT 1
+            FOR UPDATE OF pallet
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("request", requestId);
+        return await command.ExecuteScalarAsync(cancellationToken) is Guid areaId
+            ? areaId
+            : null;
     }
 
     private sealed record ProductionDemandContext(Guid SessionId, Guid VariantId, Guid LayoutId, Guid ProductGroupId);
