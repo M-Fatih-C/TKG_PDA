@@ -66,7 +66,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
     }
 
     [Fact]
-    public async Task Kasa_doldu_reuses_the_same_key_but_queues_a_distinct_operator_order()
+    public async Task Kasa_doldu_replays_the_same_key_but_rejects_a_duplicate_operator_order()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -80,13 +80,14 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
 
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
         Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
-        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
-        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, second.StatusCode);
+        Assert.Equal("CONTAINER_FULL_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(second));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
     }
 
     [Fact]
-    public async Task Kasa_doldu_on_a_vacant_position_is_queued_without_mutating_the_slot()
+    public async Task Kasa_doldu_on_a_vacant_position_requires_bos_kasa_getir_first()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -96,22 +97,16 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
 
         var response = await SendActionAsync(client, context, mapped, "FULL", "wp08-vacant");
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
-            """
-            SELECT count(*) FROM ops.transport_requests
-            WHERE idempotency_key = 'wp08-vacant'
-              AND status = 'QUEUED'
-              AND NOT machine_slot_reservation_active
-              AND NOT store_endpoint_reservation_active
-            """));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("CONTAINER_ACTION_SEQUENCE_REQUIRED", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal("UNKNOWN", await LoadAsync(mapped.SlotId));
     }
 
     [Theory]
     [InlineData("UNKNOWN", "UNKNOWN")]
     [InlineData("OCCUPIED", "UNKNOWN")]
-    public async Task Kasa_doldu_keeps_unknown_state_unchanged_while_the_request_waits(string occupancy, string load)
+    public async Task Kasa_doldu_rejects_unknown_state_without_changing_it(string occupancy, string load)
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -121,19 +116,41 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
 
         var response = await SendActionAsync(client, context, mapped, "FULL", $"wp08-unk-{occupancy}-{load}");
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
-            """
-            SELECT count(*) FROM ops.transport_requests
-            WHERE idempotency_key = @key
-              AND status = 'QUEUED'
-              AND NOT machine_slot_reservation_active
-            """,
-            ("key", $"wp08-unk-{occupancy}-{load}")));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("CONTAINER_ACTION_SEQUENCE_REQUIRED", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal(load, await LoadAsync(mapped.SlotId));
         Assert.Equal(occupancy, await fixture.ScalarAsync<string>(
             "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
             ("slot", mapped.SlotId)));
+    }
+
+    [Fact]
+    public async Task Kasa_cycle_queues_one_remove_then_one_empty_without_waiting_and_disables_duplicates()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var mapped = await SeedMappedPositionAsync(context, "SEQUENCE");
+        await SetPositionAsync(mapped.SlotId, mapped.PartId, "OCCUPIED", "EMPTY");
+        using var client = await ClientAsync();
+
+        var remove = await SendActionAsync(client, context, mapped, "FULL", "wp08-sequence-full");
+        var bring = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-sequence-empty");
+        var duplicateFull = await SendActionAsync(client, context, mapped, "FULL", "wp08-sequence-full-2");
+        var duplicateEmpty = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-sequence-empty-2");
+
+        Assert.Equal(HttpStatusCode.Created, remove.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, bring.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicateFull.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicateEmpty.StatusCode);
+        Assert.Equal("CONTAINER_EMPTY_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicateFull));
+        Assert.Equal("CONTAINER_EMPTY_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicateEmpty));
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
+
+        var projected = await PositionAsync(client, context, mapped);
+        Assert.False(projected.GetProperty("fullAction").GetProperty("enabled").GetBoolean());
+        Assert.False(projected.GetProperty("emptyAction").GetProperty("enabled").GetBoolean());
     }
 
     [Theory]

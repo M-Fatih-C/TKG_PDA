@@ -883,10 +883,13 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                           FROM ops.transport_requests r
                           WHERE r.machine_id = @machine_id
                             AND r.status IN ({ActiveStatusesSql})
-                            AND NOT EXISTS (
-                                SELECT 1
-                                FROM ops.production_end_run_items item
-                                WHERE item.transport_request_id = r.id)
+                            AND (
+                                 r.production_session_id IS NULL
+                                 OR EXISTS (
+                                     SELECT 1
+                                     FROM ops.production_sessions ps
+                                     WHERE ps.id = r.production_session_id
+                                       AND ps.ended_at IS NULL))
                           LIMIT 1
                           """,
                          connection,
@@ -1997,6 +2000,15 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 new { predecessor_request_id = predecessorId },
                 cancellationToken,
                 eventContext);
+            // A production-end cleanup may depend on a normal request from the
+            // just-ended session. If that predecessor fails, the cleanup row is
+            // cancelled here and its run must be advanced immediately; otherwise
+            // the background run would remain RUNNING forever.
+            await AdvanceProductionEndRunAsync(
+                connection,
+                transaction,
+                successor.Id,
+                cancellationToken);
         }
     }
 

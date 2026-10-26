@@ -158,17 +158,20 @@ public sealed partial class PostgresTransportWorkflowStore : IProductionSessionS
              FROM ops.transport_requests r
              WHERE r.machine_id = @machine
                AND r.status IN ({ActiveStatusesSql})
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM ops.production_end_run_items item
-                   WHERE item.transport_request_id = r.id)
+               AND (
+                    r.production_session_id IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM ops.production_sessions ps
+                        WHERE ps.id = r.production_session_id
+                          AND ps.ended_at IS NULL))
              LIMIT 1
              """,
             connection,
             transaction);
         command.Parameters.AddWithValue("machine", machineId);
         if (await command.ExecuteScalarAsync(cancellationToken) is not null)
-            throw new WorkflowRuleException("ACTIVE_TRANSPORT_EXISTS", "Açık taşıma talepleri tamamlanmadan veya ayrıca iptal edilmeden üretim başlatılamaz/bitirilemez.");
+            throw new WorkflowRuleException("ACTIVE_TRANSPORT_EXISTS", "Önceki üretimle ilişkilendirilemeyen açık taşıma talepleri varken yeni üretim başlatılamaz.");
     }
 
     private static async Task<ProductionSessionRecord?> ReadProductionAsync(NpgsqlConnection connection, NpgsqlTransaction? transaction,

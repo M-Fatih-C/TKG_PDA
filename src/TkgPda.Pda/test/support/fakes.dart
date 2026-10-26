@@ -148,6 +148,7 @@ OperationalContext testContext({
             'ageSeconds': request.ageSeconds,
             'executionElapsedSeconds': request.executionElapsedSeconds,
             'productionEnd': request.productionEnd,
+            'blocksProductionTransition': request.blocksProductionTransition,
             'canCancel': request.canCancel,
             'cancelDisabledCode': request.cancelDisabledCode,
             'cancelDisabledMessage': request.cancelDisabledMessage,

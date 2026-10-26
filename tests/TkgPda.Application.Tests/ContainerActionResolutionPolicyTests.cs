@@ -6,6 +6,71 @@ namespace TkgPda.Application.Tests;
 
 public sealed class ContainerActionResolutionPolicyTests
 {
+    [Fact]
+    public void Sequenced_position_allows_only_empty_after_active_remove_full()
+    {
+        var next = ContainerActionResolutionPolicy.ResolveSequenced(
+            OperatorContainerAction.Empty,
+            OccupancyState.Occupied,
+            LoadState.Full,
+            TransportTaskType.RemoveFull);
+
+        Assert.Equal(TransportTaskType.BringEmpty, next.Operation);
+        Assert.True(next.RequiresPreparation);
+        Assert.True(next.DefersMachineSlotReservation);
+
+        var duplicate = Assert.Throws<WorkflowRuleException>(() =>
+            ContainerActionResolutionPolicy.ResolveSequenced(
+                OperatorContainerAction.Full,
+                OccupancyState.Occupied,
+                LoadState.Full,
+                TransportTaskType.RemoveFull));
+        Assert.Equal("CONTAINER_FULL_ALREADY_QUEUED", duplicate.Code);
+    }
+
+    [Theory]
+    [InlineData(OperatorContainerAction.Full)]
+    [InlineData(OperatorContainerAction.Empty)]
+    public void Sequenced_position_blocks_both_actions_after_bring_empty_is_queued(
+        OperatorContainerAction action)
+    {
+        var error = Assert.Throws<WorkflowRuleException>(() =>
+            ContainerActionResolutionPolicy.ResolveSequenced(
+                action,
+                OccupancyState.Occupied,
+                LoadState.Full,
+                TransportTaskType.BringEmpty));
+
+        Assert.Equal("CONTAINER_EMPTY_ALREADY_QUEUED", error.Code);
+    }
+
+    [Fact]
+    public void Sequenced_position_uses_physical_state_when_there_is_no_active_chain()
+    {
+        Assert.Equal(
+            TransportTaskType.RemoveFull,
+            ContainerActionResolutionPolicy.ResolveSequenced(
+                OperatorContainerAction.Full,
+                OccupancyState.Occupied,
+                LoadState.Empty,
+                activeTailOperation: null).Operation);
+        Assert.Equal(
+            TransportTaskType.BringEmpty,
+            ContainerActionResolutionPolicy.ResolveSequenced(
+                OperatorContainerAction.Empty,
+                OccupancyState.Vacant,
+                LoadState.Unknown,
+                activeTailOperation: null).Operation);
+
+        var invalid = Assert.Throws<WorkflowRuleException>(() =>
+            ContainerActionResolutionPolicy.ResolveSequenced(
+                OperatorContainerAction.Empty,
+                OccupancyState.Occupied,
+                LoadState.Empty,
+                activeTailOperation: null));
+        Assert.Equal("CONTAINER_ACTION_SEQUENCE_REQUIRED", invalid.Code);
+    }
+
     // ---------------------------------------------------------------------
     // Transient physical state never discards operator intent. The policy keeps
     // the requested operation and marks its machine reservation as deferred.

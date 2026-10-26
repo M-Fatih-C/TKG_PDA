@@ -38,6 +38,70 @@ public sealed record ContainerActionResolution(
 /// </summary>
 public static class ContainerActionResolutionPolicy
 {
+    /// <summary>
+    /// Enforces the customer-approved logical-position cycle. A position may
+    /// have at most one REMOVE_FULL -> BRING_EMPTY chain. Resource shortages
+    /// may defer either request, but they never permit duplicate business
+    /// actions to be appended to the same position.
+    /// </summary>
+    public static ContainerActionResolution ResolveSequenced(
+        OperatorContainerAction action,
+        OccupancyState occupancy,
+        LoadState load,
+        TransportTaskType? activeTailOperation)
+    {
+        if (activeTailOperation is null)
+        {
+            if (action == OperatorContainerAction.Full
+                && occupancy == OccupancyState.Occupied
+                && load is LoadState.Empty or LoadState.Full)
+            {
+                return ResolveSingle(action, occupancy, load);
+            }
+
+            if (action == OperatorContainerAction.Empty
+                && occupancy == OccupancyState.Vacant
+                && load == LoadState.Unknown)
+            {
+                return ResolveSingle(action, occupancy, load);
+            }
+
+            throw new WorkflowRuleException(
+                "CONTAINER_ACTION_SEQUENCE_REQUIRED",
+                action == OperatorContainerAction.Full
+                    ? "Kasa Doldu işlemi için konumda bir kasa bulunmalıdır."
+                    : "Boş Kasa Getir işlemi için konum boş olmalıdır veya önce Kasa Doldu talebi oluşturulmalıdır.");
+        }
+
+        if (activeTailOperation == TransportTaskType.RemoveFull
+            && action == OperatorContainerAction.Empty)
+        {
+            return new ContainerActionResolution(
+                TransportTaskType.BringEmpty,
+                MarkFullBeforeCreate: false,
+                RequiresPreparation: true,
+                DefersMachineSlotReservation: true);
+        }
+
+        if (activeTailOperation == TransportTaskType.RemoveFull)
+        {
+            throw new WorkflowRuleException(
+                "CONTAINER_FULL_ALREADY_QUEUED",
+                "Bu konum için Kasa Doldu talebi zaten sırada. Şimdi Boş Kasa Getir talebi oluşturabilirsiniz.");
+        }
+
+        if (activeTailOperation == TransportTaskType.BringEmpty)
+        {
+            throw new WorkflowRuleException(
+                "CONTAINER_EMPTY_ALREADY_QUEUED",
+                "Bu konum için boş kasa talebi zaten sırada. Yeni işlem için bu zincirin tamamlanmasını bekleyin.");
+        }
+
+        throw new WorkflowRuleException(
+            "CONTAINER_POSITION_BUSY",
+            "Bu konumu kullanan aktif bir taşıma talebi bulunuyor.");
+    }
+
     public static ContainerActionResolution ResolveSingle(
         OperatorContainerAction action,
         OccupancyState occupancy,

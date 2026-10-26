@@ -196,7 +196,7 @@ class AppController extends ChangeNotifier {
   String? get productionContextError => _productionContextError;
   bool get _hasCurrentJobTransport =>
       _context?.activeTransportRequests.any(
-        (request) => !request.productionEnd,
+        (request) => request.blocksProductionTransition,
       ) ??
       false;
   bool get canStartProduction =>
@@ -220,7 +220,6 @@ class AppController extends ChangeNotifier {
       production.active != null &&
       !production.hasPending &&
       (_context?.machine.permissions.canOperate ?? false) &&
-      !_hasCurrentJobTransport &&
       _batchCart.isEmpty &&
       !hasAmbiguousSubmission &&
       !hasAmbiguousBatchSubmission;

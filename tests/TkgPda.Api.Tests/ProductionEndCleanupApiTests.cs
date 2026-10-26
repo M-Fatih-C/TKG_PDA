@@ -981,6 +981,57 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     }
 
     [Fact]
+    public async Task End_with_active_container_cycle_queues_cleanup_after_the_cycle_and_allows_the_next_job()
+    {
+        var setup = await SetupAsync();
+        await SeedPriorityAsync("REMOVE_FULL", 40);
+        await SeedPriorityAsync("REMOVE_EMPTY", 70);
+        await SeedTemplateAsync(setup, "REMOVE_FULL");
+        await SeedTemplateAsync(setup, "REMOVE_EMPTY");
+        await fixture.SetSlotAsync(setup.Slots[0], "OCCUPIED", "EMPTY", setup.MainPart);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var oldSession = await StartAsync(client, setup, "production-cycle-old");
+
+        (await ContainerActionAsync(client, setup, oldSession.Id, "FULL", "cycle-remove-full"))
+            .EnsureSuccessStatusCode();
+        (await ContainerActionAsync(client, setup, oldSession.Id, "EMPTY", "cycle-bring-empty"))
+            .EnsureSuccessStatusCode();
+        (await EndAsync(client, setup, oldSession.Id, "end-active-cycle"))
+            .EnsureSuccessStatusCode();
+
+        var removeFullId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'cycle-remove-full'");
+        var bringEmptyId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'cycle-bring-empty'");
+        var cleanupId = await fixture.ScalarAsync<Guid>(
+            "SELECT transport_request_id FROM ops.production_end_run_items");
+
+        Assert.Equal("ENDED", await StatusAsync(oldSession.Id));
+        Assert.Equal(removeFullId, await fixture.ScalarAsync<Guid>(
+            "SELECT predecessor_request_id FROM ops.transport_request_dependencies WHERE successor_request_id = @id",
+            ("id", bringEmptyId)));
+        Assert.Equal(bringEmptyId, await fixture.ScalarAsync<Guid>(
+            "SELECT predecessor_request_id FROM ops.transport_request_dependencies WHERE successor_request_id = @id",
+            ("id", cleanupId)));
+        Assert.False(await fixture.ScalarAsync<bool>(
+            "SELECT machine_slot_reservation_active FROM ops.transport_requests WHERE id = @id",
+            ("id", cleanupId)));
+
+        var nextSession = await StartAsync(client, setup, "production-cycle-next");
+        Assert.Equal("ACTIVE", await StatusAsync(nextSession.Id));
+
+        var context = await client.GetFromJsonAsync<OperationalContextRecord>(
+            $"/api/v1/machines/{setup.Context.MachineId}/operational-context");
+        Assert.NotNull(context);
+        Assert.All(
+            context.ActiveTransportRequests.Where(request =>
+                request.RequestId == removeFullId
+                || request.RequestId == bringEmptyId
+                || request.RequestId == cleanupId),
+            request => Assert.False(request.BlocksProductionTransition));
+    }
+
+    [Fact]
     public async Task Stale_old_session_action_cannot_attach_to_the_new_job()
     {
         var setup = await OccupyAsync(1, "FULL");
@@ -1159,11 +1210,19 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     }
 
     private static Task<HttpResponseMessage> BringAsync(HttpClient client, Setup setup, string key, Guid sessionId)
+        => ContainerActionAsync(client, setup, sessionId, "FULL", key);
+
+    private static Task<HttpResponseMessage> ContainerActionAsync(
+        HttpClient client,
+        Setup setup,
+        Guid sessionId,
+        string action,
+        string key)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.Context.MachineId}/container-actions")
         {
             Content = JsonContent.Create(new CreateContainerActionHttpRequest(
-                setup.Context.VariantId, setup.Context.LayoutId, null, setup.Group, setup.MainPart, 1, "FULL", 100, sessionId))
+                setup.Context.VariantId, setup.Context.LayoutId, null, setup.Group, setup.MainPart, 1, action, 100, sessionId))
         };
         request.Headers.Add(ApiHeaders.IdempotencyKey, key);
         return client.SendAsync(request);

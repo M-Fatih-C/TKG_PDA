@@ -248,6 +248,9 @@ public sealed record ActiveTransportDataRecord(
     long? ExecutionElapsedSeconds = null,
     string? ChainState = null,
     bool ProductionEnd = false,
+    // False when this request belongs to an already ended production session.
+    // Such background work stays visible but must not block the next job.
+    bool BlocksProductionTransition = true,
     // Deferred warehouse demands are visible in the active queue before they
     // own the physical machine position. Consumers must use this flag instead
     // of treating every endpoint on every active request as reserved.
@@ -306,7 +309,8 @@ public sealed record ActiveTransportRequestRecord(
     string? CancelDisabledMessage,
     PdaExecutionProjectionRecord Execution,
     string? ChainState = null,
-    bool ProductionEnd = false);
+    bool ProductionEnd = false,
+    bool BlocksProductionTransition = true);
 
 /// <summary>
 /// Customer UI — Warehouse Preparation Console: the minimum, self-contained

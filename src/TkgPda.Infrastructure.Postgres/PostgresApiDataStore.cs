@@ -736,6 +736,15 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
                    EXISTS (
                        SELECT 1 FROM ops.production_end_run_items pe
                        WHERE pe.transport_request_id = r.id) AS production_end,
+                   CASE
+                       WHEN r.production_session_id IS NULL THEN true
+                       WHEN EXISTS (
+                           SELECT 1
+                           FROM ops.production_sessions ps
+                           WHERE ps.id = r.production_session_id
+                             AND ps.ended_at IS NULL) THEN true
+                       ELSE false
+                   END AS blocks_production_transition,
                    r.machine_slot_reservation_active
             FROM ops.transport_requests r
             JOIN master.task_types tt ON tt.id = r.task_type_id
@@ -797,7 +806,8 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
                 reader.IsDBNull(33) ? null : reader.GetInt64(33),
                 NullableString(reader, 34),
                 reader.GetBoolean(35),
-                reader.GetBoolean(36)));
+                reader.GetBoolean(36),
+                reader.GetBoolean(37)));
         }
 
         return result;
