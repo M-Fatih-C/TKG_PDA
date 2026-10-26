@@ -7,6 +7,7 @@ namespace TkgPda.Api;
 public sealed class DemoSimulationWorker(
     NpgsqlDataSource dataSource,
     ITransportWorkflowStore workflowStore,
+    DemoCancellationRecovery cancellationRecovery,
     DemoModeOptions options,
     TimeProvider timeProvider,
     ILogger<DemoSimulationWorker> logger) : BackgroundService
@@ -65,6 +66,11 @@ public sealed class DemoSimulationWorker(
     {
         var now = timeProvider.GetUtcNow();
         var minAge = TimeSpan.FromSeconds(options.SimulationDelaySeconds);
+
+        // A simulated cancellation proves that no pallet moved. Close any
+        // reconciliation hold left by older builds before allocating the next
+        // waiting request, so a cancelled demo task cannot strand an area.
+        await cancellationRecovery.ReconcileAsync(cancellationToken: cancellationToken);
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
 

@@ -449,6 +449,88 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
     }
 
     [Fact]
+    public async Task Demo_cancellation_releases_endpoint_and_restores_pre_transport_state()
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
+        try
+        {
+            using var clientA = await fixture.LoginClientAsync(setup.SceneA.Operator);
+            using var clientB = await fixture.LoginClientAsync(setup.SceneB.Operator);
+
+            await StartAsync(clientA, setup.SceneA);
+            await StartAsync(clientB, setup.SceneB);
+
+            Assert.True((await clientA.SendAsync(
+                CreateFullContainerActionRequest(setup.SceneA, "demo-cancel-a"))).IsSuccessStatusCode);
+            Assert.Equal(HttpStatusCode.Created, (await clientB.SendAsync(
+                CreateFullContainerActionRequest(setup.SceneB, "demo-cancel-b"))).StatusCode);
+
+            var requestAId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.transport_requests WHERE machine_id = @machine",
+                ("machine", setup.SceneA.MachineId));
+            var requestBId = await fixture.ScalarAsync<Guid>(
+                "SELECT id FROM ops.transport_requests WHERE machine_id = @machine",
+                ("machine", setup.SceneB.MachineId));
+
+            await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+            await store.RecordExecutionTransitionAsync(requestAId, TransportRequestStatus.SentToRds);
+            await store.RecordExecutionOutcomeAsync(
+                requestAId,
+                new ExecutionOutcome(
+                    TransportRequestStatus.Cancelled,
+                    FailureMessage: "Cancelled in demo",
+                    EvidenceType: "DEMO_SIMULATION_CANCEL"));
+
+            Assert.Equal(1L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.store_reservations WHERE transport_request_id = @id AND released_at IS NULL AND reconciliation_required",
+                ("id", requestAId)));
+            Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+                """
+                SELECT state.occupancy_state
+                FROM ops.transport_requests request
+                JOIN ops.slot_runtime_state state ON state.layout_slot_id = request.source_slot_id
+                WHERE request.id = @id
+                """,
+                ("id", requestAId)));
+
+            await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+            await connection.OpenAsync();
+            Assert.Equal(1, await DemoCancellationRecovery.ReconcileAsync(
+                connection,
+                requestAId,
+                DateTimeOffset.UtcNow,
+                CancellationToken.None));
+
+            Assert.Equal(0L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.store_reservations WHERE transport_request_id = @id AND released_at IS NULL",
+                ("id", requestAId)));
+            Assert.False(await fixture.ScalarAsync<bool>(
+                "SELECT reconciliation_required FROM ops.store_reservations WHERE transport_request_id = @id",
+                ("id", requestAId)));
+            Assert.Equal("OCCUPIED/FULL", await fixture.ScalarAsync<string>(
+                """
+                SELECT state.occupancy_state || '/' || state.load_state
+                FROM ops.transport_requests request
+                JOIN ops.slot_runtime_state state ON state.layout_slot_id = request.source_slot_id
+                WHERE request.id = @id
+                """,
+                ("id", requestAId)));
+            Assert.Equal(1L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'DEMO_CANCELLATION_RECONCILED'",
+                ("id", requestAId)));
+
+            Assert.Equal(1, await store.ActivatePreparedPartDemandsAsync(100, null));
+            Assert.True(await fixture.ScalarAsync<bool>(
+                "SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE id = @id",
+                ("id", requestBId)));
+        }
+        finally
+        {
+            await fixture.ResetAsync();
+        }
+    }
+
+    [Fact]
     public async Task Reservation_is_released_when_request_is_completed()
     {
         var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
