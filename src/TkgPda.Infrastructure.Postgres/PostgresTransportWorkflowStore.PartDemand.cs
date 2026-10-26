@@ -205,6 +205,30 @@ public sealed partial class PostgresTransportWorkflowStore
             destinationSlotId,
             cancellationToken);
 
+        // Repeating the same ALT-part demand is the operator's explicit signal
+        // that the pallet currently at this machine position has been consumed.
+        // Record that state in the same transaction so the empty pallet removal
+        // can be queued immediately while the replacement is prepared in parallel.
+        var reportsCurrentPalletEmpty = activePositionRequest is null
+            && destinationSlot.State.Occupancy == OccupancyState.Occupied
+            && destinationSlot.State.Load == LoadState.Full
+            && destinationSlot.State.CurrentPartId == command.PartId
+            && destinationSlot.State.CurrentContainerTypeId is not null;
+        if (reportsCurrentPalletEmpty)
+        {
+            destinationSlot = destinationSlot with
+            {
+                State = destinationSlot.State with { Load = LoadState.Empty }
+            };
+            await UpdateSlotStateAsync(
+                connection,
+                transaction,
+                destinationSlotId,
+                destinationSlot.State,
+                command.ActorUserId,
+                cancellationToken);
+        }
+
         TransportRequestSnapshot? predecessor = activePositionRequest?.TaskType == TransportTaskType.RemoveEmpty
             ? activePositionRequest
             : null;
@@ -240,6 +264,26 @@ public sealed partial class PostgresTransportWorkflowStore
                 batchId,
                 command.EventContext,
                 cancellationToken)).Request;
+
+            if (reportsCurrentPalletEmpty)
+            {
+                await InsertEventAsync(
+                    connection,
+                    transaction,
+                    predecessor.Id,
+                    command.ActorUserId,
+                    TransportEventTypes.PartDemandCurrentPalletReportedEmpty,
+                    null,
+                    null,
+                    "The repeated ALT-part demand reported the current same-part pallet empty.",
+                    new
+                    {
+                        machine_slot_id = destinationSlotId,
+                        part_id = command.PartId
+                    },
+                    cancellationToken,
+                    command.EventContext);
+            }
         }
 
         var bring = new CreateTransportRequest(
