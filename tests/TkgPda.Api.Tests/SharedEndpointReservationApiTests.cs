@@ -497,7 +497,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             await connection.OpenAsync();
             Assert.Equal(1, await DemoCancellationRecovery.ReconcileAsync(
                 connection,
-                requestAId,
+                requestId: null,
                 DateTimeOffset.UtcNow,
                 CancellationToken.None));
 

@@ -1,5 +1,6 @@
 using System.Data;
 using Npgsql;
+using NpgsqlTypes;
 
 namespace TkgPda.Api;
 
@@ -65,7 +66,8 @@ public sealed class DemoCancellationRecovery(
                          connection,
                          transaction))
         {
-            command.Parameters.AddWithValue("request_id", (object?)requestId ?? DBNull.Value);
+            command.Parameters.Add("request_id", NpgsqlDbType.Uuid).Value =
+                (object?)requestId ?? DBNull.Value;
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
