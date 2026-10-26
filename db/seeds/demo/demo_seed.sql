@@ -266,28 +266,8 @@ BEGIN
     WHERE m.code = 'SEALER'
     ON CONFLICT (layout_slot_id, part_id) DO NOTHING;
 
-    -- 412B Subparts (Variants 2, 3)
-    INSERT INTO master.layout_slot_parts (layout_slot_id, part_id)
-    SELECT ls.id, p.id
-    FROM master.machines m
-    JOIN master.layouts l ON l.machine_id = m.id
-    JOIN master.layout_slots ls ON ls.layout_id = l.id
-    JOIN master.parts p ON (
-        (l.code = 'CUSTOMER-PHYSICAL-V2' AND ls.code IN ('SLOT-003', 'SLOT-004') AND p.part_code = '90174-12022') OR
-        (l.code = 'CUSTOMER-PHYSICAL-V3' AND ls.code IN ('SLOT-003', 'SLOT-004') AND p.part_code = '90179-10234')
-    )
-    WHERE m.code = '412B'
-    ON CONFLICT (layout_slot_id, part_id) DO NOTHING;
-
-    -- GAR Subparts (Variant 1)
-    INSERT INTO master.layout_slot_parts (layout_slot_id, part_id)
-    SELECT ls.id, p.id
-    FROM master.machines m
-    JOIN master.layouts l ON l.machine_id = m.id AND l.code = 'CUSTOMER-PHYSICAL-V1'
-    JOIN master.layout_slots ls ON ls.layout_id = l.id
-    JOIN master.parts p ON p.part_code = '90179-14075' AND ls.code IN ('SLOT-003', 'SLOT-004')
-    WHERE m.code = 'GAR'
-    ON CONFLICT (layout_slot_id, part_id) DO NOTHING;
+    -- 412B and GAR parts without a customer-confirmed physical slot remain
+    -- deliberately unmapped. A Mamul slot must never be reused as an ALT area.
 
     -- PAH-01-A Subparts (Variants 1, 2)
     INSERT INTO master.layout_slot_parts (layout_slot_id, part_id)
@@ -315,27 +295,8 @@ BEGIN
     WHERE m.code = 'PAH-02-A'
     ON CONFLICT (layout_slot_id, part_id) DO NOTHING;
 
-    -- Catch-all guarantee: Assign ANY remaining unmapped subparts to an available slot on their layout
-    INSERT INTO master.layout_slot_parts (layout_slot_id, part_id)
-    SELECT DISTINCT
-        (SELECT ls.id 
-         FROM master.layout_slots ls 
-         WHERE ls.layout_id = l.id 
-           AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-         ORDER BY ls.display_order DESC 
-         LIMIT 1),
-        pgp.part_id
-    FROM master.product_group_parts pgp
-    JOIN master.product_groups pg ON pg.id = pgp.product_group_id
-    JOIN master.variants v ON v.id = pg.variant_id
-    JOIN master.variant_layout_assignments vla ON vla.variant_id = v.id
-    JOIN master.layouts l ON l.id = vla.layout_id
-    WHERE NOT EXISTS (
-        SELECT 1 FROM master.layout_slots ls2
-        JOIN master.layout_slot_parts lsp2 ON lsp2.layout_slot_id = ls2.id
-        WHERE ls2.layout_id = l.id AND lsp2.part_id = pgp.part_id
-    )
-    ON CONFLICT (layout_slot_id, part_id) DO NOTHING;
+    -- Unmapped parts stay unresolved until a customer-confirmed assignment is
+    -- supplied. Do not manufacture a fallback Part-to-Slot mapping.
 
     -- 8. Discover and Seed All RDS Worksites & Shared Endpoint Bindings
     -- Populates integration.rds_worksites from planned worksites so all 25 profiles
@@ -472,34 +433,9 @@ BEGIN
         current_part_id = EXCLUDED.current_part_id,
         updated_at = now();
 
-    -- 10. Seed Active Production Sessions for All 9 Machines
-    -- Close any stale sessions first with clock_timestamp() to guarantee ended_at >= started_at
-    UPDATE ops.production_sessions
-    SET status = 'ENDED',
-        ended_at = GREATEST(clock_timestamp(), started_at),
-        ended_by = COALESCE(started_by, (SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1), (SELECT id FROM auth.users LIMIT 1)),
-        ended_device_id = COALESCE(started_device_id, (SELECT id FROM audit.client_devices WHERE device_code = 'DEV-LINE' LIMIT 1), (SELECT id FROM audit.client_devices LIMIT 1))
-    WHERE ended_at IS NULL;
-
-    -- Start active production session on each machine's default variant & first product group
-    INSERT INTO ops.production_sessions (
-        machine_id, variant_id, product_group_id, main_part_id, start_key, started_by, started_device_id, started_at, status
-    )
-    SELECT DISTINCT ON (m.id)
-        m.id,
-        s.active_variant_id,
-        pg.id,
-        pg.main_part_id,
-        'demo-prod-' || m.code || '-' || substr(md5(random()::text), 1, 8),
-        COALESCE((SELECT id FROM auth.users WHERE username = 'operator-1001' LIMIT 1), (SELECT id FROM auth.users LIMIT 1)),
-        COALESCE((SELECT id FROM audit.client_devices WHERE device_code = 'DEV-LINE' LIMIT 1), (SELECT id FROM audit.client_devices LIMIT 1)),
-        clock_timestamp(),
-        'ACTIVE'
-    FROM master.machines m
-    JOIN ops.machine_runtime_state s ON s.machine_id = m.id
-    JOIN master.product_groups pg ON pg.variant_id = s.active_variant_id
-    ORDER BY m.id, pg.display_order ASC
-    ON CONFLICT (machine_id) WHERE ended_at IS NULL DO NOTHING;
+    -- 10. Production starts only after the operator selects the main part and
+    -- explicitly presses "Üretime Başla". Demo seeding never opens or closes a
+    -- production session.
 
     -- 11. Seed Production End Priorities
     INSERT INTO master.production_end_priorities (operation_code, priority, updated_at)

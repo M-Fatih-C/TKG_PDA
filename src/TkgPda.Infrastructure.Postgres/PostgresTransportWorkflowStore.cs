@@ -1507,6 +1507,21 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                AND lsp.part_id = @part_id
                AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
                AND ls.is_enabled
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM master.product_group_parts requested_relation
+                   JOIN master.layout_slot_parts main_lsp
+                     ON main_lsp.layout_slot_id = ls.id
+                   JOIN master.product_groups main_pg
+                     ON main_pg.main_part_id = main_lsp.part_id
+                    AND main_pg.variant_id = @variant_id
+                    AND main_pg.is_active
+                   WHERE requested_relation.product_group_id = @product_group_id
+                     AND requested_relation.part_id = @part_id
+                     AND requested_relation.relation_type = 'ALT_PART'
+                     AND requested_relation.is_active
+                     AND main_lsp.part_id <> @part_id
+               )
                AND rs.occupancy_state = @occupancy_state
                AND rs.load_state = @load_state
                AND NOT EXISTS (
@@ -1522,6 +1537,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             connection,
             transaction);
         command.Parameters.AddWithValue("layout_id", request.LayoutId);
+        AddNullableUuid(command, "variant_id", request.VariantId);
+        AddNullableUuid(command, "product_group_id", request.ProductGroupId);
         AddNullableUuid(command, "part_id", request.PartId);
         command.Parameters.AddWithValue("occupancy_state", expected.Occupancy.ToDatabase());
         command.Parameters.AddWithValue("load_state", expected.Load.ToDatabase());

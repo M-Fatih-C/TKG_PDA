@@ -42,6 +42,9 @@ void main() {
         isNull,
       );
       await tap(tester, Key('main-part-${testMainPartOption.partId}'));
+      expect(c.production.active, isNull);
+      expect(repo.productionStartCount, 0);
+      expect(find.byKey(const Key('production-start')), findsOneWidget);
       expect(c.transportActionsReady, isFalse);
       expect(find.text('Miktar'), findsNothing);
       expect(
