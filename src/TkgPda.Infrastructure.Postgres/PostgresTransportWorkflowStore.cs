@@ -107,12 +107,13 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         await ValidateProductionTransportContextAsync(connection, transaction, request, cancellationToken);
         var taskTypeId = await ResolveAndValidateMasterDataAsync(connection, transaction, request, cancellationToken);
         // A removal reported before its machine-side pallet physically exists
-        // must not consume scarce warehouse/return capacity.  Claim the
-        // machine source first; the deferred worker acquires the other endpoint
-        // on a later cycle once that source is proven.
-        var storeEndpointReservationActive = !(
-            request.DefersMachineSlotReservation
-            && !TransportRules.DeliversToMachine(request.TaskType));
+        // must not consume scarce warehouse/return capacity. A prepared empty
+        // delivery likewise has no source pallet until warehouse readiness.
+        // The deferred worker acquires those endpoints only when they exist.
+        var storeEndpointReservationActive = !request.DefersStoreSourceReservation
+            && !(
+                request.DefersMachineSlotReservation
+                && !TransportRules.DeliversToMachine(request.TaskType));
 
         var registryProfile = await IsCommissioningRegistryProfileAsync(connection, transaction, request.NavigationProfileId, cancellationToken);
         if (registryProfile && !request.DefersStoreSourceReservation)

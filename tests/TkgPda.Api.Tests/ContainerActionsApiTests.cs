@@ -436,6 +436,12 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         var requestId = await fixture.ScalarAsync<Guid>(
             "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp33-empty-prepared'");
+        Assert.False(await fixture.ScalarAsync<bool>(
+            "SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE id = @id",
+            ("id", requestId)));
+        Assert.True(await fixture.ScalarAsync<bool>(
+            "SELECT source_slot_id IS NULL FROM ops.transport_requests WHERE id = @id",
+            ("id", requestId)));
 
         using var warehouseClient = await fixture.LoginClientAsync(
             await fixture.SeedIdentityAsync(
