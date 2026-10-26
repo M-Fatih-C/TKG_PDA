@@ -40,8 +40,8 @@ public static class TransportRules
         {
             // Both inbound operations need the machine position already clear:
             // BRING_EMPTY to have somewhere to put the empty container,
-            // BRING_FULL because the customer rule is that the spent container
-            // must physically leave before filled material is requested.
+            // BRING_FULL because the spent container must physically leave
+            // before the prepared replacement may be dispatched to the line.
             TransportTaskType.BringEmpty or TransportTaskType.BringFull =>
                 new SlotState(OccupancyState.Vacant, LoadState.Unknown, null, null),
             TransportTaskType.RemoveFull => reservedSlot.State with { Occupancy = OccupancyState.Occupied, Load = LoadState.Full },
