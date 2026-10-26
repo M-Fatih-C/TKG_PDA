@@ -10,6 +10,28 @@ namespace TkgPda.Api.Tests;
 public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
+    public async Task Demo_new_production_resets_stale_unused_variant_positions()
+    {
+        var setup = await SetupAsync();
+        await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "FULL", setup.MainPart);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        (await StartAsync(client, setup, "demo-fresh-session")).EnsureSuccessStatusCode();
+
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        Assert.Equal(1, await DemoSimulationWorker.ResetFreshProductionSlotsAsync(
+            connection,
+            CancellationToken.None));
+
+        Assert.Equal("VACANT", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+    }
+
+    [Fact]
     public async Task Bound_line_terminal_can_start_and_end_without_legacy_user_machine_permissions()
     {
         var setup = await SetupAsync();

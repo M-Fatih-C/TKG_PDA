@@ -74,8 +74,24 @@ public sealed class DemoSimulationWorker(
 
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
 
+        // A newly selected demo production context must not inherit stale
+        // occupancy from the last time that variant-specific layout was used.
+        // Only positions that have not physically started work in the current
+        // session and are not owned by any active request are reset.
+        await ResetFreshProductionSlotsAsync(connection, cancellationToken);
+
         // In demo simulation mode, keep empty storage buffers replenished so repeated demo flows succeed
         await ReplenishEmptyBuffersAsync(connection, cancellationToken);
+
+        // Customer layouts can assign more than one alt part to one physical
+        // position. In a real cell the line reports the delivered pallet EMPTY
+        // after consuming it. Demo mode has no PLC, so model that consumption
+        // after the configured delay when another prepared pallet is waiting.
+        await SimulateConsumedSharedSlotPalletsAsync(
+            connection,
+            now - minAge,
+            cancellationToken);
+
         await workflowStore.ActivatePreparedPartDemandsAsync(
             100,
             OperationalEventContext.System(Guid.NewGuid()),
@@ -406,6 +422,9 @@ public sealed class DemoSimulationWorker(
             candidate AS (
                 SELECT sl.id AS location_id
                 FROM ops.transport_requests r
+                JOIN master.product_groups pg
+                  ON pg.id = r.product_group_id
+                 AND pg.main_part_id = r.part_id
                 CROSS JOIN LATERAL (
                     SELECT sl.id
                     FROM ops.store_locations sl
@@ -569,6 +588,130 @@ public sealed class DemoSimulationWorker(
         removeCmd.Parameters.AddWithValue("id", requestId);
         removeCmd.Parameters.AddWithValue("now", now);
         await removeCmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    internal static async Task<int> ResetFreshProductionSlotsAsync(
+        NpgsqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            $"""
+             WITH active_context AS (
+                 SELECT session.id AS session_id,
+                        session.product_group_id,
+                        runtime.active_layout_id AS layout_id
+                 FROM ops.production_sessions session
+                 JOIN ops.machine_runtime_state runtime
+                   ON runtime.machine_id = session.machine_id
+                 WHERE session.ended_at IS NULL
+                   AND session.status = 'ACTIVE'
+                   AND runtime.active_layout_id IS NOT NULL
+             ), reset_candidates AS (
+                 SELECT DISTINCT state.layout_slot_id
+                 FROM active_context context
+                 JOIN master.layout_slots slot ON slot.layout_id = context.layout_id
+                 JOIN ops.slot_runtime_state state ON state.layout_slot_id = slot.id
+                 WHERE slot.is_enabled
+                   AND slot.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+                   AND EXISTS (
+                       SELECT 1
+                       FROM master.layout_slot_parts mapping
+                       JOIN master.product_groups product_group
+                         ON product_group.id = context.product_group_id
+                       WHERE mapping.layout_slot_id = slot.id
+                         AND (
+                             mapping.part_id = product_group.main_part_id
+                             OR EXISTS (
+                                 SELECT 1
+                                 FROM master.product_group_parts group_part
+                                 WHERE group_part.product_group_id = product_group.id
+                                   AND group_part.part_id = mapping.part_id
+                                   AND group_part.is_active)))
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM ops.transport_requests active_request
+                       WHERE active_request.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')
+                         AND active_request.machine_slot_reservation_active
+                         AND (active_request.source_slot_id = slot.id
+                              OR active_request.destination_slot_id = slot.id))
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM ops.transport_requests current_session_request
+                       WHERE current_session_request.production_session_id = context.session_id
+                         AND current_session_request.started_at IS NOT NULL
+                         AND (current_session_request.source_slot_id = slot.id
+                              OR current_session_request.destination_slot_id = slot.id))
+             )
+             UPDATE ops.slot_runtime_state state
+             SET occupancy_state = 'VACANT',
+                 load_state = 'UNKNOWN',
+                 current_part_id = NULL,
+                 current_container_type_id = NULL,
+                 row_version = state.row_version + 1,
+                 updated_at = now()
+             FROM reset_candidates candidate
+             WHERE state.layout_slot_id = candidate.layout_slot_id
+               AND (state.occupancy_state <> 'VACANT'
+                    OR state.load_state <> 'UNKNOWN'
+                    OR state.current_part_id IS NOT NULL
+                    OR state.current_container_type_id IS NOT NULL)
+             """,
+            connection);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    internal static async Task<int> SimulateConsumedSharedSlotPalletsAsync(
+        NpgsqlConnection connection,
+        DateTimeOffset completedBefore,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            $"""
+             WITH consumed AS (
+                 SELECT DISTINCT state.layout_slot_id
+                 FROM ops.slot_runtime_state state
+                 WHERE state.occupancy_state = 'OCCUPIED'
+                   AND state.load_state = 'FULL'
+                   AND state.current_part_id IS NOT NULL
+                   AND EXISTS (
+                       SELECT 1
+                       FROM ops.transport_requests waiting
+                       JOIN master.task_types waiting_type ON waiting_type.id = waiting.task_type_id
+                       WHERE waiting_type.code = 'BRING_FULL'
+                         AND waiting.status = 'QUEUED'
+                         AND waiting.readiness_state = 'READY'
+                         AND NOT waiting.machine_slot_reservation_active
+                         AND waiting.destination_slot_id = state.layout_slot_id
+                         AND EXISTS (
+                             SELECT 1
+                             FROM ops.transport_requests delivered
+                             JOIN master.task_types delivered_type ON delivered_type.id = delivered.task_type_id
+                             WHERE delivered_type.code = 'BRING_FULL'
+                               AND delivered.status = 'COMPLETED'
+                               AND delivered.completed_at <= @completed_before
+                               AND delivered.production_session_id = waiting.production_session_id
+                               AND delivered.destination_slot_id = state.layout_slot_id
+                               AND delivered.part_id = state.current_part_id))
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM ops.transport_requests active_request
+                       WHERE active_request.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')
+                         AND active_request.machine_slot_reservation_active
+                         AND (active_request.source_slot_id = state.layout_slot_id
+                              OR active_request.destination_slot_id = state.layout_slot_id))
+             )
+             UPDATE ops.slot_runtime_state state
+             SET load_state = 'EMPTY',
+                 row_version = state.row_version + 1,
+                 updated_at = now()
+             FROM consumed
+             WHERE state.layout_slot_id = consumed.layout_slot_id
+               AND state.occupancy_state = 'OCCUPIED'
+               AND state.load_state = 'FULL'
+             """,
+            connection);
+        command.Parameters.AddWithValue("completed_before", completedBefore);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task ReplenishEmptyBuffersAsync(
