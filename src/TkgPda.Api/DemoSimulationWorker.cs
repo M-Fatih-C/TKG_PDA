@@ -80,9 +80,6 @@ public sealed class DemoSimulationWorker(
         // session and are not owned by any active request are reset.
         await ResetFreshProductionSlotsAsync(connection, cancellationToken);
 
-        // In demo simulation mode, keep empty storage buffers replenished so repeated demo flows succeed
-        await ReplenishEmptyBuffersAsync(connection, cancellationToken);
-
         // Customer layouts can assign more than one alt part to one physical
         // position. In a real cell the line reports the delivered pallet EMPTY
         // after consuming it. Demo mode has no PLC, so model that consumption
@@ -91,6 +88,12 @@ public sealed class DemoSimulationWorker(
             connection,
             now - minAge,
             cancellationToken);
+
+        // Prepare only the next empty-buffer endpoint actually needed by the
+        // queue. Filling every EMPTY_STORAGE position on every cycle left no
+        // VACANT return endpoint for the REMOVE_EMPTY predecessor of a waiting
+        // BRING_FULL request, so a shared machine position could wait forever.
+        await PrepareNextEmptyBufferAsync(connection, cancellationToken);
 
         await workflowStore.ActivatePreparedPartDemandsAsync(
             100,
@@ -714,27 +717,133 @@ public sealed class DemoSimulationWorker(
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private static async Task ReplenishEmptyBuffersAsync(
+    internal static async Task<int> PrepareNextEmptyBufferAsync(
         NpgsqlConnection connection,
         CancellationToken cancellationToken)
     {
-        await using var replenishCmd = new NpgsqlCommand(
+        await using var prepareCmd = new NpgsqlCommand(
             """
-            UPDATE ops.slot_runtime_state rs
-            SET occupancy_state = 'OCCUPIED',
-                load_state = 'EMPTY',
+            WITH buffer_needs AS (
+                -- A queued empty-container delivery needs an OCCUPIED/EMPTY
+                -- source once warehouse preparation has completed.
+                SELECT request.layout_id,
+                       request.priority,
+                       COALESCE(request.ready_at, request.queued_at, request.created_at) AS ordered_at,
+                       request.request_no,
+                       'OCCUPIED'::text AS occupancy_state,
+                       'EMPTY'::text AS load_state
+                FROM ops.transport_requests request
+                JOIN master.task_types task_type ON task_type.id = request.task_type_id
+                WHERE request.status = 'QUEUED'
+                  AND request.readiness_state <> 'WAITING_PREPARATION'
+                  AND NOT request.store_endpoint_reservation_active
+                  AND task_type.code = 'BRING_EMPTY'
+
+                UNION ALL
+
+                -- A direct/deferred empty-container removal needs a
+                -- VACANT/UNKNOWN return endpoint.
+                SELECT request.layout_id,
+                       request.priority,
+                       COALESCE(request.ready_at, request.queued_at, request.created_at) AS ordered_at,
+                       request.request_no,
+                       'VACANT'::text AS occupancy_state,
+                       'UNKNOWN'::text AS load_state
+                FROM ops.transport_requests request
+                JOIN master.task_types task_type ON task_type.id = request.task_type_id
+                WHERE request.status = 'QUEUED'
+                  AND request.readiness_state <> 'WAITING_PREPARATION'
+                  AND NOT request.store_endpoint_reservation_active
+                  AND task_type.code = 'REMOVE_EMPTY'
+
+                UNION ALL
+
+                -- A prepared BRING_FULL blocked by an EMPTY pallet first
+                -- creates a REMOVE_EMPTY predecessor. Reserve return capacity
+                -- for that predecessor before deferred activation runs.
+                SELECT request.layout_id,
+                       request.priority,
+                       COALESCE(request.ready_at, request.queued_at, request.created_at) AS ordered_at,
+                       request.request_no,
+                       'VACANT'::text AS occupancy_state,
+                       'UNKNOWN'::text AS load_state
+                FROM ops.transport_requests request
+                JOIN master.task_types task_type ON task_type.id = request.task_type_id
+                JOIN ops.slot_runtime_state machine_state
+                  ON machine_state.layout_slot_id = request.destination_slot_id
+                WHERE request.status = 'QUEUED'
+                  AND request.readiness_state = 'READY'
+                  AND NOT request.machine_slot_reservation_active
+                  AND task_type.code = 'BRING_FULL'
+                  AND machine_state.occupancy_state = 'OCCUPIED'
+                  AND machine_state.load_state = 'EMPTY'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM ops.transport_request_dependencies dependency
+                      JOIN ops.transport_requests predecessor
+                        ON predecessor.id = dependency.predecessor_request_id
+                      WHERE dependency.successor_request_id = request.id
+                        AND predecessor.status <> 'COMPLETED'
+                  )
+            ),
+            next_need AS (
+                SELECT DISTINCT ON (layout_id)
+                       layout_id, occupancy_state, load_state
+                FROM buffer_needs
+                ORDER BY layout_id, priority, ordered_at, request_no
+            ),
+            selected_buffer AS (
+                SELECT need.layout_id,
+                       need.occupancy_state,
+                       need.load_state,
+                       buffer.id AS layout_slot_id
+                FROM next_need need
+                CROSS JOIN LATERAL (
+                    SELECT slot.id
+                    FROM master.layout_slots slot
+                    JOIN ops.slot_runtime_state state
+                      ON state.layout_slot_id = slot.id
+                    WHERE slot.layout_id = need.layout_id
+                      AND slot.slot_role = 'EMPTY_STORAGE'
+                      AND slot.is_enabled
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM ops.transport_requests active_request
+                          WHERE active_request.status IN (
+                              'CREATED', 'VALIDATING', 'QUEUED',
+                              'SENT_TO_RDS', 'RUNNING')
+                            AND (active_request.source_slot_id = slot.id
+                                 OR active_request.destination_slot_id = slot.id)
+                      )
+                    ORDER BY
+                        CASE WHEN state.occupancy_state = need.occupancy_state
+                                   AND state.load_state = need.load_state
+                             THEN 0 ELSE 1 END,
+                        slot.display_order,
+                        slot.code
+                    FOR UPDATE OF state SKIP LOCKED
+                    LIMIT 1
+                ) buffer
+            )
+            UPDATE ops.slot_runtime_state state
+            SET occupancy_state = selected.occupancy_state,
+                load_state = selected.load_state,
+                current_part_id = NULL,
+                current_container_type_id = CASE
+                    WHEN selected.load_state = 'UNKNOWN' THEN NULL
+                    ELSE state.current_container_type_id
+                END,
+                row_version = state.row_version + 1,
                 updated_at = now()
-            FROM master.layout_slots ls
-            WHERE rs.layout_slot_id = ls.id
-              AND ls.slot_role = 'EMPTY_STORAGE'
-              AND (rs.occupancy_state != 'OCCUPIED' OR rs.load_state != 'EMPTY')
-              AND NOT EXISTS (
-                  SELECT 1 FROM ops.transport_requests tr
-                  WHERE tr.status IN ('WAITING_PREPARATION', 'QUEUED', 'SENT_TO_RDS', 'RUNNING')
-                    AND (tr.source_slot_id = ls.id OR tr.destination_slot_id = ls.id)
-              );
+            FROM selected_buffer selected
+            WHERE state.layout_slot_id = selected.layout_slot_id
+              AND (state.occupancy_state <> selected.occupancy_state
+                   OR state.load_state <> selected.load_state
+                   OR state.current_part_id IS NOT NULL
+                   OR (selected.load_state = 'UNKNOWN'
+                       AND state.current_container_type_id IS NOT NULL));
             """, connection);
-        await replenishCmd.ExecuteNonQueryAsync(cancellationToken);
+        return await prepareCmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
     internal sealed record DemoCandidateRequest(

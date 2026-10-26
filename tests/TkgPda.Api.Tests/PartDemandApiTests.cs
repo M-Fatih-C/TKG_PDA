@@ -399,6 +399,24 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             "SELECT id FROM ops.transport_requests WHERE id = ANY(@ids) AND machine_slot_reservation_active",
             ("ids", requestIds.ToArray()));
         var secondWaiting = requestIds.Single(id => id != firstActive);
+
+        // Reproduce the demo-server failure: the old simulation worker filled
+        // every EMPTY_STORAGE position, leaving no VACANT/UNKNOWN destination
+        // for the REMOVE_EMPTY predecessor needed by the second pallet.
+        await fixture.ExecuteAsync(
+            """
+            UPDATE ops.slot_runtime_state state
+            SET occupancy_state = 'OCCUPIED',
+                load_state = 'EMPTY',
+                current_part_id = NULL,
+                current_container_type_id = NULL
+            FROM master.layout_slots slot
+            WHERE state.layout_slot_id = slot.id
+              AND slot.layout_id = @layout
+              AND slot.slot_role = 'EMPTY_STORAGE'
+            """,
+            ("layout", setup.Context.LayoutId));
+
         await CompleteAsync(firstActive);
         await using (var connection = new NpgsqlConnection(fixture.ConnectionString))
         {
@@ -407,11 +425,26 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
                 connection,
                 DateTimeOffset.UtcNow.AddSeconds(1),
                 CancellationToken.None));
+
+            Assert.Equal(0, await ActivatePreparedAsync());
+            Assert.Equal(1, await DemoSimulationWorker.PrepareNextEmptyBufferAsync(
+                connection,
+                CancellationToken.None));
         }
 
         Assert.Equal(1, await ActivatePreparedAsync());
         Assert.True(await ReservationActiveAsync(secondWaiting));
-        Assert.Equal("REMOVE_EMPTY", await TaskTypeAsync(await PredecessorIdAsync(secondWaiting)));
+        var predecessorId = await PredecessorIdAsync(secondWaiting);
+        Assert.Equal("REMOVE_EMPTY", await TaskTypeAsync(predecessorId));
+        Assert.Equal("VACANT", await fixture.ScalarAsync<string>(
+            """
+            SELECT state.occupancy_state
+            FROM ops.transport_requests request
+            JOIN master.layout_slots slot ON slot.id = request.destination_slot_id
+            JOIN ops.slot_runtime_state state ON state.layout_slot_id = slot.id
+            WHERE request.id = @id AND slot.slot_role = 'EMPTY_STORAGE'
+            """,
+            ("id", predecessorId)));
     }
 
     [Fact]
