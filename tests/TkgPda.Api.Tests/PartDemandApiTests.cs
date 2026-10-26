@@ -400,9 +400,14 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             ("ids", requestIds.ToArray()));
         var secondWaiting = requestIds.Single(id => id != firstActive);
         await CompleteAsync(firstActive);
-        await fixture.ExecuteAsync(
-            "UPDATE ops.slot_runtime_state SET load_state = 'EMPTY', row_version = row_version + 1 WHERE layout_slot_id = @slot",
-            ("slot", setup.Slot));
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString))
+        {
+            await connection.OpenAsync();
+            Assert.Equal(1, await DemoSimulationWorker.SimulateConsumedSharedSlotPalletsAsync(
+                connection,
+                DateTimeOffset.UtcNow.AddSeconds(1),
+                CancellationToken.None));
+        }
 
         Assert.Equal(1, await ActivatePreparedAsync());
         Assert.True(await ReservationActiveAsync(secondWaiting));
