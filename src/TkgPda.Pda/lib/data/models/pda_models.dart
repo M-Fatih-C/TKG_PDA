@@ -172,7 +172,11 @@ class MachineRelatedPart {
     description: json['description'] as String?,
     relationType: json['relationType'] as String? ?? '',
     requestable: json['requestable'] as bool? ?? true,
-    blockers: (json['blockers'] as List?)?.map((item) => item.toString()).toList(growable: false) ?? const [],
+    blockers:
+        (json['blockers'] as List?)
+            ?.map((item) => item.toString())
+            .toList(growable: false) ??
+        const [],
   );
 }
 
@@ -700,6 +704,7 @@ class ActiveTransportRequest {
     this.executionElapsedSeconds,
     this.chainState,
     this.productionEnd = false,
+    this.blocksProductionTransition = true,
   });
 
   final String requestId;
@@ -748,6 +753,9 @@ class ActiveTransportRequest {
   /// True when the server created this request as part of production-end cleanup.
   final bool productionEnd;
 
+  /// False for background work owned by an already ended production session.
+  final bool blocksProductionTransition;
+
   factory ActiveTransportRequest.fromJson(JsonMap json) =>
       ActiveTransportRequest(
         requestId: json['requestId'] as String,
@@ -783,6 +791,8 @@ class ActiveTransportRequest {
             : _integer(json['executionElapsedSeconds']),
         chainState: json['chainState'] as String?,
         productionEnd: json['productionEnd'] == true,
+        blocksProductionTransition:
+            json['blocksProductionTransition'] as bool? ?? true,
       );
 }
 

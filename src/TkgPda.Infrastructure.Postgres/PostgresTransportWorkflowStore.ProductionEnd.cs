@@ -62,7 +62,12 @@ public sealed partial class PostgresTransportWorkflowStore
                 ?? throw new WorkflowRuleException("PRODUCTION_SESSION_NOT_FOUND", "Üretim kaydı bu makinede bulunamadı.");
         }
 
-        await EnsureNoProductionTransportAsync(connection, transaction, command.MachineId, cancellationToken);
+        await EnsureProductionEndTransportBoundaryAsync(
+            connection,
+            transaction,
+            command.MachineId,
+            before.Id,
+            cancellationToken);
         var layoutId = await ReadActiveLayoutAsync(connection, transaction, command, cancellationToken);
         var positions = await ListProductionPositionsAsync(connection, transaction, before, layoutId, cancellationToken);
         var returnSlots = await ListConfiguredReturnDestinationsAsync(connection, transaction, before, layoutId, cancellationToken);
@@ -72,6 +77,12 @@ public sealed partial class PostgresTransportWorkflowStore
             positions.Select(position => position.SlotId).Concat(returnSlots.Select(slot => slot.SlotId)),
             cancellationToken);
         var observed = ApplyLockedPositionState(positions, locked);
+        observed = await ProjectActiveProductionTransportAsync(
+            connection,
+            transaction,
+            before,
+            observed,
+            cancellationToken);
         var removals = ClassifyProductionEnd(before, observed);
         await ValidateProductionEndPlanAsync(connection, transaction, before, layoutId, removals, locked, returnSlots, cancellationToken);
         removals.Sort(static (left, right) =>
@@ -87,7 +98,7 @@ public sealed partial class PostgresTransportWorkflowStore
         var runId = Guid.NewGuid();
         var runStatus = removals.Count == 0 ? "COMPLETED" : "RUNNING";
         await InsertProductionEndRunAsync(connection, transaction, runId, command, before, layoutId, runStatus, cancellationToken);
-        Guid? previousRequestId = null;
+        Guid? previousStandaloneRequestId = null;
         for (var index = 0; index < removals.Count; index++)
         {
             var removal = removals[index];
@@ -106,35 +117,57 @@ public sealed partial class PostgresTransportWorkflowStore
                     $"{removal.Code} paletinin kaldırılacağı alan yapılandırılmamış. Üretim kapatılmadı.");
             }
 
+            var cleanupRequest = new CreateTransportRequest(
+                $"production-end:{runId:N}:{index + 1}",
+                RequestOrigin.Api,
+                command.ActorUserId,
+                command.MachineId,
+                before.VariantId,
+                layoutId,
+                null,
+                before.ProductGroupId,
+                removal.PartId,
+                removal.ContainerTypeId,
+                removal.Operation,
+                removal.SlotId,
+                removal.FinishedGoods ? null : removal.DestinationSlotId,
+                removal.Priority,
+                RequiresFinishedGoodsDestination: removal.FinishedGoods)
+            {
+                DefersMachineSlotReservation = removal.PredecessorRequestId is not null,
+                QueuesWhenResourcesUnavailable = true
+            };
             var created = await CreateAndQueueWithinTransactionAsync(
                 connection,
                 transaction,
-                new CreateTransportRequest(
-                    $"production-end:{runId:N}:{index + 1}",
-                    RequestOrigin.Api,
-                    command.ActorUserId,
-                    command.MachineId,
-                    before.VariantId,
-                    layoutId,
-                    null,
-                    before.ProductGroupId,
-                    removal.PartId,
-                    removal.ContainerTypeId,
-                    removal.Operation,
-                    removal.SlotId,
-                    removal.FinishedGoods ? null : removal.DestinationSlotId,
-                    removal.Priority,
-                    RequiresFinishedGoodsDestination: removal.FinishedGoods),
+                cleanupRequest,
                 null,
                 OperationalEventContext.ForUser(command.ActorUserId, command.DeviceId),
                 cancellationToken);
             await InsertProductionEndItemAsync(connection, transaction, runId, index + 1, removal, created.Request.Id, cancellationToken);
-            if (previousRequestId is { } predecessorId)
+            if (removal.PredecessorRequestId is { } activePredecessorId)
             {
-                await LinkProductionEndDependencyAsync(connection, transaction, predecessorId, created.Request.Id, cancellationToken);
+                await LinkProductionEndDependencyAsync(
+                    connection,
+                    transaction,
+                    activePredecessorId,
+                    created.Request.Id,
+                    cancellationToken);
             }
+            else
+            {
+                if (previousStandaloneRequestId is { } cleanupPredecessorId)
+                {
+                    await LinkProductionEndDependencyAsync(
+                        connection,
+                        transaction,
+                        cleanupPredecessorId,
+                        created.Request.Id,
+                        cancellationToken);
+                }
 
-            previousRequestId = created.Request.Id;
+                previousStandaloneRequestId = created.Request.Id;
+            }
         }
 
         // The production session represents the operator's current job. Once
@@ -195,7 +228,8 @@ public sealed partial class PostgresTransportWorkflowStore
                 operation,
                 Priority: 0,
                 FinishedGoods: operation == TransportTaskType.RemoveFull && partId == session.MainPartId,
-                DestinationSlotId: null));
+                DestinationSlotId: null,
+                PredecessorRequestId: position.PredecessorRequestId));
         }
 
         return removals;
@@ -733,6 +767,126 @@ public sealed partial class PostgresTransportWorkflowStore
             })
             .ToArray();
 
+    private static async Task<IReadOnlyList<ObservedPosition>> ProjectActiveProductionTransportAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        ProductionSessionRecord session,
+        IReadOnlyList<ObservedPosition> observed,
+        CancellationToken cancellationToken)
+    {
+        if (observed.Count == 0)
+        {
+            return observed;
+        }
+
+        var bySlot = observed.ToDictionary(position => position.SlotId);
+        await using var command = new NpgsqlCommand(
+            $"""
+             SELECT r.id, r.request_no, tt.code,
+                    r.source_slot_id, r.destination_slot_id,
+                    r.part_id, r.container_type_id
+             FROM ops.transport_requests r
+             JOIN master.task_types tt ON tt.id = r.task_type_id
+             WHERE r.machine_id = @machine
+               AND r.production_session_id = @session
+               AND r.status IN ({ActiveStatusesSql})
+               AND (r.source_slot_id = ANY(@slots) OR r.destination_slot_id = ANY(@slots))
+             ORDER BY r.request_no
+             FOR UPDATE OF r
+             """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("machine", session.MachineId);
+        command.Parameters.AddWithValue("session", session.Id);
+        command.Parameters.AddWithValue(
+            "slots",
+            NpgsqlDbType.Array | NpgsqlDbType.Uuid,
+            observed.Select(position => position.SlotId).ToArray());
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var operation = WorkflowCode.ParseTaskType(reader.GetString(2));
+            var machineSlotId = TransportRules.DeliversToMachine(operation)
+                ? (reader.IsDBNull(4) ? (Guid?)null : reader.GetGuid(4))
+                : (reader.IsDBNull(3) ? (Guid?)null : reader.GetGuid(3));
+            if (machineSlotId is not { } slotId || !bySlot.TryGetValue(slotId, out var current))
+            {
+                continue;
+            }
+
+            Guid? partId = reader.IsDBNull(5) ? null : reader.GetGuid(5);
+            Guid? containerTypeId = reader.IsDBNull(6) ? null : reader.GetGuid(6);
+            bySlot[slotId] = operation switch
+            {
+                TransportTaskType.BringEmpty => current with
+                {
+                    Occupancy = OccupancyState.Occupied,
+                    Load = LoadState.Empty,
+                    PartId = partId ?? current.PartId,
+                    ContainerTypeId = containerTypeId ?? current.ContainerTypeId,
+                    PredecessorRequestId = reader.GetGuid(0)
+                },
+                TransportTaskType.BringFull => current with
+                {
+                    Occupancy = OccupancyState.Occupied,
+                    Load = LoadState.Full,
+                    PartId = partId ?? current.PartId,
+                    ContainerTypeId = containerTypeId ?? current.ContainerTypeId,
+                    PredecessorRequestId = reader.GetGuid(0)
+                },
+                TransportTaskType.RemoveFull or TransportTaskType.RemoveEmpty => current with
+                {
+                    Occupancy = OccupancyState.Vacant,
+                    Load = LoadState.Unknown,
+                    PartId = null,
+                    ContainerTypeId = null,
+                    PredecessorRequestId = reader.GetGuid(0)
+                },
+                _ => current
+            };
+        }
+
+        return observed
+            .Select(position => bySlot[position.SlotId])
+            .ToArray();
+    }
+
+    private static async Task EnsureProductionEndTransportBoundaryAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid machineId,
+        Guid productionSessionId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            $"""
+             SELECT 1
+             FROM ops.transport_requests r
+             WHERE r.machine_id = @machine
+               AND r.status IN ({ActiveStatusesSql})
+               AND r.production_session_id IS DISTINCT FROM @session
+               AND (
+                    r.production_session_id IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM ops.production_sessions ps
+                        WHERE ps.id = r.production_session_id
+                          AND ps.ended_at IS NULL))
+             LIMIT 1
+             """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("machine", machineId);
+        command.Parameters.AddWithValue("session", productionSessionId);
+        if (await command.ExecuteScalarAsync(cancellationToken) is not null)
+        {
+            throw new WorkflowRuleException(
+                "ACTIVE_TRANSPORT_CONTEXT_UNKNOWN",
+                "Üretimle ilişkilendirilemeyen açık bir taşıma talebi bulunuyor. Üretim güvenli biçimde kapatılamadı.");
+        }
+    }
+
     private static async Task<Guid> ReadActiveLayoutAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -767,7 +921,7 @@ public sealed partial class PostgresTransportWorkflowStore
         return layoutId;
     }
 
-    private async Task AdvanceProductionEndRunAsync(
+    private static async Task AdvanceProductionEndRunAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid requestId,
@@ -998,17 +1152,37 @@ public sealed partial class PostgresTransportWorkflowStore
         Guid successorId,
         CancellationToken cancellationToken)
     {
+        await using (var releaseTerminal = new NpgsqlCommand(
+                         """
+                         DELETE FROM ops.transport_request_dependencies d
+                         USING ops.transport_requests successor
+                         WHERE d.predecessor_request_id = @predecessor
+                           AND successor.id = d.successor_request_id
+                           AND successor.status IN ('COMPLETED', 'FAILED', 'CANCELLED')
+                         """,
+                         connection,
+                         transaction))
+        {
+            releaseTerminal.Parameters.AddWithValue("predecessor", predecessorId);
+            await releaseTerminal.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         await using var command = new NpgsqlCommand(
             """
             INSERT INTO ops.transport_request_dependencies (predecessor_request_id, successor_request_id)
             VALUES (@predecessor, @successor)
-            ON CONFLICT (predecessor_request_id) DO NOTHING
+            ON CONFLICT DO NOTHING
             """,
             connection,
             transaction);
         command.Parameters.AddWithValue("predecessor", predecessorId);
         command.Parameters.AddWithValue("successor", successorId);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            throw new WorkflowRuleException(
+                "PRODUCTION_END_SEQUENCE_CONFLICT",
+                "Üretim bitiş görev sırası değişti. Güncel durumu yenileyip yeniden deneyin.");
+        }
     }
 
     private static async Task<ProductionSessionRecord> SetProductionStatusAsync(
@@ -1235,7 +1409,8 @@ public sealed partial class PostgresTransportWorkflowStore
         OccupancyState Occupancy,
         LoadState Load,
         Guid? PartId,
-        Guid? ContainerTypeId);
+        Guid? ContainerTypeId,
+        Guid? PredecessorRequestId = null);
 
     private sealed record CleanupRemoval(
         Guid SlotId,
@@ -1248,7 +1423,8 @@ public sealed partial class PostgresTransportWorkflowStore
         TransportTaskType Operation,
         int Priority,
         bool FinishedGoods,
-        Guid? DestinationSlotId);
+        Guid? DestinationSlotId,
+        Guid? PredecessorRequestId = null);
 
     private sealed record ConfiguredReturnSlot(Guid SlotId);
 }

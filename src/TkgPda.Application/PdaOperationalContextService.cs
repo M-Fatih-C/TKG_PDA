@@ -339,7 +339,8 @@ public static class PdaOperationalContextPolicy
             cancellation.DisabledMessage,
             PdaExecutionProjector.Project(request),
             request.ChainState,
-            request.ProductionEnd);
+            request.ProductionEnd,
+            request.BlocksProductionTransition);
     }
 
     private static PdaAvailableActionRecord EvaluateCancellation(

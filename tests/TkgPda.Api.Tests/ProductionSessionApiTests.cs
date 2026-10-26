@@ -135,9 +135,10 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
     [InlineData("QUEUED")]
     [InlineData("SENT_TO_RDS")]
     [InlineData("RUNNING")]
-    public async Task End_blocks_every_active_transport_status_without_changing_request_or_readiness(string status)
+    public async Task End_keeps_every_active_transport_status_and_moves_cleanup_to_the_background(string status)
     {
         var setup = await SetupAsync();
+        await SeedProductionEndRemovalAsync(setup, "REMOVE_EMPTY", 70);
         using var client = await fixture.LoginClientAsync(setup.User);
         var session = (await ReadAsync(await StartAsync(client, setup, "session"))).Session;
         var transport = await BringAsync(client, setup, "transport");
@@ -145,13 +146,13 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         // Synthetic executor state in isolated PostgreSQL; never call a robot.
         await fixture.ExecuteAsync("UPDATE ops.transport_requests SET status = @status", ("status", status));
         var response = await EndAsync(client, setup, session.Id);
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("ACTIVE_TRANSPORT_EXISTS", await ApiTestFixture.ErrorCodeAsync(response));
-        Assert.Equal(status, await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests"));
-        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>("SELECT readiness_state FROM ops.transport_requests"));
-        Assert.Equal(session.Id, await fixture.ScalarAsync<Guid>("SELECT production_session_id FROM ops.transport_requests"));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_sessions WHERE ended_at IS NULL"));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(status, await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE idempotency_key = 'transport'"));
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>("SELECT readiness_state FROM ops.transport_requests WHERE idempotency_key = 'transport'"));
+        Assert.Equal(session.Id, await fixture.ScalarAsync<Guid>("SELECT production_session_id FROM ops.transport_requests WHERE idempotency_key = 'transport'"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_sessions WHERE ended_at IS NULL"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_run_items"));
     }
 
     [Fact]
@@ -351,6 +352,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var secondSlot = (await fixture.LogisticsSlotsAsync(setup.Context.LayoutId, 2))[1];
         await fixture.ExecuteAsync("INSERT INTO master.layout_slot_parts(layout_slot_id, part_id) VALUES (@slot, @part)", ("slot", secondSlot), ("part", setup.MainPart));
         await fixture.SetSlotAsync(secondSlot, "VACANT", "UNKNOWN");
+        await SeedProductionEndRemovalAsync(setup, "REMOVE_EMPTY", 70);
         var session = (await ReadAsync(await StartAsync(client, setup, "start"))).Session;
         using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.Context.MachineId}/container-actions/batch")
         {
@@ -362,7 +364,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests WHERE production_session_id = @id", ("id", session.Id)));
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(DISTINCT idempotency_key) FROM ops.transport_requests"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(DISTINCT batch_id) FROM ops.transport_requests"));
-        Assert.Equal(HttpStatusCode.Conflict, (await EndAsync(client, setup, session.Id)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await EndAsync(client, setup, session.Id)).StatusCode);
     }
 
     [Fact]
@@ -519,6 +521,23 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         await fixture.SetSlotAsync(slot, "VACANT", "UNKNOWN");
         return new(context, user, group, part, slot);
     }
+
+    private Task SeedProductionEndRemovalAsync(Setup setup, string operation, int priority) =>
+        fixture.ExecuteAsync(
+            """
+            INSERT INTO master.production_end_priorities (operation_code, priority)
+            VALUES (@operation, @priority)
+            ON CONFLICT (operation_code) DO UPDATE SET priority = EXCLUDED.priority;
+            INSERT INTO master.task_templates (
+                variant_id, product_group_id, task_type_id, rds_task_label, priority, is_active, config_json)
+            SELECT @variant, @group, tt.id, 'PRODUCTION-END-TEST', 10, true, '{}'::jsonb
+            FROM master.task_types tt
+            WHERE tt.code = @operation;
+            """,
+            ("operation", operation),
+            ("priority", priority),
+            ("variant", setup.Context.VariantId),
+            ("group", setup.Group));
 
     private static string Path(Setup setup) => $"/api/v1/machines/{setup.Context.MachineId}/production-sessions";
     private static Task<HttpResponseMessage> StartAsync(HttpClient client, Setup setup, string? key)

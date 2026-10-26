@@ -48,6 +48,7 @@ final testProductionEndRequest = ActiveTransportRequest(
   cancelDisabledMessage: testActiveRequest.cancelDisabledMessage,
   execution: testActiveRequest.execution,
   productionEnd: true,
+  blocksProductionTransition: false,
 );
 
 void main() {
@@ -72,15 +73,15 @@ void main() {
   );
 
   test(
-    'ENDING recovery stays blocked while a child transport is active',
+    'ENDING recovery can finish while a child transport stays active',
     () async {
       final repo = FakePdaRepository()
         ..productionValue = productionRecord(status: 'ENDING')
         ..contextValue = testContext(activeRequests: [testActiveRequest]);
       final c = await controller(repo);
-      expect(c.canEndProduction, isFalse);
+      expect(c.canEndProduction, isTrue);
       await c.endProduction();
-      expect(repo.productionEndCount, 0);
+      expect(repo.productionEndCount, 1);
       expect(repo.contextValue.activeTransportRequests, hasLength(1));
     },
   );
@@ -201,20 +202,16 @@ void main() {
   );
 
   test(
-    'active transport blocks end with no cancellation side effect',
+    'active transport continues while production ends without cancellation',
     () async {
       final repo = FakePdaRepository()
         ..productionValue = productionRecord()
         ..contextValue = testContext(activeRequests: [testActiveRequest]);
       final c = await controller(repo);
-      expect(c.canEndProduction, isFalse);
-      await c.endProduction();
-      expect(repo.productionEndCount, 0);
-      expect(repo.contextValue.activeTransportRequests, hasLength(1));
-      repo.contextValue = testContext();
-      await c.refreshContext();
       expect(c.canEndProduction, isTrue);
       await c.endProduction();
+      expect(repo.productionEndCount, 1);
+      expect(repo.contextValue.activeTransportRequests, hasLength(1));
       expect(c.production.active, isNull);
       expect(c.selectedMainPart, isNull);
       expect(c.transportActionsReady, isFalse);

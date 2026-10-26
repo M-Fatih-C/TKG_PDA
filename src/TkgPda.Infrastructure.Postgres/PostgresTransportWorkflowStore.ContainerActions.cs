@@ -128,9 +128,13 @@ public sealed partial class PostgresTransportWorkflowStore
 
         var slot = lockedSlots[position.SlotId];
 
-        var resolution = ContainerActionResolutionPolicy.ResolveSingle(command.Action, slot.State.Occupancy, slot.State.Load);
         var predecessor = await FindLatestActivePositionRequestAsync(
             connection, transaction, slot.Id, cancellationToken);
+        var resolution = ContainerActionResolutionPolicy.ResolveSequenced(
+            command.Action,
+            slot.State.Occupancy,
+            slot.State.Load,
+            predecessor?.TaskType);
         var deferMachineReservation = resolution.DefersMachineSlotReservation || predecessor is not null;
         if (!deferMachineReservation)
         {
@@ -486,15 +490,16 @@ public sealed partial class PostgresTransportWorkflowStore
         foreach (var entry in resolved)
         {
             var slot = slots[entry.SlotId];
-            var resolution = ContainerActionResolutionPolicy.ResolveSingle(
-                entry.Item.Action,
-                slot.State.Occupancy,
-                slot.State.Load);
             var predecessor = await FindLatestActivePositionRequestAsync(
                 connection,
                 transaction,
                 slot.Id,
                 cancellationToken);
+            var resolution = ContainerActionResolutionPolicy.ResolveSequenced(
+                entry.Item.Action,
+                slot.State.Occupancy,
+                slot.State.Load,
+                predecessor?.TaskType);
             var deferMachineReservation = resolution.DefersMachineSlotReservation || predecessor is not null;
             requests.Add((
                 new CreateTransportRequest(
@@ -651,6 +656,24 @@ public sealed partial class PostgresTransportWorkflowStore
         Guid successorId,
         CancellationToken cancellationToken)
     {
+        // A cancelled/failed/completed successor is historical evidence, not an
+        // active continuation. Remove only that terminal edge so the operator
+        // can re-queue the one permitted next step after a cancellation.
+        await using (var releaseTerminal = new NpgsqlCommand(
+                         """
+                         DELETE FROM ops.transport_request_dependencies d
+                         USING ops.transport_requests successor
+                         WHERE d.predecessor_request_id = @predecessor
+                           AND successor.id = d.successor_request_id
+                           AND successor.status IN ('COMPLETED', 'FAILED', 'CANCELLED')
+                         """,
+                         connection,
+                         transaction))
+        {
+            releaseTerminal.Parameters.AddWithValue("predecessor", predecessorId);
+            await releaseTerminal.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         await using var command = new NpgsqlCommand(
             """
             INSERT INTO ops.transport_request_dependencies (predecessor_request_id, successor_request_id)
@@ -659,7 +682,12 @@ public sealed partial class PostgresTransportWorkflowStore
             """, connection, transaction);
         command.Parameters.AddWithValue("predecessor", predecessorId);
         command.Parameters.AddWithValue("successor", successorId);
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            throw new WorkflowRuleException(
+                "CONTAINER_ACTION_SEQUENCE_CONFLICT",
+                "Kasa işlem sırası değişti. Güncel durumu yenileyip yeniden deneyin.");
+        }
     }
 
     private static async Task<Guid?> ResolveFinishedProductContainerTypeAsync(
@@ -710,6 +738,7 @@ public sealed partial class PostgresTransportWorkflowStore
                  SELECT p.*,
                         r.id AS request_id,
                         r.status,
+                        tt.code AS task_type,
                         r.failure_code,
                         rt.rds_status,
                         rt.agv_id,
@@ -721,6 +750,7 @@ public sealed partial class PostgresTransportWorkflowStore
                  FROM positions p
                  LEFT JOIN ops.transport_requests r ON r.status IN ({ActiveStatusesSql})
                     AND (r.source_slot_id = p.id OR r.destination_slot_id = p.id)
+                 LEFT JOIN master.task_types tt ON tt.id = r.task_type_id
                  LEFT JOIN integration.rds_tasks rt ON rt.transport_request_id = r.id
              ), queue_rank AS (
                  SELECT r.id,
@@ -735,7 +765,7 @@ public sealed partial class PostgresTransportWorkflowStore
                  WHERE r.status IN ({ActiveStatusesSql})
              )
              SELECT a.id, a.position_number, a.occupancy_state, a.load_state,
-                    a.request_id, a.status, a.failure_code, a.rds_status,
+                    a.request_id, a.status, a.task_type, a.failure_code, a.rds_status,
                     a.agv_id, a.started_at, qr.queue_position, a.readiness_state
              FROM active a
              LEFT JOIN queue_rank qr ON qr.id = a.request_id
@@ -756,19 +786,21 @@ public sealed partial class PostgresTransportWorkflowStore
             ActivePositionRequest? active = reader.IsDBNull(4)
                 ? null
                 : new(
+                    reader.GetGuid(4),
                     WorkflowCode.ParseTransportStatus(reader.GetString(5)),
-                    reader.IsDBNull(6) ? null : reader.GetString(6),
-                    reader.IsDBNull(7) ? null : reader.GetInt32(7),
-                    reader.IsDBNull(8) ? null : reader.GetString(8),
-                    reader.IsDBNull(9) ? null : reader.GetFieldValue<DateTimeOffset>(9),
-                    reader.IsDBNull(11) ? TransportReadinessState.NotRequired : WorkflowCode.ParseReadinessState(reader.GetString(11)));
+                    WorkflowCode.ParseTaskType(reader.GetString(6)),
+                    reader.IsDBNull(7) ? null : reader.GetString(7),
+                    reader.IsDBNull(8) ? null : reader.GetInt32(8),
+                    reader.IsDBNull(9) ? null : reader.GetString(9),
+                    reader.IsDBNull(10) ? null : reader.GetFieldValue<DateTimeOffset>(10),
+                    reader.IsDBNull(12) ? TransportReadinessState.NotRequired : WorkflowCode.ParseReadinessState(reader.GetString(12)));
             result.Add(new(
                 reader.GetGuid(0),
                 reader.GetInt32(1),
                 WorkflowCode.ParseOccupancy(reader.GetString(2)),
                 WorkflowCode.ParseLoad(reader.GetString(3)),
                 active,
-                reader.IsDBNull(10) ? null : reader.GetInt32(10)));
+                reader.IsDBNull(11) ? null : reader.GetInt32(11)));
         }
 
         return result;
@@ -937,7 +969,11 @@ public sealed partial class PostgresTransportWorkflowStore
 
         try
         {
-            var resolution = ContainerActionResolutionPolicy.ResolveSingle(action, row.Occupancy, row.Load);
+            var resolution = ContainerActionResolutionPolicy.ResolveSequenced(
+                action,
+                row.Occupancy,
+                row.Load,
+                row.ActiveRequest?.TaskType);
             if (resolution.Operation == TransportTaskType.RemoveFull)
             {
                 if (finishedGoodsCode == "FINISHED_GOODS_DESTINATION_NOT_CONFIGURED")
@@ -1043,7 +1079,9 @@ public sealed partial class PostgresTransportWorkflowStore
     }
 
     private sealed record ActivePositionRequest(
+        Guid Id,
         TransportRequestStatus Status,
+        TransportTaskType TaskType,
         string? FailureCode,
         int? RdsStatus,
         string? AgvId,
