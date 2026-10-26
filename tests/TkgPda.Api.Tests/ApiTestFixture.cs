@@ -18,6 +18,11 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     public TestRdsCoreDiscoveryClient RdsCoreDiscoveryClient { get; } = new();
     public TestM4DiscoveryClient M4DiscoveryClient { get; } = new();
 
+    public ApiTestFixture()
+    {
+        EnsureMasterDataBaselineAsync().GetAwaiter().GetResult();
+    }
+
     public string ConnectionString => Environment.GetEnvironmentVariable("TKG_PDA_API_TEST_CONNECTION_STRING")
         ?? throw new InvalidOperationException("TKG_PDA_API_TEST_CONNECTION_STRING is required.");
 
@@ -86,6 +91,49 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
                 ops.slot_runtime_state,
                 ops.machine_runtime_state
             RESTART IDENTITY CASCADE;
+            UPDATE master.layout_slots current
+            SET display_order = baseline.display_order,
+                is_enabled = baseline.is_enabled,
+                default_container_type_id = baseline.default_container_type_id,
+                metadata_json = baseline.metadata_json
+            FROM api_test_baseline.layout_slots baseline
+            WHERE current.id = baseline.id;
+            UPDATE master.parts current
+            SET description = baseline.description,
+                is_active = baseline.is_active
+            FROM api_test_baseline.parts baseline
+            WHERE current.id = baseline.id;
+            UPDATE master.task_templates current
+            SET variant_id = baseline.variant_id,
+                product_group_id = baseline.product_group_id,
+                task_type_id = baseline.task_type_id,
+                source_slot_group_id = baseline.source_slot_group_id,
+                destination_slot_group_id = baseline.destination_slot_group_id,
+                rds_task_label = baseline.rds_task_label,
+                priority = baseline.priority,
+                config_json = baseline.config_json,
+                is_active = baseline.is_active,
+                updated_at = baseline.updated_at
+            FROM api_test_baseline.task_templates baseline
+            WHERE current.id = baseline.id;
+            UPDATE ops.store_locations current
+            SET display_name = baseline.display_name,
+                capacity = baseline.capacity,
+                is_enabled = baseline.is_enabled,
+                area_purpose = baseline.area_purpose,
+                is_operator_visible = baseline.is_operator_visible,
+                updated_at = baseline.updated_at
+            FROM api_test_baseline.store_locations baseline
+            WHERE current.id = baseline.id;
+            DELETE FROM master.layout_slot_parts;
+            INSERT INTO master.layout_slot_parts
+            SELECT * FROM api_test_baseline.layout_slot_parts;
+            DELETE FROM master.product_group_parts;
+            INSERT INTO master.product_group_parts
+            SELECT * FROM api_test_baseline.product_group_parts;
+            DELETE FROM ops.store_location_delivery_slots;
+            INSERT INTO ops.store_location_delivery_slots
+            SELECT * FROM api_test_baseline.store_location_delivery_slots;
             DELETE FROM audit.audit_logs;
             DELETE FROM master.production_end_area_priorities;
             DELETE FROM master.production_end_priorities;
@@ -210,6 +258,32 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             WHERE main_part_id IN (SELECT id FROM master.parts WHERE part_code LIKE 'P03A-%');
             DELETE FROM master.parts WHERE part_code LIKE 'P03A-%';
             """);
+    }
+
+    private async Task EnsureMasterDataBaselineAsync()
+    {
+        await using var connection = new NpgsqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            """
+            CREATE SCHEMA IF NOT EXISTS api_test_baseline;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.layout_slots AS
+                SELECT * FROM master.layout_slots;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.parts AS
+                SELECT * FROM master.parts;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.task_templates AS
+                SELECT * FROM master.task_templates;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.store_locations AS
+                SELECT * FROM ops.store_locations;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.layout_slot_parts AS
+                SELECT * FROM master.layout_slot_parts;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.product_group_parts AS
+                SELECT * FROM master.product_group_parts;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.store_location_delivery_slots AS
+                SELECT * FROM ops.store_location_delivery_slots;
+            """,
+            connection);
+        await command.ExecuteNonQueryAsync();
     }
 
     public async Task<TestIdentity> SeedIdentityAsync(

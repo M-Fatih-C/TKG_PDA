@@ -130,7 +130,8 @@ public sealed class PostgresFinishedGoodsStoreTests
             Command(context, TransportTaskType.RemoveEmpty, "fg-re", source: removeSource, destination: removeBuffer));
         await CompleteAsync(service, removeEmpty.Request.Id);
 
-        Assert.Equal(0, await ScalarAsync<long>("SELECT count(*) FROM ops.store_units"));
+        Assert.Equal(0, await ScalarAsync<long>(
+            "SELECT count(*) FROM ops.store_units WHERE load_state = 'FULL' AND transport_request_id IS NOT NULL"));
         Assert.Equal(0, await ScalarAsync<long>(
             "SELECT count(*) FROM ops.store_events WHERE event_type = 'UNIT_DELIVERED'"));
     }
@@ -235,12 +236,24 @@ public sealed class PostgresFinishedGoodsStoreTests
 
     private async Task ResetAsync() => await ExecuteAsync(
         """
-        TRUNCATE ops.store_events, ops.store_units RESTART IDENTITY CASCADE;
-        DELETE FROM ops.store_location_delivery_slots;
+        DELETE FROM ops.store_events
+        WHERE store_location_id IN (SELECT id FROM ops.store_locations WHERE code LIKE 'TEST-%');
+        DELETE FROM ops.store_units
+        WHERE store_location_id IN (SELECT id FROM ops.store_locations WHERE code LIKE 'TEST-%');
+        DELETE FROM ops.store_location_delivery_slots
+        WHERE store_location_id IN (SELECT id FROM ops.store_locations WHERE code LIKE 'TEST-%')
+           OR layout_slot_id IN (SELECT id FROM master.layout_slots WHERE code LIKE 'TEST-%');
         DELETE FROM ops.store_locations WHERE code LIKE 'TEST-%';
         TRUNCATE integration.rds_tasks, ops.transport_request_events, ops.transport_requests,
                  ops.slot_runtime_state, ops.machine_runtime_state RESTART IDENTITY CASCADE;
         DELETE FROM master.layout_slots WHERE code LIKE 'TEST-%';
+        INSERT INTO ops.store_units (store_location_id, load_state)
+        SELECT location.id, 'EMPTY'
+        FROM ops.store_locations location
+        WHERE location.code LIKE 'PHASE03-EMPTY-%'
+          AND NOT EXISTS (
+              SELECT 1 FROM ops.store_units unit
+              WHERE unit.store_location_id = location.id AND unit.removed_at IS NULL);
         """);
 
     private async Task<LayoutContext> ConfigureAsync()

@@ -578,22 +578,15 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
         var cloneResponse = await SendAsync(admin, HttpMethod.Post, $"/api/v1/admin/layouts/{layout.Id}/versions", null, published!.ConcurrencyToken);
         var clone = await cloneResponse.Content.ReadFromJsonAsync<AdminLayoutRecord>();
 
-        // Customer Workflow — Empty Container Buffer: BRING_EMPTY now auto-allocates
-        // its source from a configured EMPTY_STORAGE slot, so the active layout needs
-        // one. Added after cloning so the draft clone's slot count is unaffected.
-        var bufferSlotId = await fixture.ScalarAsync<Guid>(
-            """
-            INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
-            VALUES (@layout_id, 'P05-ACTIVE-BUFFER-1', 'Test Buffer', 'EMPTY_STORAGE', 9000)
-            RETURNING id
-            """,
-            ("layout_id", layout.Id));
-        await fixture.SetSlotAsync(bufferSlotId, "OCCUPIED", "EMPTY");
+        // Use a removal request here: this test needs only an active transport
+        // reservation. BRING_EMPTY belongs to the request-bound finished-goods
+        // preparation workflow and cannot be fabricated without a prepared pallet.
+        await fixture.SetSlotAsync(slot, "OCCUPIED", "FULL");
 
         var active = await fixture.SendTransportAsync(
             oper,
             new CreateTransportHttpRequest(machine.Id, variant.Id, layout.Id, null, null,
-                await fixture.PartForSlotAsync(slot, "P05-ADMACTIVE", variant.Id), null, "BRING_EMPTY"),
+                await fixture.PartForSlotAsync(slot, "P05-ADMACTIVE", variant.Id), null, "REMOVE_FULL"),
             "p05-active-publish");
         Assert.Equal(HttpStatusCode.Created, active.StatusCode);
 
