@@ -28,15 +28,23 @@ public sealed class ContainerActionResolutionPolicyTests
         Assert.Equal("CONTAINER_FULL_ALREADY_QUEUED", duplicate.Code);
     }
 
-    [Theory]
-    [InlineData(OperatorContainerAction.Full)]
-    [InlineData(OperatorContainerAction.Empty)]
-    public void Sequenced_position_blocks_both_actions_after_bring_empty_is_queued(
-        OperatorContainerAction action)
+    [Fact]
+    public void Sequenced_position_allows_only_full_after_bring_empty_is_queued()
     {
+        var next = ContainerActionResolutionPolicy.ResolveSequenced(
+            OperatorContainerAction.Full,
+            OccupancyState.Occupied,
+            LoadState.Full,
+            TransportTaskType.BringEmpty);
+
+        Assert.Equal(TransportTaskType.RemoveFull, next.Operation);
+        Assert.True(next.MarkFullBeforeCreate);
+        Assert.False(next.RequiresPreparation);
+        Assert.True(next.DefersMachineSlotReservation);
+
         var error = Assert.Throws<WorkflowRuleException>(() =>
             ContainerActionResolutionPolicy.ResolveSequenced(
-                action,
+                OperatorContainerAction.Empty,
                 OccupancyState.Occupied,
                 LoadState.Full,
                 TransportTaskType.BringEmpty));

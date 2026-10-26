@@ -390,6 +390,18 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
 
         if (request.Status == TransportRequestStatus.Cancelled)
         {
+            // Older builds could leave a request-bound preparation pallet and
+            // store reservation open after the request was already cancelled.
+            // An idempotent retry also reconciles that pre-execution drift.
+            await ReleaseStoreReservationAsync(connection, transaction, request.Id, cancellationToken);
+            await ReleasePreparationPalletsForCancellationAsync(
+                connection,
+                transaction,
+                request.Id,
+                actorUserId ?? eventContext?.ActorUserId,
+                eventContext?.DeviceId,
+                cancellationToken);
+            await CancelWaitingSuccessorsAsync(connection, transaction, request.Id, cancellationToken, eventContext);
             await transaction.CommitAsync(cancellationToken);
             return new CancelTransportResult(request, WasAlreadyCancelled: true);
         }
@@ -424,6 +436,13 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             TransportRequestStatus.Cancelled,
             cancellationToken);
         await ReleaseStoreReservationAsync(connection, transaction, request.Id, cancellationToken);
+        var releasedPreparationPallets = await ReleasePreparationPalletsForCancellationAsync(
+            connection,
+            transaction,
+            request.Id,
+            resolvedActor,
+            eventContext?.DeviceId,
+            cancellationToken);
         await InsertEventAsync(
             connection,
             transaction,
@@ -443,7 +462,8 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 occupancy_state = restored.Occupancy.ToDatabase(),
                 load_state = restored.Load.ToDatabase(),
                 machine_slot_reservation_active = reservationActive,
-                waits_for_removal = waitsForRemoval
+                waits_for_removal = waitsForRemoval,
+                released_preparation_pallets = releasedPreparationPallets
             },
             cancellationToken,
             eventContext);
@@ -709,6 +729,16 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
         else
         {
             await ReleaseStoreReservationAsync(connection, transaction, request.Id, cancellationToken);
+            if (outcome.Status == TransportRequestStatus.Cancelled)
+            {
+                await ReleasePreparationPalletsForCancellationAsync(
+                    connection,
+                    transaction,
+                    request.Id,
+                    eventContext?.ActorUserId,
+                    eventContext?.DeviceId,
+                    cancellationToken);
+            }
         }
 
         if (outcome.Status == TransportRequestStatus.Cancelled)
@@ -1988,6 +2018,14 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             // occupancy, load and current part stay as the predecessor left them.
             var previous = successor.Status;
             successor = await UpdateRequestStatusAsync(connection, transaction, successor, TransportRequestStatus.Cancelled, cancellationToken);
+            await ReleaseStoreReservationAsync(connection, transaction, successor.Id, cancellationToken);
+            await ReleasePreparationPalletsForCancellationAsync(
+                connection,
+                transaction,
+                successor.Id,
+                eventContext?.ActorUserId,
+                eventContext?.DeviceId,
+                cancellationToken);
             await InsertEventAsync(
                 connection,
                 transaction,
@@ -1998,6 +2036,12 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
                 TransportRequestStatus.Cancelled,
                 "Bağımlı talep, önceki palet kaldırma tamamlanmadığı için iptal edildi.",
                 new { predecessor_request_id = predecessorId },
+                cancellationToken,
+                eventContext);
+            await CancelWaitingSuccessorsAsync(
+                connection,
+                transaction,
+                successor.Id,
                 cancellationToken,
                 eventContext);
             // A production-end cleanup may depend on a normal request from the
@@ -2267,6 +2311,71 @@ public sealed partial class PostgresTransportWorkflowStore : ITransportWorkflowS
             transaction);
         cmd.Parameters.AddWithValue("req", requestId);
         await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<int> ReleasePreparationPalletsForCancellationAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid requestId,
+        Guid? actorUserId,
+        Guid? deviceId,
+        CancellationToken cancellationToken)
+    {
+        var released = new List<(Guid PalletId, Guid AreaId, Guid? PartId, Guid? ContainerTypeId)>();
+        await using (var command = new NpgsqlCommand(
+            """
+            UPDATE ops.preparation_pallets pallet
+            SET released_at = GREATEST(clock_timestamp(), pallet.placed_at),
+                released_by = @actor,
+                released_reason = 'REQUEST_CANCELLED',
+                row_version = pallet.row_version + 1
+            FROM ops.transport_requests request
+            WHERE pallet.transport_request_id = @request
+              AND request.id = pallet.transport_request_id
+              AND request.status = 'CANCELLED'
+              AND request.started_at IS NULL
+              AND pallet.released_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM integration.rds_tasks task
+                  WHERE task.transport_request_id = request.id)
+            RETURNING pallet.id, pallet.preparation_area_id,
+                      pallet.part_id, pallet.container_type_id
+            """,
+            connection,
+            transaction))
+        {
+            command.Parameters.AddWithValue("request", requestId);
+            AddNullableUuid(command, "actor", actorUserId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                released.Add((
+                    reader.GetGuid(0),
+                    reader.GetGuid(1),
+                    reader.IsDBNull(2) ? null : reader.GetGuid(2),
+                    reader.IsDBNull(3) ? null : reader.GetGuid(3)));
+            }
+        }
+
+        foreach (var pallet in released)
+        {
+            await InsertPreparationEventAsync(
+                connection,
+                transaction,
+                pallet.AreaId,
+                pallet.PalletId,
+                "PALLET_RELEASED",
+                pallet.PartId,
+                pallet.ContainerTypeId,
+                requestId,
+                actorUserId,
+                deviceId,
+                new { reason = "REQUEST_CANCELLED", source = "TRANSPORT_CANCELLATION" },
+                cancellationToken);
+        }
+
+        return released.Count;
     }
 
     private static async Task MarkStoreReservationForReconciliationAsync(

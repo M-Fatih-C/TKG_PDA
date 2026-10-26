@@ -126,7 +126,7 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
     }
 
     [Fact]
-    public async Task Kasa_cycle_queues_one_remove_then_one_empty_without_waiting_and_disables_duplicates()
+    public async Task Kasa_cycle_can_be_extended_without_waiting_but_never_repeats_the_same_action()
     {
         await fixture.ResetAsync();
         var context = await fixture.ConfigureMachineAsync();
@@ -134,23 +134,48 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
         await SetPositionAsync(mapped.SlotId, mapped.PartId, "OCCUPIED", "EMPTY");
         using var client = await ClientAsync();
 
-        var remove = await SendActionAsync(client, context, mapped, "FULL", "wp08-sequence-full");
-        var bring = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-sequence-empty");
-        var duplicateFull = await SendActionAsync(client, context, mapped, "FULL", "wp08-sequence-full-2");
-        var duplicateEmpty = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-sequence-empty-2");
+        var remove1 = await SendActionAsync(client, context, mapped, "FULL", "wp08-sequence-full-1");
+        var duplicateFull1 = await SendActionAsync(client, context, mapped, "FULL", "wp08-sequence-full-duplicate-1");
+        var bring1 = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-sequence-empty-1");
+        var duplicateEmpty1 = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-sequence-empty-duplicate-1");
+        var remove2 = await SendActionAsync(client, context, mapped, "FULL", "wp08-sequence-full-2");
+        var duplicateFull2 = await SendActionAsync(client, context, mapped, "FULL", "wp08-sequence-full-duplicate-2");
+        var bring2 = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-sequence-empty-2");
+        var duplicateEmpty2 = await SendActionAsync(client, context, mapped, "EMPTY", "wp08-sequence-empty-duplicate-2");
 
-        Assert.Equal(HttpStatusCode.Created, remove.StatusCode);
-        Assert.Equal(HttpStatusCode.Created, bring.StatusCode);
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicateFull.StatusCode);
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicateEmpty.StatusCode);
-        Assert.Equal("CONTAINER_EMPTY_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicateFull));
-        Assert.Equal("CONTAINER_EMPTY_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicateEmpty));
-        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
+        Assert.Equal(HttpStatusCode.Created, remove1.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicateFull1.StatusCode);
+        Assert.Equal("CONTAINER_FULL_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicateFull1));
+        Assert.Equal(HttpStatusCode.Created, bring1.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicateEmpty1.StatusCode);
+        Assert.Equal("CONTAINER_EMPTY_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicateEmpty1));
+        Assert.Equal(HttpStatusCode.Created, remove2.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicateFull2.StatusCode);
+        Assert.Equal("CONTAINER_FULL_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicateFull2));
+        Assert.Equal(HttpStatusCode.Created, bring2.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, duplicateEmpty2.StatusCode);
+        Assert.Equal("CONTAINER_EMPTY_ALREADY_QUEUED", await ApiTestFixture.ErrorCodeAsync(duplicateEmpty2));
+        Assert.Equal(4L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(3L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_request_dependencies"));
 
         var projected = await PositionAsync(client, context, mapped);
-        Assert.False(projected.GetProperty("fullAction").GetProperty("enabled").GetBoolean());
+        Assert.True(projected.GetProperty("fullAction").GetProperty("enabled").GetBoolean());
         Assert.False(projected.GetProperty("emptyAction").GetProperty("enabled").GetBoolean());
+        Assert.Equal(
+            "CONTAINER_EMPTY_ALREADY_QUEUED",
+            projected.GetProperty("emptyAction").GetProperty("disabledCode").GetString());
+
+        var firstRequestId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp08-sequence-full-1'");
+        var cancelled = await client.PostAsync(
+            $"/api/v1/machines/{context.MachineId}/transport-requests/{firstRequestId}/cancel",
+            null);
+
+        Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
+        Assert.Equal(4L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE status = 'CANCELLED'"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')"));
     }
 
     [Theory]
@@ -282,6 +307,84 @@ public sealed class FinishedContainerFlowApiTests(ApiTestFixture fixture) : ICla
             "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
             ("slot", mapped.SlotId)));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
+    public async Task Cancelling_a_prepared_empty_request_releases_the_finished_goods_preparation_area()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var mapped = await SeedMappedPositionAsync(context, "CANCEL-PREP");
+        var containerTypeId = await fixture.ScalarAsync<Guid>(
+            """
+            INSERT INTO master.container_types (code, name, category)
+            VALUES (@code, 'İptal testi boş kasa', 'CONTAINER')
+            RETURNING id
+            """,
+            ("code", "WP08-CANCEL-" + Guid.NewGuid().ToString("N")));
+        await fixture.ExecuteAsync(
+            "UPDATE master.layout_slots SET default_container_type_id = @container WHERE id = @slot",
+            ("container", containerTypeId),
+            ("slot", mapped.SlotId));
+        await SetPositionAsync(mapped.SlotId, mapped.PartId, "VACANT", "UNKNOWN");
+        using var lineClient = await ClientAsync();
+        Assert.Equal(
+            HttpStatusCode.Created,
+            (await SendActionAsync(lineClient, context, mapped, "EMPTY", "wp08-cancel-prepared")).StatusCode);
+        var requestId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE idempotency_key = 'wp08-cancel-prepared'");
+
+        using var warehouseClient = await fixture.LoginClientAsync(
+            await fixture.SeedIdentityAsync(
+                role: RoleCodes.FinishedGoodsWarehouseOperator,
+                machineCode: "SH-01-A"));
+        var areas = await warehouseClient.GetFromJsonAsync<List<PreparationAreaRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/areas");
+        var area = areas![0];
+        var placement = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/warehouse/finished-goods-preparation/areas/{area.Id}/pallet")
+        {
+            Content = JsonContent.Create(new PlacePalletHttpRequest(
+                "EMPTY", containerTypeId, null, requestId))
+        };
+        placement.Headers.Add(ApiHeaders.IdempotencyKey, "wp08-cancel-prepared-placement");
+        var placedResponse = await warehouseClient.SendAsync(placement);
+        Assert.Equal(HttpStatusCode.Created, placedResponse.StatusCode);
+        var placed = await placedResponse.Content.ReadFromJsonAsync<PreparationPalletRecord>();
+        Assert.NotNull(placed);
+        var ready = await warehouseClient.PostAsJsonAsync(
+            $"/api/v1/warehouse/finished-goods-preparation/pallets/{placed.Id}/ready",
+            new PalletVersionHttpRequest(placed.RowVersion));
+        ready.EnsureSuccessStatusCode();
+
+        var cancel = await lineClient.PostAsync(
+            $"/api/v1/machines/{context.MachineId}/transport-requests/{requestId}/cancel",
+            null);
+        Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
+        var cancelReplay = await lineClient.PostAsync(
+            $"/api/v1/machines/{context.MachineId}/transport-requests/{requestId}/cancel",
+            null);
+        Assert.Equal(HttpStatusCode.OK, cancelReplay.StatusCode);
+
+        Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>(
+            "SELECT status FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.preparation_pallets WHERE transport_request_id = @id AND released_at IS NULL",
+            ("id", requestId)));
+        Assert.Equal("REQUEST_CANCELLED", await fixture.ScalarAsync<string>(
+            "SELECT released_reason FROM ops.preparation_pallets WHERE id = @id", ("id", placed.Id)));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            """
+            SELECT count(*) FROM ops.preparation_events
+            WHERE preparation_pallet_id = @id
+              AND event_type = 'PALLET_RELEASED'
+              AND data_json->>'reason' = 'REQUEST_CANCELLED'
+            """,
+            ("id", placed.Id)));
+        var refreshedAreas = await warehouseClient.GetFromJsonAsync<List<PreparationAreaRecord>>(
+            "/api/v1/warehouse/finished-goods-preparation/areas");
+        Assert.Null(Assert.Single(refreshedAreas!, candidate => candidate.Id == area.Id).Pallet);
     }
 
     [Fact]
