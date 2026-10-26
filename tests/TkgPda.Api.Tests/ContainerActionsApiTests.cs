@@ -481,57 +481,96 @@ public sealed class ContainerActionsApiTests(ApiTestFixture fixture) : IClassFix
 
         Assert.Equal("READY", await fixture.ScalarAsync<string>(
             "SELECT readiness_state FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
-            "SELECT count(*) FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
-        var claimedAfterReady = await warehouseClient.GetFromJsonAsync<List<WarehouseDemandRecord>>(
-            "/api/v1/warehouse/finished-goods-preparation/demands");
-        var retained = Assert.Single(claimedAfterReady!, item => item.RequestId == requestId);
-        Assert.Equal(area.Id, retained.ClaimedByAreaId);
-        Assert.Equal(demand.VariantCode, retained.VariantCode);
-        Assert.Equal(demand.PartCode, retained.PartCode);
-
-        var navigationId = await fixture.ScalarAsync<Guid>(
+        var enabledBufferSlots = await fixture.ScalarAsync<Guid[]>(
             """
-            INSERT INTO master.navigation_profiles (machine_id, code, name, status, created_by)
-            VALUES (@machine, @code, 'Prepared empty source test', 'DRAFT', @user)
-            RETURNING id
+            SELECT coalesce(array_agg(id ORDER BY id), ARRAY[]::uuid[])
+            FROM master.layout_slots
+            WHERE layout_id = @layout AND slot_role = 'EMPTY_STORAGE' AND is_enabled
             """,
-            ("machine", context.MachineId),
-            ("code", "DEV-RDS-SIM-" + Guid.NewGuid().ToString("N")),
-            ("user", lineIdentity.UserId));
-        await fixture.ExecuteAsync(
-            "UPDATE ops.transport_requests SET navigation_id = @navigation WHERE id = @id",
-            ("navigation", navigationId), ("id", requestId));
-        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
-        var execution = new PostgresRdsExecutionStore(dataSource);
-        Assert.Equal(
-            "PREPARATION_WORKSITE_MAPPING_MISSING",
-            await execution.ReadPhysicalDispatchBlockAsync(requestId));
+            ("layout", context.LayoutId));
+        try
+        {
+            await fixture.ExecuteAsync(
+                """
+                UPDATE master.layout_slots
+                SET is_enabled = false
+                WHERE layout_id = @layout AND slot_role = 'EMPTY_STORAGE'
+                """,
+                ("layout", context.LayoutId));
+            await using (var store = new PostgresTransportWorkflowStore(fixture.ConnectionString))
+            {
+                Assert.Equal(1, await store.ActivatePreparedPartDemandsAsync(100, null));
+            }
+            Assert.True(await fixture.ScalarAsync<bool>(
+                "SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE id = @id",
+                ("id", requestId)));
+            Assert.True(await fixture.ScalarAsync<bool>(
+                "SELECT source_slot_id IS NULL AND source_business_code IS NULL FROM ops.transport_requests WHERE id = @id",
+                ("id", requestId)));
+            Assert.Equal(0L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.store_reservations WHERE transport_request_id = @id AND released_at IS NULL",
+                ("id", requestId)));
+            Assert.Equal(1L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.transport_requests WHERE id = @id", ("id", requestId)));
+            var claimedAfterReady = await warehouseClient.GetFromJsonAsync<List<WarehouseDemandRecord>>(
+                "/api/v1/warehouse/finished-goods-preparation/demands");
+            var retained = Assert.Single(claimedAfterReady!, item => item.RequestId == requestId);
+            Assert.Equal(area.Id, retained.ClaimedByAreaId);
+            Assert.Equal(demand.VariantCode, retained.VariantCode);
+            Assert.Equal(demand.PartCode, retained.PartCode);
 
-        var workSiteId = await fixture.ScalarAsync<Guid>(
-            """
-            INSERT INTO integration.rds_worksites (
-                navigation_profile_id, rds_site_id, rds_type, last_filled,
-                last_locked, last_disabled, last_sync_failed, last_sync_at)
-            VALUES (@navigation, @site, 1, 1, 0, 0, 0, clock_timestamp())
-            RETURNING id
-            """,
-            ("navigation", navigationId),
-            ("site", "PREP-EMPTY-" + Guid.NewGuid().ToString("N")));
-        await fixture.ExecuteAsync(
-            """
-            INSERT INTO integration.preparation_area_rds_mapping (preparation_area_id, rds_worksite_id)
-            VALUES (@area, @worksite)
-            """,
-            ("area", area.Id), ("worksite", workSiteId));
-        Assert.Null(await execution.ReadPhysicalDispatchBlockAsync(requestId));
+            var navigationId = await fixture.ScalarAsync<Guid>(
+                """
+                INSERT INTO master.navigation_profiles (machine_id, code, name, status, created_by)
+                VALUES (@machine, @code, 'Prepared empty source test', 'DRAFT', @user)
+                RETURNING id
+                """,
+                ("machine", context.MachineId),
+                ("code", "DEV-RDS-SIM-" + Guid.NewGuid().ToString("N")),
+                ("user", lineIdentity.UserId));
+            await fixture.ExecuteAsync(
+                "UPDATE ops.transport_requests SET navigation_id = @navigation WHERE id = @id",
+                ("navigation", navigationId), ("id", requestId));
+            await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+            var execution = new PostgresRdsExecutionStore(dataSource);
+            Assert.Equal(
+                "PREPARATION_WORKSITE_MAPPING_MISSING",
+                await execution.ReadPhysicalDispatchBlockAsync(requestId));
 
-        await fixture.ExecuteAsync(
-            "UPDATE integration.rds_worksites SET last_filled = 0, last_sync_at = clock_timestamp() WHERE id = @id",
-            ("id", workSiteId));
-        Assert.Equal(
-            "RDS_WORKSITE_OCCUPANCY_CONFLICT",
-            await execution.ReadPhysicalDispatchBlockAsync(requestId));
+            var workSiteId = await fixture.ScalarAsync<Guid>(
+                """
+                INSERT INTO integration.rds_worksites (
+                    navigation_profile_id, rds_site_id, rds_type, last_filled,
+                    last_locked, last_disabled, last_sync_failed, last_sync_at)
+                VALUES (@navigation, @site, 1, 1, 0, 0, 0, clock_timestamp())
+                RETURNING id
+                """,
+                ("navigation", navigationId),
+                ("site", "PREP-EMPTY-" + Guid.NewGuid().ToString("N")));
+            await fixture.ExecuteAsync(
+                """
+                INSERT INTO integration.preparation_area_rds_mapping (preparation_area_id, rds_worksite_id)
+                VALUES (@area, @worksite)
+                """,
+                ("area", area.Id), ("worksite", workSiteId));
+            Assert.Null(await execution.ReadPhysicalDispatchBlockAsync(requestId));
+
+            await fixture.ExecuteAsync(
+                "UPDATE integration.rds_worksites SET last_filled = 0, last_sync_at = clock_timestamp() WHERE id = @id",
+                ("id", workSiteId));
+            Assert.Equal(
+                "RDS_WORKSITE_OCCUPANCY_CONFLICT",
+                await execution.ReadPhysicalDispatchBlockAsync(requestId));
+        }
+        finally
+        {
+            foreach (var bufferSlotId in enabledBufferSlots)
+            {
+                await fixture.ExecuteAsync(
+                    "UPDATE master.layout_slots SET is_enabled = true WHERE id = @id",
+                    ("id", bufferSlotId));
+            }
+        }
     }
 
     [Fact]
