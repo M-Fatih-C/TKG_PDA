@@ -1017,6 +1017,7 @@ public static class ApiEndpoints
         TransportWorkflowService workflow,
         ITransportWorkflowStore workflowStore,
         NpgsqlDataSource dataSource,
+        DemoCancellationRecovery demoCancellationRecovery,
         DemoModeOptions demoOptions,
         CancellationToken cancellationToken)
     {
@@ -1062,6 +1063,8 @@ public static class ApiEndpoints
                     """, conn);
                 cancelTaskCmd.Parameters.AddWithValue("id", requestId);
                 await cancelTaskCmd.ExecuteNonQueryAsync(cancellationToken);
+
+                await demoCancellationRecovery.ReconcileAsync(requestId, cancellationToken);
             }
 
             await WriteAuditAsync(

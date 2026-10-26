@@ -194,6 +194,7 @@ builder.Services.AddSingleton<IContainerActionStore>(services => services.GetReq
 builder.Services.AddSingleton<IPartDemandStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<PartDemandService>();
 builder.Services.AddSingleton<TransportWorkflowService>();
+builder.Services.AddSingleton<DemoCancellationRecovery>();
 builder.Services.AddSingleton<IProductionSessionStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<ProductionSessionService>();
 builder.Services.AddSingleton<IWarehousePreparationStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
