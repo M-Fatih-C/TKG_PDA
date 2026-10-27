@@ -9,26 +9,35 @@ import 'package:tkg_pda/data/models/pda_models.dart';
 import '../support/fakes.dart';
 
 void main() {
-  testWidgets('ENDING retry requires confirmation and explains field verification', (tester) async {
-    final original = activeRecord();
-    final ending = ProductionSession(
-      id: original.id,
-      machineId: original.machineId,
-      variantId: original.variantId,
-      productGroupId: original.productGroupId,
-      mainPartId: original.mainPartId,
-      startedAt: original.startedAt,
-      status: 'ENDING',
-    );
-    final repo = FakePdaRepository()..productionValue = ending;
-    await harness(tester, repo);
-    expect(find.byKey(const Key('production-end-retry-guidance')), findsOneWidget);
-    expect(find.textContaining('Saha durumunu doğruladıktan'), findsOneWidget);
-    await tap(tester, const Key('production-end'));
-    expect(repo.productionEndCount, 0);
-    await tap(tester, const Key('confirm-production-end'));
-    expect(repo.productionEndCount, 1);
-  });
+  testWidgets(
+    'ENDING retry requires confirmation and explains field verification',
+    (tester) async {
+      final original = activeRecord();
+      final ending = ProductionSession(
+        id: original.id,
+        machineId: original.machineId,
+        variantId: original.variantId,
+        productGroupId: original.productGroupId,
+        mainPartId: original.mainPartId,
+        startedAt: original.startedAt,
+        status: 'ENDING',
+      );
+      final repo = FakePdaRepository()..productionValue = ending;
+      await harness(tester, repo);
+      expect(
+        find.byKey(const Key('production-end-retry-guidance')),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Saha durumunu doğruladıktan'),
+        findsOneWidget,
+      );
+      await tap(tester, const Key('production-end'));
+      expect(repo.productionEndCount, 0);
+      await tap(tester, const Key('confirm-production-end'));
+      expect(repo.productionEndCount, 1);
+    },
+  );
 
   testWidgets(
     'start is on workspace; no quantity or transport before production',
@@ -75,10 +84,56 @@ void main() {
       isNotNull,
     );
     expect(find.byKey(const Key('production-open-transports')), findsOneWidget);
-    expect(find.textContaining('görev yöneticisinde devam ediyor'), findsOneWidget);
+    expect(
+      find.textContaining('görev yöneticisinde devam ediyor'),
+      findsOneWidget,
+    );
     await tap(tester, const Key('production-end'));
     expect(find.byKey(const Key('confirm-production-end')), findsOneWidget);
     expect(repo.productionEndCount, 0);
+  });
+
+  testWidgets('open transport does not block starting the next production', (
+    tester,
+  ) async {
+    final backgroundRequest = ActiveTransportRequest(
+      requestId: 'background-production-end-request',
+      requestNo: 43,
+      operation: 'REMOVE_EMPTY',
+      status: 'QUEUED',
+      requestedBy: testActiveRequest.requestedBy,
+      requestedByUsername: testActiveRequest.requestedByUsername,
+      isMine: true,
+      sourceSlotId: testActiveRequest.sourceSlotId,
+      destinationSlotId: testActiveRequest.destinationSlotId,
+      productGroupId: testActiveRequest.productGroupId,
+      partId: testActiveRequest.partId,
+      containerTypeId: testActiveRequest.containerTypeId,
+      priority: testActiveRequest.priority,
+      createdAt: testActiveRequest.createdAt,
+      canCancel: true,
+      cancelDisabledCode: null,
+      cancelDisabledMessage: null,
+      execution: testActiveRequest.execution,
+      productionEnd: true,
+      blocksProductionTransition: false,
+    );
+    final repo = FakePdaRepository()
+      ..contextValue = testContext(activeRequests: [backgroundRequest]);
+    await harness(tester, repo);
+    await tap(tester, Key('main-part-${testMainPartOption.partId}'));
+
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('production-start')))
+          .onPressed,
+      isNotNull,
+    );
+    expect(find.byKey(const Key('production-open-transports')), findsOneWidget);
+    expect(
+      find.textContaining('Yeni üretimi başlatabilirsiniz'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('end needs explicit confirmation and returns to main selection', (

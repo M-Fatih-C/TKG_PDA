@@ -285,7 +285,7 @@ class _StoreAreaList extends StatelessWidget {
                 crossAxisCount: preparationColumns,
                 crossAxisSpacing: gutter,
                 mainAxisSpacing: gutter,
-                mainAxisExtent: 285,
+                mainAxisExtent: 310,
               ),
               itemCount: coordinator.preparationAreas.length,
               itemBuilder: (context, index) => _EmptyPreparationCard(
@@ -364,8 +364,10 @@ class _FinishedGoodsDemandList extends StatelessWidget {
                     key: const Key('finished-goods-demand-list'),
                     itemCount: demands.length,
                     separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) =>
-                        _FinishedGoodsDemandTile(demand: demands[index]),
+                    itemBuilder: (context, index) => _FinishedGoodsDemandTile(
+                      demand: demands[index],
+                      preparationAreas: coordinator.preparationAreas,
+                    ),
                   ),
           ),
         ],
@@ -375,13 +377,18 @@ class _FinishedGoodsDemandList extends StatelessWidget {
 }
 
 class _FinishedGoodsDemandTile extends StatelessWidget {
-  const _FinishedGoodsDemandTile({required this.demand});
+  const _FinishedGoodsDemandTile({
+    required this.demand,
+    required this.preparationAreas,
+  });
 
   final WarehouseDemand demand;
+  final List<PreparationArea> preparationAreas;
 
   @override
   Widget build(BuildContext context) {
     final variant = demand.variantName ?? demand.variantCode;
+    final claimedAreaStatus = _claimedAreaStatus();
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -427,9 +434,9 @@ class _FinishedGoodsDemandTile extends StatelessWidget {
               _demandWaitedLabel(demand.requestedAt),
               style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
             ),
-            if (demand.claimedByAreaNumber case final number?)
+            if (claimedAreaStatus != null)
               Text(
-                'Hazırlık Alanı $number hazırlıyor',
+                claimedAreaStatus,
                 style: TextStyle(
                   color: const Color(0xFF2F6FED),
                   fontWeight: FontWeight.w700,
@@ -454,6 +461,19 @@ class _FinishedGoodsDemandTile extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String? _claimedAreaStatus() {
+    final claimedAreaId = demand.claimedByAreaId;
+    if (claimedAreaId == null || claimedAreaId.isEmpty) return null;
+
+    for (final area in preparationAreas) {
+      if (area.id != claimedAreaId) continue;
+      final displayName = area.displayName.trim();
+      return '${displayName.isEmpty ? 'Hazırlık alanı' : displayName} hazırlıyor';
+    }
+
+    return 'Hazırlık alanında hazırlanıyor';
   }
 }
 
@@ -648,7 +668,12 @@ class _EmptyPreparationCard extends StatelessWidget {
   Future<void> _selectDemand(BuildContext context) async {
     final selected = await showModalBottomSheet<WarehouseDemand>(
       context: context,
-      builder: (sheetContext) => SafeArea(
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.8,
+        ),
         child: ListView(
           shrinkWrap: true,
           padding: const EdgeInsets.all(16),
@@ -705,37 +730,37 @@ class _EmptyPreparationCard extends StatelessWidget {
 
     final selected = await showModalBottomSheet<String>(
       context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.8,
+        ),
+        child: ListView(
+          shrinkWrap: true,
           padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Hazırlanacak Kasa Tipini Seç',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 8),
-              Text('${demand.machineCode} · ${demand.partCode ?? 'Parça'}'),
-              const SizedBox(height: 8),
-              if (primaryId != null && primaryId.isNotEmpty)
-                ListTile(
-                  key: Key('primary-container-${demand.requestId}'),
-                  title: Text(demand.containerCode ?? 'Ana kasa'),
-                  subtitle: const Text('Ana kasa'),
-                  onTap: () => Navigator.pop(sheetContext, primaryId),
-                ),
+          children: [
+            const Text(
+              'Hazırlanacak Kasa Tipini Seç',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            Text('${demand.machineCode} · ${demand.partCode ?? 'Parça'}'),
+            const SizedBox(height: 8),
+            if (primaryId != null && primaryId.isNotEmpty)
               ListTile(
-                key: Key('alternative-container-${demand.requestId}'),
-                title: Text(
-                  demand.alternativeContainerCode ?? 'Alternatif kasa',
-                ),
-                subtitle: const Text('Alternatif kasa'),
-                onTap: () => Navigator.pop(sheetContext, alternativeId),
+                key: Key('primary-container-${demand.requestId}'),
+                title: Text(demand.containerCode ?? 'Ana kasa'),
+                subtitle: const Text('Ana kasa'),
+                onTap: () => Navigator.pop(sheetContext, primaryId),
               ),
-            ],
-          ),
+            ListTile(
+              key: Key('alternative-container-${demand.requestId}'),
+              title: Text(demand.alternativeContainerCode ?? 'Alternatif kasa'),
+              subtitle: const Text('Alternatif kasa'),
+              onTap: () => Navigator.pop(sheetContext, alternativeId),
+            ),
+          ],
         ),
       ),
     );

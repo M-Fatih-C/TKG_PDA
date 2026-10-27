@@ -350,11 +350,16 @@ class ProductionSessionPanel extends StatelessWidget {
               ),
               if (openCount > 0) ...[
                 const SizedBox(height: 6),
-                const Text(
-                  'Yeni üretim için açık taşıma taleplerinin tamamlanmasını bekleyin veya talepleri ayrıca iptal edin.',
+                Text(
+                  controller.canStartProduction
+                      ? 'Önceki üretimin açık taşıma görevleri görev yöneticisinde devam eder. Yeni üretimi başlatabilirsiniz.'
+                      : 'Yeni üretim için açık taşıma taleplerinin tamamlanmasını bekleyin veya talepleri ayrıca iptal edin.',
+                  key: const Key('production-open-transports'),
                   style: TextStyle(
                     fontSize: 12,
-                    color: Color(0xFF9A3412),
+                    color: controller.canStartProduction
+                        ? const Color(0xFF0369A1)
+                        : const Color(0xFF9A3412),
                     fontWeight: FontWeight.w600,
                   ),
                 ),

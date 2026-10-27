@@ -238,7 +238,7 @@ class _MachineCard extends StatelessWidget {
                             ),
                           ),
                           child: Text(
-                            canOperate ? 'Üretime Hazır' : 'Yetki Gerekli',
+                            canOperate ? 'İşleme Açık' : 'Yetki Gerekli',
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w700,
