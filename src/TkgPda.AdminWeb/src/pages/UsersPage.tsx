@@ -61,7 +61,7 @@ export function UsersPage() {
       <PasswordDialog user={selected(resetId)} busy={busy} onClose={() => setResetId(null)} onSubmit={(user, password) => execute(() => api.resetPassword(user, password), 'Parola güvenli biçimde yenilendi', () => setResetId(null))} />
       <PermissionDialog user={selected(permissionId)} machines={machines.data ?? []} busy={busy} onClose={() => setPermissionId(null)} onChange={(user, machineId, key, checked) => execute(async () => {
         const current = user.machinePermissions.find((item) => item.machineId === machineId)
-        const next: MachinePermission = { machineId, canView: false, canOperate: false, canChangeVariant: false, canManageSlots: false, ...current, [key]: checked }
+        const next = normalizePermission({ machineId, canView: false, canOperate: false, canChangeVariant: false, canManageSlots: false, ...current, [key]: checked }, key, checked)
         if (!next.canView && !next.canOperate && !next.canChangeVariant && !next.canManageSlots && current) await api.removePermission(user, machineId)
         else await api.setPermission(user, next)
       }, 'Makine yetkisi güncellendi')} />
@@ -76,7 +76,7 @@ function RoleChecks({ roles, value, onChange }: { roles: Role[]; value: RoleCode
 function CreateUserDialog({ open, roles, busy, onClose, onSubmit }: { open: boolean; roles: Role[]; busy: boolean; onClose: () => void; onSubmit: (draft: UserDraft) => void }) {
   const [draft, setDraft] = useState(emptyUser)
   const submit = (event: FormEvent) => { event.preventDefault(); onSubmit({ ...draft, employeeNo: draft.employeeNo || null }) }
-  return <Modal open={open} onClose={onClose} title="Yeni kullanıcı" description="Kullanıcı ilk girişte kendisine verilen parola ile oturum açar." footer={<><Button variant="ghost" onClick={onClose}>Vazgeç</Button><Button form="create-user" type="submit" disabled={busy || draft.roles.length === 0}><Save size={16} /> Oluştur</Button></>}>
+  return <Modal open={open} onClose={onClose} title="Yeni kullanıcı" description="Üretim operatörleri sicil numarası ve yetkili cihazla giriş yapar. Parola yalnızca yönetim paneli ve eski kullanıcı adı girişleri içindir." footer={<><Button variant="ghost" onClick={onClose}>Vazgeç</Button><Button form="create-user" type="submit" disabled={busy || draft.roles.length === 0}><Save size={16} /> Oluştur</Button></>}>
     <form id="create-user" className="form-grid" onSubmit={submit}><Field label="Kullanıcı adı"><TextInput required value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} /></Field><Field label="Ad soyad"><TextInput required value={draft.fullName} onChange={(event) => setDraft({ ...draft, fullName: event.target.value })} /></Field><Field label="Sicil numarası"><TextInput value={draft.employeeNo ?? ''} onChange={(event) => setDraft({ ...draft, employeeNo: event.target.value })} /></Field><Field label="Geçici parola" hint="En az 12 karakter"><TextInput required type="password" minLength={12} value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /></Field><div className="form-span"><Field label="Sistem rolleri"><RoleChecks roles={roles} value={draft.roles} onChange={(value) => setDraft({ ...draft, roles: value })} /></Field></div></form>
   </Modal>
 }
@@ -96,6 +96,14 @@ function PasswordDialog({ user, busy, onClose, onSubmit }: { user: AdminUser | n
 
 type PermissionKey = Exclude<keyof MachinePermission, 'machineId'>
 const permissionColumns: { key: PermissionKey; label: string }[] = [{ key: 'canView', label: 'Görüntüle' }, { key: 'canOperate', label: 'Operasyon' }, { key: 'canChangeVariant', label: 'Varyant' }, { key: 'canManageSlots', label: 'Alan Yönetimi' }]
+
+function normalizePermission(permission: MachinePermission, key: PermissionKey, checked: boolean): MachinePermission {
+  if (key === 'canView' && !checked) {
+    return { ...permission, canView: false, canOperate: false, canChangeVariant: false, canManageSlots: false }
+  }
+  if (key !== 'canView' && checked) return { ...permission, canView: true }
+  return permission
+}
 
 function PermissionDialog({ user, machines, busy, onClose, onChange }: { user: AdminUser | null; machines: { id: string; code: string; displayName: string }[]; busy: boolean; onClose: () => void; onChange: (user: AdminUser, machineId: string, key: PermissionKey, checked: boolean) => void }) {
   if (!user) return null

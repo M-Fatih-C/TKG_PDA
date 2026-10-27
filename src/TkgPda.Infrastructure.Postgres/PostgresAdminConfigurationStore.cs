@@ -191,7 +191,7 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
                 WHERE ppm.source_note IS NOT NULL AND btrim(ppm.source_note) <> ''
                 UNION ALL
                 SELECT 'UNKNOWN_CONTAINER_FOOTPRINT', 'MEDIUM', 'CONTAINER_TYPE', c.id::text, c.code,
-                       'One or more physical footprint dimensions are unknown and remain NULL.'
+                       'Kasa tipinin bir veya daha fazla fiziksel ölçüsü tanımlanmamış.'
                 FROM master.container_types c
                 WHERE c.length_mm IS NULL OR c.width_mm IS NULL OR c.height_mm IS NULL
                 UNION ALL

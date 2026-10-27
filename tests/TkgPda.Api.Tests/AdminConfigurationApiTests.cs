@@ -294,6 +294,15 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
         {
             var user = await CreateUserAsync(client, "p05.permission", RoleCodes.LineOperator);
             var machine = Assert.Single((await client.GetFromJsonAsync<AdminMachineRecord[]>("/api/v1/admin/machines"))!, machine => machine.Code == "SH-01-A");
+            var invalid = await SendAsync(
+                client,
+                HttpMethod.Put,
+                $"/api/v1/admin/users/{user.Id}/machine-permissions/{machine.Id}",
+                new SetMachinePermissionRequest(false, true, false, false),
+                user.ConcurrencyToken);
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            Assert.Equal("MACHINE_VIEW_PERMISSION_REQUIRED", await ApiTestFixture.ErrorCodeAsync(invalid));
+
             var set = await SendAsync(
                 client,
                 HttpMethod.Put,

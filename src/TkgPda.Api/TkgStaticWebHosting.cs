@@ -412,19 +412,18 @@ public static class TkgStaticWebHosting
               <div style="margin-bottom: 24px; padding: 18px 20px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 14px;">
                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
                   <span style="font-size: 18px;">💡</span>
-                  <h3 style="margin: 0; font-size: 15px; color: #fbbf24; font-weight: 600;">Demo Sunumu Hızlı Giriş Bilgileri</h3>
+                  <h3 style="margin: 0; font-size: 15px; color: #fbbf24; font-weight: 600;">Demo Sunumu Giriş Bilgisi</h3>
                 </div>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; font-size: 13px; color: #cbd5e1;">
                   <div style="background: rgba(15, 23, 42, 0.5); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
                     <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600;">PDA Operatör Terminali (/pda/)</div>
-                    <div>Cihaz Kodu: <code style="color: #38bdf8;">DEV-LINE</code> veya <code style="color: #38bdf8;">DEV-SUPERVISOR</code></div>
-                    <div>Operatör Girişi: Sicil No <strong style="color: #fff;">1001</strong> (Şifresiz Giriş)</div>
-                    <div>Süpervizör: Kullanıcı <code style="color: #fff;">dev-supervisor</code> / Şifre <code style="color: #fff;">Admin123!</code></div>
+                    <div>Üretim operatörleri sicil numarası ve kendilerine tanımlı cihazla giriş yapar.</div>
+                    <div>Depo kullanıcıları ilgili depo tabletinden oturum açar.</div>
                   </div>
                   <div style="background: rgba(15, 23, 42, 0.5); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
                     <div style="color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600;">Yönetim Paneli (/admin/)</div>
-                    <div>Kullanıcı: <strong style="color: #fff;">dev-admin</strong></div>
-                    <div>Şifre: <strong style="color: #fff;">Admin123!</strong></div>
+                    <div>Güncel yönetici hesabını proje sorumlusundan alın.</div>
+                    <div>Parolalar bu sayfada gösterilmez.</div>
                     <div>Kapsam: 9 Makine, Varyantlar, Slotlar, Raporlar & Simülasyon</div>
                   </div>
                 </div>

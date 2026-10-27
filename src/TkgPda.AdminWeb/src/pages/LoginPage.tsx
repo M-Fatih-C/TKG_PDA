@@ -23,7 +23,7 @@ export function LoginPage() {
       const from = (location.state as { from?: string } | null)?.from
       navigate(from && from !== '/login' ? from : '/', { replace: true })
     } catch (reason) {
-      setError(reason instanceof ApiProblem ? reason.message : 'Yönetim oturumu açılamadı.')
+      setError(loginErrorMessage(reason))
     } finally {
       setBusy(false)
     }
@@ -60,4 +60,12 @@ export function LoginPage() {
       </section>
     </main>
   )
+}
+
+function loginErrorMessage(reason: unknown) {
+  if (!(reason instanceof ApiProblem)) return 'Yönetim oturumu açılamadı.'
+  if (reason.code === 'INVALID_CREDENTIALS') return 'Kullanıcı adı veya parola geçersiz.'
+  if (reason.code === 'INVALID_LOGIN_REQUEST') return 'Kullanıcı adı ve parola zorunludur.'
+  if (reason.status >= 500) return 'Yönetim sunucusuna şu anda erişilemiyor.'
+  return reason.message
 }

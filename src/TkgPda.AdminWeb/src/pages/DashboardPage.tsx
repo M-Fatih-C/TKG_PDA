@@ -164,7 +164,7 @@ export function DashboardPage() {
               <strong>{activeRobots}</strong>
             </div>
             <div>
-              <span><PackageOpen /> Ölçüsü Eksik Kasalar</span>
+              <span><PackageOpen /> Fiziksel Ölçüsü Netleşmemiş Kasa Tipleri</span>
               <strong>{containers.data?.filter((item) => item.lengthMm === null || item.widthMm === null || item.heightMm === null).length ?? 0}</strong>
             </div>
           </div>

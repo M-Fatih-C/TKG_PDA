@@ -162,7 +162,7 @@ function tone(status: string): 'success' | 'danger' | 'warning' | 'info' {
 
 function machineText(state: string, code: string | null) {
   if (state === 'UNKNOWN') return 'Geçmiş makine bilgisi kayıtlı değil'
-  if (state === 'UNBOUND') return 'Bağlı makine yok'
+  if (state === 'UNBOUND') return 'Serbest saha / depo cihazı'
   return code ?? 'Bilgi yok'
 }
 

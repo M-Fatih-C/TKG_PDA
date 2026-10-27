@@ -92,8 +92,22 @@ public sealed class AdminConfigurationService(IAdminConfigurationStore store, IP
             ExpectedVersion = RequiredVersion(command.ExpectedVersion)
         }, context, cancellationToken);
 
-    public Task<MachinePermissionRecord> SetMachinePermissionAsync(Guid userId, MachinePermissionRecord permission, long expectedUserVersion, AdminMutationContext context, CancellationToken cancellationToken = default) =>
-        store.SetMachinePermissionAsync(RequiredId(userId), permission with { MachineId = RequiredId(permission.MachineId) }, RequiredVersion(expectedUserVersion), context, cancellationToken);
+    public Task<MachinePermissionRecord> SetMachinePermissionAsync(Guid userId, MachinePermissionRecord permission, long expectedUserVersion, AdminMutationContext context, CancellationToken cancellationToken = default)
+    {
+        if (!permission.CanView && (permission.CanOperate || permission.CanChangeVariant || permission.CanManageSlots))
+        {
+            throw new AdminRuleException(
+                "MACHINE_VIEW_PERMISSION_REQUIRED",
+                "Operasyon, varyant veya alan yönetimi yetkisi için Görüntüle yetkisi zorunludur.");
+        }
+
+        return store.SetMachinePermissionAsync(
+            RequiredId(userId),
+            permission with { MachineId = RequiredId(permission.MachineId) },
+            RequiredVersion(expectedUserVersion),
+            context,
+            cancellationToken);
+    }
 
     public Task RemoveMachinePermissionAsync(Guid userId, Guid machineId, long expectedUserVersion, AdminMutationContext context, CancellationToken cancellationToken = default) =>
         store.RemoveMachinePermissionAsync(RequiredId(userId), RequiredId(machineId), RequiredVersion(expectedUserVersion), context, cancellationToken);
