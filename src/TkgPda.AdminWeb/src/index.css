@@ -69,7 +69,7 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .sidebar__footer > button { display: flex; width: 100%; align-items: center; margin-top: 8px; padding: 9px 10px; border: 0; border-radius: 8px; color: #9da9ba; background: transparent; gap: 9px; }
 .sidebar__footer > button:hover { color: #fff; background: rgba(255,255,255,.06); }
 .workspace { min-height: 100vh; margin-left: 272px; }
-.topbar { display: flex; height: 72px; align-items: center; justify-content: space-between; padding: 0 32px; border-bottom: 1px solid #e1e6ed; background: rgba(255,255,255,.92); backdrop-filter: blur(14px); gap: 16px; }
+.topbar { position: relative; z-index: 20; display: flex; height: 72px; align-items: center; justify-content: space-between; padding: 0 32px; border-bottom: 1px solid #e1e6ed; background: rgba(255,255,255,.92); backdrop-filter: blur(14px); gap: 16px; }
 .topbar__left { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .topbar__left > div { display: flex; flex-direction: column; }
 .topbar small { color: #8b95a5; font-size: var(--fs-xs); font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
