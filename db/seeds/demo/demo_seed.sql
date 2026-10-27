@@ -447,15 +447,54 @@ BEGIN
     ON CONFLICT (operation_code) DO UPDATE
     SET priority = EXCLUDED.priority, updated_at = now();
 
-    -- 12. Seed EURO_PALET Container Type and assign to unassigned ALT_PARTs
+    -- 12. Seed EURO_PALET Container Type and assign demo-only fallbacks to
+    -- unassigned ALT_PARTs. When every source-backed physical slot for the
+    -- part agrees on one container type, that verified slot type wins. The
+    -- generic demo pallet is used only when the source layouts provide no
+    -- single answer; production customer master data remains unchanged.
     INSERT INTO master.container_types (code, name, category, length_mm, width_mm, height_mm)
     VALUES ('EURO_PALET', 'Euro Palet', 'PALLET', 1200, 800, 144)
     ON CONFLICT (code) DO UPDATE
     SET name = EXCLUDED.name, category = EXCLUDED.category, length_mm = EXCLUDED.length_mm, width_mm = EXCLUDED.width_mm, height_mm = EXCLUDED.height_mm;
 
+    WITH unambiguous_slot_container AS (
+        SELECT gpp.id AS group_part_id,
+               (array_agg(DISTINCT slot.default_container_type_id))[1] AS container_type_id
+        FROM master.product_group_parts gpp
+        JOIN master.product_groups product_group
+          ON product_group.id = gpp.product_group_id
+         AND product_group.is_active
+        JOIN master.variant_layout_assignments assignment
+          ON assignment.variant_id = product_group.variant_id
+        JOIN master.layouts layout
+          ON layout.id = assignment.layout_id
+         AND layout.status = 'PUBLISHED'
+        JOIN master.layout_slots slot
+          ON slot.layout_id = layout.id
+         AND slot.is_enabled
+         AND slot.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+         AND slot.default_container_type_id IS NOT NULL
+        JOIN master.layout_slot_parts mapping
+          ON mapping.layout_slot_id = slot.id
+         AND mapping.part_id = gpp.part_id
+        WHERE gpp.relation_type = 'ALT_PART'
+          AND gpp.is_active
+          AND gpp.container_type_id IS NULL
+        GROUP BY gpp.id
+        HAVING count(DISTINCT slot.default_container_type_id) = 1
+    )
+    UPDATE master.product_group_parts gpp
+    SET container_type_id = resolved.container_type_id,
+        updated_at = now()
+    FROM unambiguous_slot_container resolved
+    WHERE gpp.id = resolved.group_part_id;
+
     UPDATE master.product_group_parts
-    SET container_type_id = (SELECT id FROM master.container_types WHERE code = 'EURO_PALET' LIMIT 1)
-    WHERE relation_type = 'ALT_PART' AND container_type_id IS NULL;
+    SET container_type_id = (SELECT id FROM master.container_types WHERE code = 'EURO_PALET' LIMIT 1),
+        updated_at = now()
+    WHERE relation_type = 'ALT_PART'
+      AND is_active
+      AND container_type_id IS NULL;
 
     -- 13. Clean any unremoved store units so the two finished-goods delivery
     -- positions start empty. Empty-container demand is now prepared against

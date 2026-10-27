@@ -193,6 +193,7 @@ public sealed partial class PostgresTransportWorkflowStore
             session.LayoutId,
             session.VariantId,
             command.PartId,
+            containerTypeId,
             cancellationToken);
 
         var destinationSlot = await LockSlotAsync(
@@ -874,7 +875,7 @@ public sealed partial class PostgresTransportWorkflowStore
         return new ProductionDemandContext(reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(3), reader.GetGuid(2));
     }
 
-    private static async Task<Guid?> RequireAltPartAsync(
+    private static async Task<Guid> RequireAltPartAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         Guid productGroupId,
@@ -915,6 +916,7 @@ public sealed partial class PostgresTransportWorkflowStore
         Guid layoutId,
         Guid variantId,
         Guid partId,
+        Guid containerTypeId,
         CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand(
@@ -926,6 +928,7 @@ public sealed partial class PostgresTransportWorkflowStore
             WHERE ls.layout_id = @layout
               AND ls.is_enabled
               AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+              AND (ls.default_container_type_id IS NULL OR ls.default_container_type_id = @container_type)
               AND NOT EXISTS (
                   SELECT 1
                   FROM master.layout_slot_parts main_lsp
@@ -951,10 +954,49 @@ public sealed partial class PostgresTransportWorkflowStore
         command.Parameters.AddWithValue("layout", layoutId);
         command.Parameters.AddWithValue("variant", variantId);
         command.Parameters.AddWithValue("part", partId);
-        return await command.ExecuteScalarAsync(cancellationToken) is Guid slotId
-            ? slotId
-            : throw new WorkflowRuleException(
-                "PART_SLOT_NOT_CONFIGURED",
-                "Bu alt parça için makine alanı tanımlı değil.");
+        command.Parameters.AddWithValue("container_type", containerTypeId);
+        if (await command.ExecuteScalarAsync(cancellationToken) is Guid slotId)
+        {
+            return slotId;
+        }
+
+        await using var mapped = new NpgsqlCommand(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM master.layout_slots ls
+                JOIN master.layout_slot_parts lsp
+                  ON lsp.layout_slot_id = ls.id
+                 AND lsp.part_id = @part
+                WHERE ls.layout_id = @layout
+                  AND ls.is_enabled
+                  AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM master.layout_slot_parts main_lsp
+                      JOIN master.product_groups main_pg
+                        ON main_pg.main_part_id = main_lsp.part_id
+                       AND main_pg.variant_id = @variant
+                       AND main_pg.is_active
+                      WHERE main_lsp.layout_slot_id = ls.id
+                        AND main_lsp.part_id <> @part
+                  )
+            )
+            """,
+            connection,
+            transaction);
+        mapped.Parameters.AddWithValue("layout", layoutId);
+        mapped.Parameters.AddWithValue("variant", variantId);
+        mapped.Parameters.AddWithValue("part", partId);
+        if (await mapped.ExecuteScalarAsync(cancellationToken) is true)
+        {
+            throw new WorkflowRuleException(
+                "PART_SLOT_CONTAINER_MISMATCH",
+                "Alt parçanın kasa tipi ile tanımlı makine alanının kasa tipi uyuşmuyor.");
+        }
+
+        throw new WorkflowRuleException(
+            "PART_SLOT_NOT_CONFIGURED",
+            "Bu alt parça için makine alanı tanımlı değil.");
     }
 }

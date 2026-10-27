@@ -573,6 +573,61 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
+    public async Task Multiple_mapped_slots_skip_a_container_incompatible_destination()
+    {
+        var setup = await SetupAsync();
+        var requestedContainer = await fixture.ScalarAsync<Guid>(
+            "SELECT container_type_id FROM master.product_group_parts WHERE product_group_id = @group AND part_id = @part",
+            ("group", setup.Group), ("part", setup.AltPart));
+        var incompatibleContainer = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM master.container_types WHERE id <> @requested ORDER BY code LIMIT 1",
+            ("requested", requestedContainer));
+        await AlignSlotContainerAsync(setup.Slot, incompatibleContainer);
+
+        var compatibleSlot = await NextAltSlotAsync(setup.Context.LayoutId, setup.Context.VariantId, setup.Slot);
+        await fixture.ExecuteAsync(
+            "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
+            ("slot", compatibleSlot), ("part", setup.AltPart));
+        await fixture.SetSlotAsync(compatibleSlot, "VACANT", "UNKNOWN");
+        await AlignSlotContainerAsync(compatibleSlot, requestedContainer);
+
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var body = await ReadDemandAsync(await DemandAsync(
+            client,
+            setup,
+            setup.AltPart,
+            "container-compatible-slot"));
+        var requestId = await RequestIdAsync(body.RequestNo);
+
+        Assert.Equal(compatibleSlot, await fixture.ScalarAsync<Guid>(
+            "SELECT destination_slot_id FROM ops.transport_requests WHERE id = @id",
+            ("id", requestId)));
+    }
+
+    [Fact]
+    public async Task Container_incompatible_part_mapping_is_rejected_before_a_request_exists()
+    {
+        var setup = await SetupAsync();
+        var requestedContainer = await fixture.ScalarAsync<Guid>(
+            "SELECT container_type_id FROM master.product_group_parts WHERE product_group_id = @group AND part_id = @part",
+            ("group", setup.Group), ("part", setup.AltPart));
+        var incompatibleContainer = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM master.container_types WHERE id <> @requested ORDER BY code LIMIT 1",
+            ("requested", requestedContainer));
+        await AlignSlotContainerAsync(setup.Slot, incompatibleContainer);
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+
+        var response = await DemandAsync(client, setup, setup.AltPart, "container-mismatch");
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PART_SLOT_CONTAINER_MISMATCH", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+    }
+
+    [Fact]
     public async Task Completed_alt_part_removal_does_not_enter_finished_goods_or_notify()
     {
         var setup = await SetupAsync(occupancy: "OCCUPIED", load: "EMPTY");
