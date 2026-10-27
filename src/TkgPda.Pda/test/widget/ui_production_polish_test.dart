@@ -486,14 +486,14 @@ void main() {
     harness.repository.partDemandError = const ApiProblem(
       status: 409,
       code: 'PART_REQUEST_ALREADY_ACTIVE',
-      detail: 'Alt parça talebi reddedildi.',
+      detail: 'Bu alt parça için Talep #42 zaten sırada veya yürütülüyor.',
       correlationId: null,
     );
     await tester.tap(find.byKey(const Key('alt-part-$testAltPartId')));
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('notice-banner')), findsOneWidget);
-    expect(find.textContaining('aktif talep zaten var'), findsOneWidget);
+    expect(find.textContaining('Talep #42 zaten sırada'), findsOneWidget);
   });
 }
 

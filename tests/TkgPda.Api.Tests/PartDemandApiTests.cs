@@ -93,14 +93,16 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task Concurrent_alt_orders_with_distinct_keys_create_independent_queued_pallet_demands()
+    public async Task Concurrent_alt_orders_with_distinct_keys_create_only_one_active_pallet_demand()
     {
         var setup = await SetupAsync();
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         var responses = await Task.WhenAll(DemandAsync(client, setup, setup.AltPart, "click-a"), DemandAsync(client, setup, setup.AltPart, "click-b"));
-        Assert.All(responses, response => Assert.Equal(HttpStatusCode.Created, response.StatusCode));
-        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Created);
+        var conflict = Assert.Single(responses, response => response.StatusCode == HttpStatusCode.Conflict);
+        Assert.Equal("PART_REQUEST_ALREADY_ACTIVE", await ApiTestFixture.ErrorCodeAsync(conflict));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
     [Fact]
@@ -181,7 +183,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task A_new_key_creates_another_independent_pallet_demand_while_one_is_active()
+    public async Task A_new_key_cannot_duplicate_an_active_demand_for_the_same_part_and_slot()
     {
         var setup = await SetupAsync();
         using var client = await fixture.LoginClientAsync(setup.Operator);
@@ -190,39 +192,31 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
 
         var duplicate = await DemandAsync(client, setup, setup.AltPart, "active-second");
 
-        Assert.Equal(HttpStatusCode.Created, duplicate.StatusCode);
-        Assert.False((await ReadDemandAsync(duplicate)).IdempotentReplay);
-        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
+        Assert.Equal("PART_REQUEST_ALREADY_ACTIVE", await ApiTestFixture.ErrorCodeAsync(duplicate));
+        Assert.Contains("Talep #", await duplicate.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
     [Fact]
-    public async Task Batch_order_creates_its_own_pallet_demand_when_the_same_part_is_already_queued()
+    public async Task Batch_order_cannot_duplicate_a_same_part_demand_that_is_already_queued()
     {
         var setup = await SetupAsync();
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
         await DemandAsync(client, setup, setup.AltPart, "single-before-batch");
 
-        var created = await ReadBatchAsync(await BatchAsync(
+        var conflict = await BatchAsync(
             client,
             setup,
             [setup.AltPart],
-            "batch-after-single"));
+            "batch-after-single");
 
-        Assert.Single(created.Items);
-        Assert.False(created.IdempotentReplay);
-        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>(
-            "SELECT count(*) FROM ops.transport_requests WHERE batch_id IS NOT NULL"));
-
-        var replay = await ReadBatchAsync(await BatchAsync(
-            client,
-            setup,
-            [setup.AltPart],
-            "batch-after-single"));
-        Assert.True(replay.IdempotentReplay);
-        Assert.Equal(created.Items.Single().RequestNo, replay.Items.Single().RequestNo);
-        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        Assert.Equal("PART_REQUEST_ALREADY_ACTIVE", await ApiTestFixture.ErrorCodeAsync(conflict));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_batches"));
     }
 
     [Fact]

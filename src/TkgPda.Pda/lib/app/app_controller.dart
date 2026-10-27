@@ -1185,7 +1185,8 @@ class AppController extends ChangeNotifier {
 
   /// Alt-part demand is only "I want this material". The operator never
   /// chooses a container, load or slot. A repeated tap while the first
-  /// request is still in flight reuses the same idempotency key.
+  /// request is still in flight reuses the same idempotency key; after the
+  /// response, the server keeps one active chain per part and physical slot.
   Future<void> requestAltPart(MachineRelatedPart part) async {
     if (!part.requestable) {
       _notice = const UiNotice(
@@ -1250,10 +1251,12 @@ class AppController extends ChangeNotifier {
         UiNoticeSeverity.warning,
       );
     } on ApiProblem catch (problem) {
-      _notice = UiNotice(problem.operatorMessage, UiNoticeSeverity.error);
       if (problem.code == 'PART_REQUEST_ALREADY_ACTIVE') {
+        _notice = UiNotice(problem.detail, UiNoticeSeverity.warning);
         _altDemandKeys.remove(part.partId);
         await refreshContext();
+      } else {
+        _notice = UiNotice(problem.operatorMessage, UiNoticeSeverity.error);
       }
     } finally {
       _altDemandInFlight.remove(part.partId);
@@ -1299,7 +1302,12 @@ class AppController extends ChangeNotifier {
         UiNoticeSeverity.warning,
       );
     } on ApiProblem catch (problem) {
-      _notice = UiNotice(problem.operatorMessage, UiNoticeSeverity.error);
+      if (problem.code == 'PART_REQUEST_ALREADY_ACTIVE') {
+        _notice = UiNotice(problem.detail, UiNoticeSeverity.warning);
+        await refreshContext();
+      } else {
+        _notice = UiNotice(problem.operatorMessage, UiNoticeSeverity.error);
+      }
     } finally {
       _setBusy(false);
     }

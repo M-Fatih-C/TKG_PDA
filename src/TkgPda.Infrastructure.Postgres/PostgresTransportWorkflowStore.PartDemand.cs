@@ -200,6 +200,23 @@ public sealed partial class PostgresTransportWorkflowStore
             transaction,
             destinationSlotId,
             cancellationToken);
+
+        var activeSamePartRequestNo = await FindActivePartDemandRequestNoAsync(
+            connection,
+            transaction,
+            session.SessionId,
+            command.MachineId,
+            session.ProductGroupId,
+            command.PartId,
+            destinationSlotId,
+            cancellationToken);
+        if (activeSamePartRequestNo is { } requestNo)
+        {
+            throw new WorkflowRuleException(
+                "PART_REQUEST_ALREADY_ACTIVE",
+                $"Bu alt parça için Talep #{requestNo} zaten sırada veya yürütülüyor.");
+        }
+
         var activePositionRequest = await FindLatestActivePositionRequestAsync(
             connection,
             transaction,
@@ -328,6 +345,44 @@ public sealed partial class PostgresTransportWorkflowStore
         }
 
         return new PartDemandResult(created.Request, predecessor, created.WasIdempotentReplay);
+    }
+
+    private static async Task<long?> FindActivePartDemandRequestNoAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid productionSessionId,
+        Guid machineId,
+        Guid productGroupId,
+        Guid partId,
+        Guid destinationSlotId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            $"""
+            SELECT request.request_no
+            FROM ops.transport_requests request
+            JOIN master.task_types task_type ON task_type.id = request.task_type_id
+            WHERE request.production_session_id = @production_session
+              AND request.machine_id = @machine
+              AND request.product_group_id = @product_group
+              AND request.part_id = @part
+              AND request.destination_slot_id = @destination_slot
+              AND request.status IN ({ActiveStatusesSql})
+              AND task_type.code = 'BRING_FULL'
+            ORDER BY request.request_no
+            LIMIT 1
+            FOR UPDATE OF request
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("production_session", productionSessionId);
+        command.Parameters.AddWithValue("machine", machineId);
+        command.Parameters.AddWithValue("product_group", productGroupId);
+        command.Parameters.AddWithValue("part", partId);
+        command.Parameters.AddWithValue("destination_slot", destinationSlotId);
+        return await command.ExecuteScalarAsync(cancellationToken) is long requestNo
+            ? requestNo
+            : null;
     }
 
     private static async Task<TransportRequestSnapshot?> FindPredecessorSnapshotAsync(
