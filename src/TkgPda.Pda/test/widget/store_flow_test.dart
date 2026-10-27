@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:tkg_pda/core/errors/api_problem.dart';
+import 'package:tkg_pda/data/models/preparation_area.dart';
 import 'package:tkg_pda/data/models/store_location.dart';
 import 'package:tkg_pda/features/warehouse/store_coordinator.dart';
 import 'package:tkg_pda/features/warehouse/store_screen.dart';
@@ -447,7 +448,14 @@ void main() {
         fakeStoreLocation(code: 'FG-02'),
       ];
       repository.finishedGoodsPreparationAreasValue = [
-        for (var number = 1; number <= 6; number++) fakeArea(number: number),
+        for (var number = 5; number <= 10; number++)
+          PreparationArea(
+            id: 'area-$number',
+            areaNumber: number,
+            displayName: 'Boş Kasa Hazırlık Alanı ${number - 4}',
+            isEnabled: true,
+            pallet: null,
+          ),
       ];
       repository.finishedGoodsPreparationDemandsValue = [
         fakeDemand(
@@ -455,7 +463,7 @@ void main() {
           requestedLoad: 'EMPTY',
           variantName: 'Varyant 4',
           containerCode: '4322',
-          claimedByAreaNumber: 3,
+          claimedByAreaNumber: 7,
           requestedAt: DateTime.now().subtract(const Duration(minutes: 7)),
         ),
       ];
@@ -472,7 +480,8 @@ void main() {
       expect(find.text('SH-01-A · Talep #91'), findsOneWidget);
       expect(find.text('Varyant: Varyant 4'), findsOneWidget);
       expect(find.text('Palet/Kasa: 4322'), findsOneWidget);
-      expect(find.text('Hazırlık Alanı 3 hazırlıyor'), findsOneWidget);
+      expect(find.text('Boş Kasa Hazırlık Alanı 3 hazırlıyor'), findsOneWidget);
+      expect(find.text('Hazırlık Alanı 7 hazırlıyor'), findsNothing);
       expect(find.textContaining('7 dk'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
