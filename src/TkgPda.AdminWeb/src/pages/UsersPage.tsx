@@ -4,7 +4,7 @@ import { useMemo, useState, type FormEvent } from 'react'
 import { useAdminApi } from '../api/ApiContext'
 import type { AdminUser, MachinePermission, Role, RoleCode, UserDraft } from '../api/types'
 import { useToast } from '../components/Toast'
-import { Button, Check, EmptyState, ErrorState, Field, LoadingState, Modal, PageHeader, Panel, SearchInput, StatusPill, TableFrame, TextInput, formatDate } from '../components/ui'
+import { Button, Check, EmptyState, ErrorState, Field, InfoBox, LoadingState, Modal, PageHeader, Panel, SearchInput, StatusPill, TableFrame, TextInput, formatDate } from '../components/ui'
 import { roleLabel } from '../displayLabels'
 
 const emptyUser: UserDraft = { username: '', password: '', fullName: '', employeeNo: null, roles: ['LINE_OPERATOR'] }
@@ -38,6 +38,7 @@ export function UsersPage() {
   return (
     <div className="page">
       <PageHeader eyebrow="Kimlik ve erişim" title="Kullanıcılar & yetkiler" description="Bireysel hesapları, sistem rollerini ve makine bazlı izinleri tek yerden yönetin." actions={<Button onClick={() => setCreateOpen(true)}><Plus size={17} /> Kullanıcı oluştur</Button>} />
+      <InfoBox title="Kullanıcı erişimi nasıl belirlenir?">Önce kullanıcının rolü, ardından gerekiyorsa makine izinleri uygulanır. Yönetici rolü tüm makinelere erişir; üretim operatörlerinin saha girişi için sicil numarası ve yetkili cihaz gerekir.</InfoBox>
       <Panel>
         <div className="table-toolbar"><SearchInput value={search} onChange={setSearch} placeholder="Ad, kullanıcı adı veya sicil ara…" /><span>{filtered.length} kayıt</span></div>
         {filtered.length ? <TableFrame><thead><tr><th>Kullanıcı</th><th>Sicil No</th><th>Sistem Rolleri</th><th>Makine İzni</th><th>Son Giriş</th><th>Durum</th><th className="align-right">İşlemler</th></tr></thead><tbody>

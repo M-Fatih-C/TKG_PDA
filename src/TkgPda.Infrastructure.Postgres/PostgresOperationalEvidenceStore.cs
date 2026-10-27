@@ -238,15 +238,61 @@ public sealed class PostgresOperationalEvidenceStore(NpgsqlDataSource dataSource
         Guid partId,
         int? priority,
         Guid actorUserId,
+        CancellationToken cancellationToken) =>
+        await SetProductionEndAreaPrioritiesAsync(
+            [new ProductionEndAreaPriorityUpdate(productGroupId, layoutSlotId, partId, priority)],
+            actorUserId,
+            cancellationToken);
+
+    public async Task SetProductionEndAreaPrioritiesAsync(
+        IReadOnlyList<ProductionEndAreaPriorityUpdate> updates,
+        Guid actorUserId,
         CancellationToken cancellationToken)
     {
-        if (priority is < 1)
+        if (updates.Count is < 1 or > 500)
+        {
+            throw new WorkflowRuleException(
+                "PRODUCTION_END_AREA_PRIORITY_BATCH_INVALID",
+                "Üretim sonu sırası tek işlemde 1 ile 500 arasında eşleşme içermelidir.");
+        }
+
+        if (updates.Any(update => update.Priority is < 1))
         {
             throw new WorkflowRuleException("INVALID_PRIORITY", "Üretim bitiş önceliği 1 veya daha büyük olmalıdır.");
         }
 
+        var duplicate = updates
+            .GroupBy(update => (update.ProductGroupId, update.LayoutSlotId, update.PartId))
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new WorkflowRuleException(
+                "PRODUCTION_END_AREA_PRIORITY_DUPLICATE",
+                "Aynı ürün, alan ve parça eşleşmesi toplu sıralamada birden fazla kez gönderilemez.");
+        }
+
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        foreach (var update in updates)
+        {
+            await ApplyProductionEndAreaPriorityAsync(
+                connection,
+                transaction,
+                update,
+                actorUserId,
+                cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task ApplyProductionEndAreaPriorityAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        ProductionEndAreaPriorityUpdate update,
+        Guid actorUserId,
+        CancellationToken cancellationToken)
+    {
         await using (var eligible = new NpgsqlCommand(
             """
             SELECT 1
@@ -277,9 +323,9 @@ public sealed class PostgresOperationalEvidenceStore(NpgsqlDataSource dataSource
             connection,
             transaction))
         {
-            eligible.Parameters.AddWithValue("group", productGroupId);
-            eligible.Parameters.AddWithValue("slot", layoutSlotId);
-            eligible.Parameters.AddWithValue("part", partId);
+            eligible.Parameters.AddWithValue("group", update.ProductGroupId);
+            eligible.Parameters.AddWithValue("slot", update.LayoutSlotId);
+            eligible.Parameters.AddWithValue("part", update.PartId);
             if (await eligible.ExecuteScalarAsync(cancellationToken) is null)
             {
                 throw new WorkflowRuleException(
@@ -288,7 +334,7 @@ public sealed class PostgresOperationalEvidenceStore(NpgsqlDataSource dataSource
             }
         }
 
-        if (priority is null)
+        if (update.Priority is null)
         {
             await using var delete = new NpgsqlCommand(
                 """
@@ -297,9 +343,9 @@ public sealed class PostgresOperationalEvidenceStore(NpgsqlDataSource dataSource
                 """,
                 connection,
                 transaction);
-            delete.Parameters.AddWithValue("group", productGroupId);
-            delete.Parameters.AddWithValue("slot", layoutSlotId);
-            delete.Parameters.AddWithValue("part", partId);
+            delete.Parameters.AddWithValue("group", update.ProductGroupId);
+            delete.Parameters.AddWithValue("slot", update.LayoutSlotId);
+            delete.Parameters.AddWithValue("part", update.PartId);
             await delete.ExecuteNonQueryAsync(cancellationToken);
         }
         else
@@ -316,10 +362,10 @@ public sealed class PostgresOperationalEvidenceStore(NpgsqlDataSource dataSource
                 """,
                 connection,
                 transaction);
-            upsert.Parameters.AddWithValue("group", productGroupId);
-            upsert.Parameters.AddWithValue("slot", layoutSlotId);
-            upsert.Parameters.AddWithValue("part", partId);
-            upsert.Parameters.AddWithValue("priority", priority.Value);
+            upsert.Parameters.AddWithValue("group", update.ProductGroupId);
+            upsert.Parameters.AddWithValue("slot", update.LayoutSlotId);
+            upsert.Parameters.AddWithValue("part", update.PartId);
+            upsert.Parameters.AddWithValue("priority", update.Priority.Value);
             upsert.Parameters.AddWithValue("actor", actorUserId);
             await upsert.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -339,14 +385,12 @@ public sealed class PostgresOperationalEvidenceStore(NpgsqlDataSource dataSource
             transaction))
         {
             audit.Parameters.AddWithValue("actor", actorUserId);
-            audit.Parameters.AddWithValue("group", productGroupId);
-            audit.Parameters.AddWithValue("slot", layoutSlotId);
-            audit.Parameters.AddWithValue("part", partId);
-            audit.Parameters.Add("priority", NpgsqlDbType.Integer).Value = priority.HasValue ? priority.Value : DBNull.Value;
+            audit.Parameters.AddWithValue("group", update.ProductGroupId);
+            audit.Parameters.AddWithValue("slot", update.LayoutSlotId);
+            audit.Parameters.AddWithValue("part", update.PartId);
+            audit.Parameters.Add("priority", NpgsqlDbType.Integer).Value = update.Priority.HasValue ? update.Priority.Value : DBNull.Value;
             await audit.ExecuteNonQueryAsync(cancellationToken);
         }
-
-        await transaction.CommitAsync(cancellationToken);
     }
 
     private static string NormalizeOperation(string operationCode)

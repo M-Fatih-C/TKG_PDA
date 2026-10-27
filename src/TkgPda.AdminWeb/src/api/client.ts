@@ -242,6 +242,12 @@ export const createAdminApi = (token: string) => ({
       token,
       body: { productGroupId, layoutSlotId, partId, priority },
     })).data,
+  setProductionEndAreaPriorities: async (items: { productGroupId: string; layoutSlotId: string; partId: string; priority: number | null }[]) =>
+    (await request<ProductionEndAreaPriority[]>('/api/v1/admin/production-end-area-priorities/batch', {
+      method: 'PUT',
+      token,
+      body: { items },
+    })).data,
   transportEvidence: async (requestId: string, signal?: AbortSignal) =>
     (await request<TransportEvidence>(`/api/v1/admin/transport-requests/${requestId}/evidence`, { token, signal })).data,
   reportTasks: async (filters: ReportWindow, signal?: AbortSignal) =>

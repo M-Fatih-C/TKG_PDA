@@ -44,6 +44,12 @@ public sealed record ProductionEndAreaPriority(
     int? Priority,
     DateTimeOffset? UpdatedAt);
 
+public sealed record ProductionEndAreaPriorityUpdate(
+    Guid ProductGroupId,
+    Guid LayoutSlotId,
+    Guid PartId,
+    int? Priority);
+
 public interface IOperationalEvidenceStore
 {
     Task<TransportEvidence?> ReadTransportEvidenceAsync(Guid requestId, CancellationToken cancellationToken);
@@ -61,6 +67,11 @@ public interface IOperationalEvidenceStore
         Guid layoutSlotId,
         Guid partId,
         int? priority,
+        Guid actorUserId,
+        CancellationToken cancellationToken);
+
+    Task SetProductionEndAreaPrioritiesAsync(
+        IReadOnlyList<ProductionEndAreaPriorityUpdate> updates,
         Guid actorUserId,
         CancellationToken cancellationToken);
 }

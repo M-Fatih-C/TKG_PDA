@@ -24,7 +24,7 @@ const links = [
   { to: '/machines', label: 'Makine & Varyantlar', icon: DatabaseZap },
   { to: '/reports', label: 'Operasyon Kayıtları & Raporlar', icon: FileText },
   { to: '/audit', label: 'Denetim Geçmişi', icon: ClipboardList },
-  { to: '/production-end-priorities', label: 'Üretim Bitiş Önceliği', icon: ListOrdered },
+  { to: '/production-end-priorities', label: 'Üretim Sonu Sırası', icon: ListOrdered },
   { to: '/rds', label: 'RDS Entegrasyonu', icon: RadioTower },
 ]
 
