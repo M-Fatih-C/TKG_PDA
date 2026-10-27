@@ -482,8 +482,11 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         }
     }
 
-    [Fact]
-    public async Task Demo_cancellation_releases_endpoint_and_restores_pre_transport_state()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Demo_cancellation_releases_endpoint_and_restores_pre_transport_state(
+        bool reservationAlreadyReleased)
     {
         var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
         try
@@ -526,6 +529,25 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
                 WHERE request.id = @id
                 """,
                 ("id", requestAId)));
+
+            if (reservationAlreadyReleased)
+            {
+                // Older demo builds could release the store endpoint before
+                // restoring the deterministic machine-side slot. Recovery
+                // must use the explicit demo cancellation evidence instead of
+                // depending on an open reservation row.
+                await fixture.ExecuteAsync(
+                    """
+                    UPDATE ops.store_reservations
+                    SET released_at = now(), reconciliation_required = false
+                    WHERE transport_request_id = @id;
+
+                    UPDATE ops.transport_requests
+                    SET store_endpoint_reservation_active = false
+                    WHERE id = @id;
+                    """,
+                    ("id", requestAId));
+            }
 
             await using var connection = new NpgsqlConnection(fixture.ConnectionString);
             await connection.OpenAsync();

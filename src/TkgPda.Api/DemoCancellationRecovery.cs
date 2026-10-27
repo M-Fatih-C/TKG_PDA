@@ -55,10 +55,16 @@ public sealed class DemoCancellationRecovery(
                            AND (@request_id IS NULL OR r.id = @request_id)
                            AND EXISTS (
                                SELECT 1
-                               FROM ops.store_reservations sr
-                               WHERE sr.transport_request_id = r.id
-                                 AND sr.released_at IS NULL
-                                 AND sr.reconciliation_required
+                               FROM ops.transport_request_events cancelled_event
+                               WHERE cancelled_event.transport_request_id = r.id
+                                 AND cancelled_event.event_type = 'REQUEST_CANCELLED'
+                                 AND cancelled_event.data_json ->> 'evidence_type' = 'DEMO_SIMULATION_CANCEL'
+                           )
+                           AND NOT EXISTS (
+                               SELECT 1
+                               FROM ops.transport_request_events reconciled_event
+                               WHERE reconciled_event.transport_request_id = r.id
+                                 AND reconciled_event.event_type = 'DEMO_CANCELLATION_RECONCILED'
                            )
                          ORDER BY r.id
                          FOR UPDATE OF r SKIP LOCKED
