@@ -1,5 +1,5 @@
 -- TKG PDA Phase 02A generated textual customer master data
--- schema_version: phase_02a_v2
+-- schema_version: phase_02a_v3
 -- source_digest: 5e26bc18d3a34867c9ce211157b9af00de1c5e20753e85493591f759a527802f
 -- deterministic output; do not edit by hand
 
@@ -182,6 +182,24 @@ VALUES
     ('BYK', 'BYK', 'CONTAINER', 1200, 750, 600),
     ('KCK', 'KCK', 'CONTAINER', 800, 550, 450),
     ('ORT', 'ORT', 'CONTAINER', 950, 650, 550)
+ON CONFLICT (code) DO UPDATE
+SET name = EXCLUDED.name,
+    category = EXCLUDED.category,
+    length_mm = EXCLUDED.length_mm,
+    width_mm = EXCLUDED.width_mm,
+    height_mm = EXCLUDED.height_mm,
+    updated_at = now()
+WHERE master.container_types.name IS DISTINCT FROM EXCLUDED.name
+   OR master.container_types.category IS DISTINCT FROM EXCLUDED.category
+   OR master.container_types.length_mm IS DISTINCT FROM EXCLUDED.length_mm
+   OR master.container_types.width_mm IS DISTINCT FROM EXCLUDED.width_mm
+   OR master.container_types.height_mm IS DISTINCT FROM EXCLUDED.height_mm;
+
+-- Customer-approved operational fallback (2026-10-27): blank ALT-part
+-- container fields are transported as EURO_PALET. Extraction evidence remains
+-- NULL in normalized outputs; this rule is applied only to operational rows.
+INSERT INTO master.container_types (code, name, category, length_mm, width_mm, height_mm)
+VALUES ('EURO_PALET', 'Euro Palet', 'PALLET', 1200, 800, 144)
 ON CONFLICT (code) DO UPDATE
 SET name = EXCLUDED.name,
     category = EXCLUDED.category,
@@ -412,7 +430,11 @@ INSERT INTO master.product_group_parts (
     product_group_id, part_id, container_type_id,
     relation_type, lot_quantity, display_order
 )
-SELECT pg.id, related.id, ct.id,
+SELECT pg.id, related.id,
+       CASE
+         WHEN source.relation_type = 'ALT_PART' AND source.container_code IS NULL THEN euro.id
+         ELSE ct.id
+       END,
        source.relation_type, source.lot_quantity, source.display_order
 FROM source
 JOIN master.machines AS m ON m.code = source.machine_code
@@ -422,6 +444,8 @@ JOIN master.product_groups AS pg
   ON pg.variant_id = v.id AND pg.main_part_id = main_part.id
 JOIN master.parts AS related ON related.part_code = source.part_code
 LEFT JOIN master.container_types AS ct ON ct.code = source.container_code
+CROSS JOIN master.container_types AS euro
+WHERE euro.code = 'EURO_PALET'
 ON CONFLICT (product_group_id, part_id) DO UPDATE
 SET container_type_id = EXCLUDED.container_type_id,
     relation_type = EXCLUDED.relation_type,
@@ -638,7 +662,7 @@ INSERT INTO master.part_planning_metrics (
     annual_volume, weekly_volume, daily_volume, mix_pallet_need,
     agv_moves_per_day, area_need, source_note
 )
-SELECT v.id, pg.id, part.id, ct.id,
+SELECT v.id, pg.id, part.id, COALESCE(ct.id, group_part.container_type_id),
        source.container_dimensions, source.lot_quantity, source.cycle_time_seconds,
        source.annual_volume, source.weekly_volume, source.daily_volume,
        source.mix_pallet_need, source.agv_moves_per_day, source.area_need,
@@ -651,6 +675,10 @@ JOIN master.product_groups AS pg
   ON pg.variant_id = v.id AND pg.main_part_id = main_part.id
 JOIN master.parts AS part ON part.part_code = source.part_code
 LEFT JOIN master.container_types AS ct ON ct.code = source.container_code
+LEFT JOIN master.product_group_parts AS group_part
+  ON group_part.product_group_id = pg.id
+ AND group_part.part_id = part.id
+ AND group_part.relation_type = 'ALT_PART'
 ON CONFLICT (variant_id, product_group_id, part_id)
 WHERE product_group_id IS NOT NULL
 DO UPDATE SET

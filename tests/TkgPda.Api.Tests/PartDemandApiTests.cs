@@ -573,7 +573,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task Multiple_mapped_slots_skip_a_container_incompatible_destination()
+    public async Task Multiple_mapped_slots_use_part_mapping_regardless_of_slot_default_container()
     {
         var setup = await SetupAsync();
         var requestedContainer = await fixture.ScalarAsync<Guid>(
@@ -584,12 +584,12 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             ("requested", requestedContainer));
         await AlignSlotContainerAsync(setup.Slot, incompatibleContainer);
 
-        var compatibleSlot = await NextAltSlotAsync(setup.Context.LayoutId, setup.Context.VariantId, setup.Slot);
+        var secondSlot = await NextAltSlotAsync(setup.Context.LayoutId, setup.Context.VariantId, setup.Slot);
         await fixture.ExecuteAsync(
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
-            ("slot", compatibleSlot), ("part", setup.AltPart));
-        await fixture.SetSlotAsync(compatibleSlot, "VACANT", "UNKNOWN");
-        await AlignSlotContainerAsync(compatibleSlot, requestedContainer);
+            ("slot", secondSlot), ("part", setup.AltPart));
+        await fixture.SetSlotAsync(secondSlot, "VACANT", "UNKNOWN");
+        await AlignSlotContainerAsync(secondSlot, requestedContainer);
 
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
@@ -598,16 +598,16 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
             client,
             setup,
             setup.AltPart,
-            "container-compatible-slot"));
+            "mapped-slot-default-is-not-allow-list"));
         var requestId = await RequestIdAsync(body.RequestNo);
 
-        Assert.Equal(compatibleSlot, await fixture.ScalarAsync<Guid>(
+        Assert.Equal(setup.Slot, await fixture.ScalarAsync<Guid>(
             "SELECT destination_slot_id FROM ops.transport_requests WHERE id = @id",
             ("id", requestId)));
     }
 
     [Fact]
-    public async Task Container_incompatible_part_mapping_is_rejected_before_a_request_exists()
+    public async Task Explicit_part_mapping_accepts_customer_container_when_slot_default_differs()
     {
         var setup = await SetupAsync();
         var requestedContainer = await fixture.ScalarAsync<Guid>(
@@ -620,11 +620,16 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         using var client = await fixture.LoginClientAsync(setup.Operator);
         await StartProductionAsync(client, setup);
 
-        var response = await DemandAsync(client, setup, setup.AltPart, "container-mismatch");
+        var response = await DemandAsync(client, setup, setup.AltPart, "customer-container-on-mapped-slot");
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        Assert.Equal("PART_SLOT_CONTAINER_MISMATCH", await ApiTestFixture.ErrorCodeAsync(response));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        var body = await ReadDemandAsync(response);
+        var requestId = await RequestIdAsync(body.RequestNo);
+        Assert.Equal(setup.Slot, await fixture.ScalarAsync<Guid>(
+            "SELECT destination_slot_id FROM ops.transport_requests WHERE id = @id",
+            ("id", requestId)));
+        Assert.Equal(requestedContainer, await fixture.ScalarAsync<Guid>(
+            "SELECT container_type_id FROM ops.transport_requests WHERE id = @id",
+            ("id", requestId)));
     }
 
     [Fact]

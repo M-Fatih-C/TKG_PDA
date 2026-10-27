@@ -90,6 +90,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\005_finished_product_container_options.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\006_blank_alt_part_euro_pallet.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\005_tkg_variant_task_templates.sql')))
     # The demo updater applies this after production migrations/seeds. Running it

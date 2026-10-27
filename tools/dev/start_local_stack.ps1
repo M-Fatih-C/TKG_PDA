@@ -296,7 +296,8 @@ foreach ($sf in @(
     (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql'),
     (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql'),
     (Join-Path $projectRoot 'db\seeds\generated\002c_customer_layout_slot_part_assignments.sql'),
-    (Join-Path $projectRoot 'db\seeds\005_finished_product_container_options.sql')
+    (Join-Path $projectRoot 'db\seeds\005_finished_product_container_options.sql'),
+    (Join-Path $projectRoot 'db\seeds\006_blank_alt_part_euro_pallet.sql')
 )) {
     & $psql @commonPsql -d $Database -v ON_ERROR_STOP=1 -f $sf | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Applying master seed failed: $sf" }

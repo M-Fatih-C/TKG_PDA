@@ -193,7 +193,6 @@ public sealed partial class PostgresTransportWorkflowStore
             session.LayoutId,
             session.VariantId,
             command.PartId,
-            containerTypeId,
             cancellationToken);
 
         var destinationSlot = await LockSlotAsync(
@@ -916,9 +915,11 @@ public sealed partial class PostgresTransportWorkflowStore
         Guid layoutId,
         Guid variantId,
         Guid partId,
-        Guid containerTypeId,
         CancellationToken cancellationToken)
     {
+        // master.layout_slot_parts is the operational Part-to-Slot authority.
+        // A slot's default container describes its baseline presentation; it is
+        // not an allow-list that may override an explicit customer part mapping.
         await using var command = new NpgsqlCommand(
             """
             SELECT ls.id
@@ -928,7 +929,6 @@ public sealed partial class PostgresTransportWorkflowStore
             WHERE ls.layout_id = @layout
               AND ls.is_enabled
               AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-              AND (ls.default_container_type_id IS NULL OR ls.default_container_type_id = @container_type)
               AND NOT EXISTS (
                   SELECT 1
                   FROM master.layout_slot_parts main_lsp
@@ -954,45 +954,9 @@ public sealed partial class PostgresTransportWorkflowStore
         command.Parameters.AddWithValue("layout", layoutId);
         command.Parameters.AddWithValue("variant", variantId);
         command.Parameters.AddWithValue("part", partId);
-        command.Parameters.AddWithValue("container_type", containerTypeId);
         if (await command.ExecuteScalarAsync(cancellationToken) is Guid slotId)
         {
             return slotId;
-        }
-
-        await using var mapped = new NpgsqlCommand(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM master.layout_slots ls
-                JOIN master.layout_slot_parts lsp
-                  ON lsp.layout_slot_id = ls.id
-                 AND lsp.part_id = @part
-                WHERE ls.layout_id = @layout
-                  AND ls.is_enabled
-                  AND ls.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM master.layout_slot_parts main_lsp
-                      JOIN master.product_groups main_pg
-                        ON main_pg.main_part_id = main_lsp.part_id
-                       AND main_pg.variant_id = @variant
-                       AND main_pg.is_active
-                      WHERE main_lsp.layout_slot_id = ls.id
-                        AND main_lsp.part_id <> @part
-                  )
-            )
-            """,
-            connection,
-            transaction);
-        mapped.Parameters.AddWithValue("layout", layoutId);
-        mapped.Parameters.AddWithValue("variant", variantId);
-        mapped.Parameters.AddWithValue("part", partId);
-        if (await mapped.ExecuteScalarAsync(cancellationToken) is true)
-        {
-            throw new WorkflowRuleException(
-                "PART_SLOT_CONTAINER_MISMATCH",
-                "Alt parçanın kasa tipi ile tanımlı makine alanının kasa tipi uyuşmuyor.");
         }
 
         throw new WorkflowRuleException(
