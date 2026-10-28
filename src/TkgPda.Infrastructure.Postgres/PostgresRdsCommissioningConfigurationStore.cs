@@ -14,6 +14,9 @@ public sealed class PostgresRdsCommissioningConfigurationStore(NpgsqlDataSource 
             FROM master.layout_slots s
             JOIN master.layouts l ON l.id = s.layout_id
             JOIN master.machines m ON m.id = l.machine_id
+            -- Context-free inventory stays on the legacy one-row mapping.
+            -- Planned names and profile-scoped live mappings are resolved only
+            -- when a navigation profile is known.
             LEFT JOIN integration.layout_slot_rds_mapping map ON map.layout_slot_id = s.id
             LEFT JOIN integration.rds_worksites rw ON rw.id = map.rds_worksite_id
             ORDER BY m.code, l.code, l.version, s.code, s.id

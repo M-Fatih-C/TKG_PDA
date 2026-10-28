@@ -23,6 +23,10 @@ public interface IApiDataStore
         Guid machineId,
         CancellationToken cancellationToken = default);
 
+    Task<MachineSummaryRecord?> FindMachineSummaryAsync(
+        Guid machineId,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<MachineSummaryRecord>> ListVisibleMachinesAsync(
         Guid userId,
         bool administrator,

@@ -8,8 +8,18 @@ public static class KnownRoleCodes
     public const string Supervisor = "SUPERVISOR";
     public const string LineOperator = "LINE_OPERATOR";
     public const string WarehouseOperator = "WAREHOUSE_OPERATOR";
+    public const string SemiFinishedWarehouseOperator = "SEMI_FINISHED_WAREHOUSE_OPERATOR";
+    public const string FinishedGoodsWarehouseOperator = "FINISHED_GOODS_WAREHOUSE_OPERATOR";
 
-    public static readonly string[] All = [Admin, Supervisor, LineOperator, WarehouseOperator];
+    public static readonly string[] All =
+    [
+        Admin,
+        Supervisor,
+        LineOperator,
+        WarehouseOperator,
+        SemiFinishedWarehouseOperator,
+        FinishedGoodsWarehouseOperator
+    ];
 }
 
 public sealed record AdminMutationContext(
@@ -43,7 +53,8 @@ public sealed record AdminDeviceRecord(
     string Type,
     bool IsActive,
     JsonElement Metadata,
-    long ConcurrencyToken);
+    long ConcurrencyToken,
+    Guid? MachineId = null);
 
 public sealed record AdminMachineRecord(
     Guid Id,
@@ -181,14 +192,16 @@ public sealed record CreateDeviceCommand(
     string Name,
     string Type,
     bool IsActive,
-    JsonElement Metadata);
+    JsonElement Metadata,
+    Guid? MachineId = null);
 
 public sealed record UpdateDeviceCommand(
     string Name,
     string Type,
     bool IsActive,
     JsonElement Metadata,
-    long ExpectedVersion);
+    long ExpectedVersion,
+    Guid? MachineId = null);
 
 public sealed record UpdateMachineCommand(
     string DisplayName,

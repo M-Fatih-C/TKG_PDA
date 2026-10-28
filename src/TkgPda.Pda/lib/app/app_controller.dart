@@ -10,8 +10,10 @@ import '../data/models/pda_models.dart';
 import '../data/repositories/pda_repository.dart';
 import '../features/transport/submission_coordinator.dart';
 import '../features/operation/production_coordinator.dart';
+import '../features/warehouse/internal_notification_client.dart';
 import '../features/warehouse/preparation_coordinator.dart';
 import '../features/warehouse/store_coordinator.dart';
+import '../features/warehouse/warehouse_notification_coordinator.dart';
 
 enum AppStage {
   starting,
@@ -26,11 +28,30 @@ enum AppStage {
   finishedGoodsStore,
 }
 
-/// Roles allowed to see and use the warehouse preparation console — the same
-/// set the backend's WarehousePreparation authorization policy grants.
-const _warehousePreparationRoles = {
+enum UiNoticeSeverity { success, info, warning, error }
+
+class UiNotice {
+  const UiNotice(this.message, this.severity);
+
+  final String message;
+  final UiNoticeSeverity severity;
+
+  bool get persistent =>
+      severity == UiNoticeSeverity.warning ||
+      severity == UiNoticeSeverity.error;
+}
+
+const _semiFinishedWarehouseRoles = {
   'ADMIN',
   'SUPERVISOR',
+  'SEMI_FINISHED_WAREHOUSE_OPERATOR',
+  'WAREHOUSE_OPERATOR',
+};
+
+const _finishedGoodsWarehouseRoles = {
+  'ADMIN',
+  'SUPERVISOR',
+  'FINISHED_GOODS_WAREHOUSE_OPERATOR',
   'WAREHOUSE_OPERATOR',
 };
 
@@ -78,23 +99,63 @@ class BatchCartItem {
 }
 
 class AppController extends ChangeNotifier {
-  AppController({
+  factory AppController({
     required PdaDataSource repository,
     required DeviceCodeStore deviceCodeStore,
     required SessionMemory session,
     SubmissionCoordinator? submissionCoordinator,
+    WarehouseNotificationCoordinator? warehouseNotificationCoordinator,
     bool enablePolling = true,
     bool enableProductionWorkflow = true,
+    bool? enableHeartbeat,
+    InternalNotificationClient? notificationClient,
+  }) {
+    final notifications =
+        warehouseNotificationCoordinator ?? WarehouseNotificationCoordinator();
+    return AppController._(
+      repository: repository,
+      deviceCodeStore: deviceCodeStore,
+      session: session,
+      submissionCoordinator: submissionCoordinator,
+      notifications: notifications,
+      enablePolling: enablePolling,
+      enableProductionWorkflow: enableProductionWorkflow,
+      enableHeartbeat: enableHeartbeat,
+      notificationClient: notificationClient,
+    );
+  }
+
+  AppController._({
+    required PdaDataSource repository,
+    required DeviceCodeStore deviceCodeStore,
+    required SessionMemory session,
+    required WarehouseNotificationCoordinator notifications,
+    SubmissionCoordinator? submissionCoordinator,
+    bool enablePolling = true,
+    bool enableProductionWorkflow = true,
+    bool? enableHeartbeat,
+    InternalNotificationClient? notificationClient,
   }) : _repository = repository,
        _deviceCodeStore = deviceCodeStore,
        _session = session,
        _submission = submissionCoordinator ?? SubmissionCoordinator(),
        _enablePolling = enablePolling,
        _enableProductionWorkflow = enableProductionWorkflow,
+       _enableHeartbeat = enableHeartbeat ?? enablePolling,
+       _notificationClient = notificationClient,
+       warehouseNotifications = notifications,
        production = ProductionCoordinator(repository),
-       preparation = PreparationCoordinator(repository),
-       store = StoreCoordinator(repository) {
+       preparation = PreparationCoordinator(
+         repository,
+         notificationCoordinator: notifications,
+       ),
+       store = StoreCoordinator(
+         repository,
+         notificationCoordinator: notifications,
+       ) {
     production.addListener(notifyListeners);
+    warehouseNotifications.addListener(notifyListeners);
+    _notificationClient?.onDelivery = _onWarehouseDelivery;
   }
 
   final PdaDataSource _repository;
@@ -103,11 +164,17 @@ class AppController extends ChangeNotifier {
   final SubmissionCoordinator _submission;
   final bool _enablePolling;
   final bool _enableProductionWorkflow;
+  final bool _enableHeartbeat;
+  final InternalNotificationClient? _notificationClient;
+  final WarehouseNotificationCoordinator warehouseNotifications;
   final ProductionCoordinator production;
   int _machineGeneration = 0;
   String? _restoredProductionId;
   int? _restoringProductionGeneration;
   String? _productionContextError;
+  DateTime? _lastSuccessfulQueueRefresh;
+
+  DateTime? get lastSuccessfulQueueRefresh => _lastSuccessfulQueueRefresh;
 
   bool get usesProductionWorkflow =>
       _enableProductionWorkflow &&
@@ -127,6 +194,11 @@ class AppController extends ChangeNotifier {
           _resolvedCompatibleVariant?.productGroupId ==
               production.active!.productGroupId);
   String? get productionContextError => _productionContextError;
+  bool get _hasCurrentJobTransport =>
+      _context?.activeTransportRequests.any(
+        (request) => request.blocksProductionTransition,
+      ) ??
+      false;
   bool get canStartProduction =>
       usesProductionWorkflow &&
       mutationEnabled &&
@@ -135,10 +207,12 @@ class AppController extends ChangeNotifier {
       !production.hasPending &&
       partSelectionReady &&
       (_context?.machine.permissions.canOperate ?? false) &&
-      (_context?.activeTransportRequests.isEmpty ?? false) &&
+      !_hasCurrentJobTransport &&
       _batchCart.isEmpty &&
       !hasAmbiguousSubmission &&
       !hasAmbiguousBatchSubmission;
+  // Legacy ENDING sessions remain recoverable after upgrades. New production
+  // ends close immediately once cleanup work is durably queued.
   bool get canEndProduction =>
       usesProductionWorkflow &&
       mutationEnabled &&
@@ -146,7 +220,6 @@ class AppController extends ChangeNotifier {
       production.active != null &&
       !production.hasPending &&
       (_context?.machine.permissions.canOperate ?? false) &&
-      (_context?.activeTransportRequests.isEmpty ?? false) &&
       _batchCart.isEmpty &&
       !hasAmbiguousSubmission &&
       !hasAmbiguousBatchSubmission;
@@ -162,7 +235,7 @@ class AppController extends ChangeNotifier {
   bool _foreground = true;
   bool _resumeValidationPending = false;
   ApiProblem? _problem;
-  String? _notice;
+  UiNotice? _notice;
   String? _submittingOperation;
   Timer? _pollTimer;
   Timer? _queuePollTimer;
@@ -189,6 +262,10 @@ class AppController extends ChangeNotifier {
   // single-item part-first fields above (which drive whichever cart item is
   // currently being configured).
   bool _batchMode = false;
+  final List<MachineRelatedPart> _selectedAltParts = [];
+  final Map<String, String> _altDemandKeys = {};
+  final Set<String> _altDemandInFlight = {};
+  String? _altBatchKey;
   final List<BatchCartItem> _batchCart = [];
   int _batchConfiguringIndex = -1;
   final BatchSubmissionCoordinator _batchSubmission =
@@ -224,6 +301,7 @@ class AppController extends ChangeNotifier {
   bool _operatorQueueLoading = false;
   String? _operatorQueueError;
   bool _operatorQueueTerminal = false;
+  AppStage? _taskReturnStage;
 
   String? _containerBatchKey;
   String? _containerBatchProductionId;
@@ -232,15 +310,32 @@ class AppController extends ChangeNotifier {
 
   AppStage get stage => _stage;
   String? get deviceCode => _deviceCode;
+  PdaDevice? get device => _session.device;
   AuthenticatedUser? get user => _session.user;
   bool get isAuthenticated => _session.isAuthenticated;
+  bool get isAdminOrSupervisor =>
+      (user?.roles ?? const []).any((r) => r == 'ADMIN' || r == 'SUPERVISOR');
+  bool get isLineOperator => (user?.roles ?? const []).any(
+    (r) => r == 'LINE_OPERATOR' || r == 'OPERATOR',
+  );
+  bool get isBoundLineTerminalOperator =>
+      isLineOperator && !isAdminOrSupervisor && device?.machineId != null;
   List<MachineSummary> get machines => _machines;
   MachineSummary? get selectedMachine => _selectedMachine;
   OperationalContext? get context => _context;
   bool get busy => _busy;
   bool get offline => _offline;
   ApiProblem? get problem => _problem;
-  String? get notice => _notice;
+  String? get notice => _notice?.message;
+  UiNotice? get uiNotice => _notice;
+
+  void acknowledgeTransientNotice() {
+    if (_notice != null && !_notice!.persistent) {
+      _notice = null;
+      notifyListeners();
+    }
+  }
+
   String? get submittingOperation => _submittingOperation;
   PendingOperation? get activePendingOperation => _activePendingOperation;
   PendingOperation? get ambiguousPendingOperation => _ambiguousPendingOperation;
@@ -341,6 +436,10 @@ class AppController extends ChangeNotifier {
 
   // Customer UI — Multi-Part Transport Batch.
   bool get batchMode => _batchMode;
+  List<MachineRelatedPart> get selectedAltParts =>
+      List.unmodifiable(_selectedAltParts);
+  bool isAltPartSelected(String partId) =>
+      _selectedAltParts.any((part) => part.partId == partId);
   List<BatchCartItem> get batchCart => List.unmodifiable(_batchCart);
   bool get isConfiguringBatchItem =>
       _batchConfiguringIndex >= 0 && _batchConfiguringIndex < _batchCart.length;
@@ -365,9 +464,16 @@ class AppController extends ChangeNotifier {
         .whereType<String>(),
   );
 
-  // Customer UI — Warehouse Preparation Console.
-  bool get canAccessWarehousePreparation =>
-      (user?.roles ?? const []).any(_warehousePreparationRoles.contains);
+  // Customer UI — Warehouse Capabilities.
+  bool get canAccessSemiFinishedWarehouse =>
+      (user?.roles ?? const []).any(_semiFinishedWarehouseRoles.contains);
+  bool get canAccessFinishedGoodsWarehouse =>
+      (user?.roles ?? const []).any(_finishedGoodsWarehouseRoles.contains);
+  bool get canAccessAnyWarehouse =>
+      canAccessSemiFinishedWarehouse || canAccessFinishedGoodsWarehouse;
+  bool get isWarehouseOnly =>
+      canAccessAnyWarehouse && !isLineOperator && !isAdminOrSupervisor;
+  bool get canAccessWarehousePreparation => canAccessSemiFinishedWarehouse;
   List<WarehousePreparationRequest> get warehousePreparationRequests =>
       _warehouseRequests;
   bool get warehousePreparationLoading => _warehouseLoading;
@@ -384,6 +490,33 @@ class AppController extends ChangeNotifier {
   bool get transportActionsReady =>
       partSelectionReady && productionTransportReady;
 
+  /// Mamul Kasa follows the active production main product. Alt-part
+  /// selection does not make this true or false.
+  bool get mamulActionsReady {
+    final active = production.active;
+    if (active == null) return transportActionsReady;
+    return production.verified &&
+        !production.hasPending &&
+        !active.isEnding &&
+        _productionContextError == null &&
+        _selectedMainPart?.partId == active.mainPartId &&
+        _context?.activeVariantId == active.variantId &&
+        _resolvedCompatibleVariant?.productGroupId == active.productGroupId &&
+        _context?.activeLayoutId != null;
+  }
+
+  EffectivePartSelection? get _mamulDemandPart {
+    final active = production.active;
+    if (active == null) return _selectedEffectivePart;
+    final main = _selectedMainPart;
+    if (main == null || main.partId != active.mainPartId) return null;
+    return EffectivePartSelection(
+      partId: active.mainPartId,
+      partCode: main.partCode,
+      isMain: true,
+    );
+  }
+
   bool operationInProgress(String operation) =>
       _operationInProgress(operation, _selectedEffectivePart?.partId);
 
@@ -398,6 +531,8 @@ class AppController extends ChangeNotifier {
     if (normalized.isEmpty || normalized.length > 120) {
       throw const FormatException('Geçerli bir cihaz kodu girin.');
     }
+    _stopHeartbeat();
+    await _releaseServerSessionBestEffort();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -411,10 +546,15 @@ class AppController extends ChangeNotifier {
 
   Future<void> beginDeviceCodeChange() async {
     if (isMutationInFlight) {
-      _notice = 'İşlem devam ederken cihaz kodu değiştirilemez.';
+      _notice = UiNotice(
+        'İşlem devam ederken cihaz kodu değiştirilemez.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
+    _stopHeartbeat();
+    await _releaseServerSessionBestEffort();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -432,41 +572,216 @@ class AppController extends ChangeNotifier {
     }
     _setBusy(true);
     _clearFeedback();
+    var serverSessionEstablished = false;
     try {
       final session = await _repository.login(employeeNumber.trim());
       _session.establish(session);
-      await _loadMachines();
-      _stage = AppStage.machines;
+      serverSessionEstablished = true;
+      final roles = session.user.roles;
+      final isAdminOrSupervisor =
+          roles.contains('ADMIN') || roles.contains('SUPERVISOR');
+      final isLegacyWarehouse = roles.contains('WAREHOUSE_OPERATOR');
+      final isSemiFinished = roles.contains('SEMI_FINISHED_WAREHOUSE_OPERATOR');
+      final isFinishedGoods = roles.contains(
+        'FINISHED_GOODS_WAREHOUSE_OPERATOR',
+      );
+      final isLineOperator =
+          roles.contains('LINE_OPERATOR') || roles.contains('OPERATOR');
+
+      if (!isAdminOrSupervisor && isLineOperator) {
+        final boundMachineId = session.device.machineId;
+        if (boundMachineId == null || boundMachineId.isEmpty) {
+          await _releaseServerSessionBestEffort();
+          _stopHeartbeat();
+          _session.clear();
+          _clearOperationalState();
+          _submission.clear();
+          _problem = const ApiProblem(
+            status: 403,
+            code: 'DEVICE_MACHINE_BINDING_REQUIRED',
+            detail:
+                'Bu terminal henüz bir makineye tanımlanmamış. Lütfen sistem yöneticisine başvurun.',
+            correlationId: null,
+          );
+          _stage = AppStage.login;
+          notifyListeners();
+          return false;
+        }
+
+        await _loadMachines();
+        final boundMachine = _machines.cast<MachineSummary?>().firstWhere(
+          (m) => m?.id == boundMachineId,
+          orElse: () => null,
+        );
+        if (boundMachine != null) {
+          _setBusy(false);
+          await selectMachine(boundMachine);
+        } else {
+          await _releaseServerSessionBestEffort();
+          _stopHeartbeat();
+          _session.clear();
+          _clearOperationalState();
+          _submission.clear();
+          _problem = const ApiProblem(
+            status: 403,
+            code: 'DEVICE_MACHINE_BINDING_REQUIRED',
+            detail:
+                'Terminalin bağlı olduğu makine sistemde bulunamadı veya doğrulanamadı.',
+            correlationId: null,
+          );
+          _stage = AppStage.login;
+          notifyListeners();
+          return false;
+        }
+      } else if (isAdminOrSupervisor) {
+        await _loadMachines();
+        _stage = AppStage.machines;
+      } else {
+        final devCodeUpper = _deviceCode?.toUpperCase() ?? '';
+        final isSemiDevice =
+            devCodeUpper.contains('YARI') || devCodeUpper.contains('SEMI');
+        final isFgDevice =
+            devCodeUpper.contains('BITMIS') ||
+            devCodeUpper.contains('FINISHED');
+
+        if (isSemiDevice && isSemiFinished) {
+          _stage = AppStage.preparationAreas;
+          if (_enablePolling) {
+            preparation.start();
+          }
+        } else if (isFgDevice && isFinishedGoods) {
+          _stage = AppStage.finishedGoodsStore;
+          if (_enablePolling) {
+            store.start();
+          }
+        } else if (isSemiFinished && !isFinishedGoods) {
+          _stage = AppStage.preparationAreas;
+          if (_enablePolling) {
+            preparation.start();
+          }
+        } else if (isFinishedGoods && !isSemiFinished) {
+          _stage = AppStage.finishedGoodsStore;
+          if (_enablePolling) {
+            store.start();
+          }
+        } else if (isLegacyWarehouse || (isSemiFinished && isFinishedGoods)) {
+          _stage = AppStage.warehouseHome;
+        } else {
+          await _loadMachines();
+          _stage = AppStage.machines;
+        }
+      }
       _offline = false;
+      _startHeartbeat();
+      if (canAccessFinishedGoodsWarehouse) {
+        await _startWarehouseNotifications();
+      }
       return true;
     } on ApiProblem catch (problem) {
+      if (serverSessionEstablished) {
+        await _releaseServerSessionBestEffort();
+        _stopHeartbeat();
+        _session.clear();
+        _clearOperationalState();
+        _submission.clear();
+      }
       _problem = problem;
       return false;
     } on ConnectivityException {
+      if (serverSessionEstablished) {
+        await _releaseServerSessionBestEffort();
+        _stopHeartbeat();
+        _session.clear();
+        _clearOperationalState();
+        _submission.clear();
+      }
       _offline = true;
-      _notice = 'Bağlantı yok — giriş yapılamadı.';
+      _notice = UiNotice(
+        'Bağlantı yok — giriş yapılamadı.',
+        UiNoticeSeverity.warning,
+      );
       return false;
+    } catch (e) {
+      if (serverSessionEstablished) {
+        await _releaseServerSessionBestEffort();
+        _stopHeartbeat();
+        _session.clear();
+        _clearOperationalState();
+        _submission.clear();
+      }
+      rethrow;
     } finally {
       _setBusy(false);
     }
   }
 
+  Future<void> _startWarehouseNotifications() async {
+    final client = _notificationClient;
+    if (client == null || !client.isSupported) return;
+    try {
+      final registration = await _repository.registerDeviceNotification();
+      if (registration.credential.isEmpty) return;
+      await client.start(
+        credential: registration.credential,
+        registrationId: registration.registrationId,
+      );
+    } catch (_) {
+      // A failed registration must not fail the warehouse login.
+    }
+  }
+
+  void _onWarehouseDelivery(Map<String, String> data) {
+    if (data['notificationType'] != 'FINISHED_GOODS_DELIVERY') return;
+    final unitId = data['unitId'];
+    if (unitId == null || unitId.isEmpty) return;
+    warehouseNotifications.notifyDelivery(
+      unitId: unitId,
+      locationName: data['locationName'] ?? '',
+      partCode: data['partCode'] ?? '',
+      machineCode: data['machineCode'],
+      requestNo: int.tryParse(data['requestNo'] ?? ''),
+    );
+  }
+
+  Future<void> _releaseServerSessionBestEffort() async {
+    if (!_session.isAuthenticated) return;
+    await _notificationClient?.stop();
+    try {
+      await _repository.logout();
+    } catch (_) {
+      // Best-effort session release: ignore errors so caller can continue cleanup.
+    }
+  }
+
   Future<void> logout() async {
     if (isMutationInFlight || production.hasPending) {
-      _notice = 'İşlem devam ederken oturum kapatılamaz.';
+      _notice = UiNotice(
+        'İşlem devam ederken oturum kapatılamaz.',
+        UiNoticeSeverity.warning,
+      );
       notifyListeners();
       return;
     }
-    _session.clear();
-    _clearOperationalState();
-    _submission.clear();
-    _ambiguousCommand = null;
-    _stage = _deviceCode == null ? AppStage.deviceSetup : AppStage.login;
-    _clearFeedback();
-    notifyListeners();
+    _stopHeartbeat();
+    await _notificationClient?.stop();
+    try {
+      await _repository.logout();
+    } catch (_) {
+      // Network timeout / offline: proceed with local logout.
+      // Server lease will expire after configured LeaseSeconds.
+    } finally {
+      _session.clear();
+      _clearOperationalState();
+      _submission.clear();
+      _ambiguousCommand = null;
+      _stage = _deviceCode == null ? AppStage.deviceSetup : AppStage.login;
+      _clearFeedback();
+      notifyListeners();
+    }
   }
 
   void handleUnauthorized() {
+    _stopHeartbeat();
     _session.clear();
     _clearOperationalState();
     _submission.clear();
@@ -481,6 +796,49 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Timer? _heartbeatTimer;
+
+  /// Whether the session heartbeat keepalive timer is currently running.
+  bool get isHeartbeatActive =>
+      _heartbeatTimer != null && _heartbeatTimer!.isActive;
+
+  /// Technical keepalive interval for field session lease.
+  /// Note: This is NOT a business timing; it is a session lease technical keepalive (Section 25).
+  static const Duration _heartbeatInterval = Duration(seconds: 30);
+
+  void _startHeartbeat() {
+    _stopHeartbeat();
+    if (!_enableHeartbeat) return;
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _onHeartbeat());
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  Future<void> _onHeartbeat() async {
+    if (!_session.isAuthenticated) {
+      _stopHeartbeat();
+      return;
+    }
+    try {
+      await _repository.heartbeatSession();
+    } on ApiProblem catch (problem) {
+      if (problem.isUnauthorized ||
+          problem.code == 'SESSION_NOT_ACTIVE' ||
+          problem.code == 'SESSION_EXPIRED') {
+        _stopHeartbeat();
+        handleUnauthorized();
+      }
+    } on ConnectivityException {
+      // Short-term network drop; do not log out locally.
+      // Server lease will naturally expire if keepalives stop completely.
+    } catch (_) {
+      // Transient error; server lease will expire if keepalives fail completely.
+    }
+  }
+
   Future<void> reloadMachines() async {
     if (!_session.isAuthenticated) {
       return;
@@ -492,7 +850,10 @@ class AppController extends ChangeNotifier {
       _offline = false;
     } on ConnectivityException {
       _offline = true;
-      _notice = 'Bağlantı yok — makine listesi güncellenemedi.';
+      _notice = UiNotice(
+        'Bağlantı yok — makine listesi güncellenemedi.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       _problem = problem;
     } finally {
@@ -502,7 +863,20 @@ class AppController extends ChangeNotifier {
 
   Future<void> selectMachine(MachineSummary machine) async {
     if (isMutationInFlight || production.hasPending) {
-      _notice = 'İşlem devam ederken makine değiştirilemez.';
+      _notice = UiNotice(
+        'İşlem devam ederken makine değiştirilemez.',
+        UiNoticeSeverity.error,
+      );
+      notifyListeners();
+      return;
+    }
+    if (!isAdminOrSupervisor &&
+        device?.machineId != null &&
+        machine.id != device!.machineId) {
+      _notice = const UiNotice(
+        'Bu terminal yalnızca tanımlı olduğu makine üzerinde işlem yapabilir.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
@@ -519,8 +893,14 @@ class AppController extends ChangeNotifier {
   }
 
   void leaveMachine() {
+    if (isBoundLineTerminalOperator) {
+      return;
+    }
     if (isMutationInFlight || production.hasPending) {
-      _notice = 'İşlem devam ederken sayfadan ayrılınamaz.';
+      _notice = UiNotice(
+        'İşlem devam ederken sayfadan ayrılınamaz.',
+        UiNoticeSeverity.warning,
+      );
       notifyListeners();
       return;
     }
@@ -563,8 +943,14 @@ class AppController extends ChangeNotifier {
         _submission.resolveByRefresh();
         _ambiguousCommand = null;
         _notice = next.activeTransportRequests.isEmpty
-            ? 'Belirsiz isteğin kabul edildiği doğrulanamadı. Yeni işlem öncesi durumu kontrol edin.'
-            : 'Aktif talep sunucudan doğrulandı.';
+            ? const UiNotice(
+                'Belirsiz isteğin kabul edildiği doğrulanamadı. Yeni işlem öncesi durumu kontrol edin.',
+                UiNoticeSeverity.warning,
+              )
+            : const UiNotice(
+                'Aktif talep sunucudan doğrulandı.',
+                UiNoticeSeverity.success,
+              );
       }
       if (_selectedEffectivePart != null &&
           _resolvedCompatibleVariant != null &&
@@ -575,7 +961,10 @@ class AppController extends ChangeNotifier {
     } on ConnectivityException {
       if (generation == _machineGeneration) {
         _offline = true;
-        _notice = 'Bağlantı yok — bilgiler güncel olmayabilir.';
+        _notice = UiNotice(
+          'Bağlantı yok — bilgiler güncel olmayabilir.',
+          UiNoticeSeverity.warning,
+        );
         _stopPolling();
       }
     } on ApiProblem catch (problem) {
@@ -617,7 +1006,10 @@ class AppController extends ChangeNotifier {
         (!production.verified ||
             production.active != null ||
             production.hasPending)) {
-      _notice = 'Üretim açıkken varyant değiştirilemez.';
+      _notice = UiNotice(
+        'Üretim açıkken varyant değiştirilemez.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
@@ -638,13 +1030,22 @@ class AppController extends ChangeNotifier {
       if (!preservePartSelection) {
         resetPartSelection();
       }
-      _notice = 'Üretim varyantı güncellendi.';
+      _notice = UiNotice(
+        'Üretim varyantı güncellendi.',
+        UiNoticeSeverity.success,
+      );
     } on ConnectivityException {
       _offline = true;
-      _notice = 'Bağlantı yok — varyant değiştirilemedi.';
+      _notice = UiNotice(
+        'Bağlantı yok — varyant değiştirilemedi.',
+        UiNoticeSeverity.warning,
+      );
     } on AmbiguousMutationException {
       _offline = true;
-      _notice = 'Varyant değişikliğinin sonucu doğrulanamadı. Yenileyin.';
+      _notice = UiNotice(
+        'Varyant değişikliğinin sonucu doğrulanamadı. Yenileyin.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       if (problem.shouldRefetch) {
         await refreshContext();
@@ -665,7 +1066,10 @@ class AppController extends ChangeNotifier {
   /// no second "use the main part" confirmation step.
   Future<void> selectMainPartOption(MachineMainPartOption option) async {
     if (!canChangePartSelection) {
-      _notice = 'Talebin sonucu doğrulanmadan parça değiştirilemez.';
+      _notice = UiNotice(
+        'Talebin sonucu doğrulanmadan parça değiştirilemez.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
@@ -692,7 +1096,10 @@ class AppController extends ChangeNotifier {
                   (part) => part.partId == selection.partId,
                 ) ??
                 false))) {
-      _notice = 'Talebin sonucu doğrulanmadan parça değiştirilemez.';
+      _notice = UiNotice(
+        'Talebin sonucu doğrulanmadan parça değiştirilemez.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
@@ -718,7 +1125,10 @@ class AppController extends ChangeNotifier {
   /// the already-loaded operational context/slots.
   void resetPartSelection() {
     if (!canChangePartSelection) {
-      _notice = 'Talebin sonucu doğrulanmadan parça değiştirilemez.';
+      _notice = UiNotice(
+        'Talebin sonucu doğrulanmadan parça değiştirilemez.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
@@ -753,16 +1163,169 @@ class AppController extends ChangeNotifier {
   /// successful submission or an explicit operator cancel — never on a
   /// recoverable failure (ambiguous/API error), so a failed submit keeps the
   /// cart intact for retry.
+  ///
+  /// During an active production session the main part, variant and mamul
+  /// context stay. Resetting the part selection is refused in that state and
+  /// would surface a false error, so only the batch-specific state is cleared.
   void exitBatchSelection() {
     _containerBatchProductionId = null;
     _batchMode = false;
+    _selectedAltParts.clear();
+    _altBatchKey = null;
     _batchCart.clear();
     _batchConfiguringIndex = -1;
     _batchSubmission.clear();
     _containerBatchKey = null;
     _containerBatchAmbiguous = false;
-    resetPartSelection();
+    if (production.active == null) {
+      resetPartSelection();
+    }
     notifyListeners();
+  }
+
+  /// Alt-part demand is only "I want this material". The operator never
+  /// chooses a container, load or slot. A repeated tap while the first
+  /// request is still in flight reuses the same idempotency key; after the
+  /// response, the server keeps one active chain per part and physical slot.
+  Future<void> requestAltPart(MachineRelatedPart part) async {
+    if (!part.requestable) {
+      _notice = const UiNotice(
+        'Taşıma kabı bilgisi bekleniyor',
+        UiNoticeSeverity.error,
+      );
+      notifyListeners();
+      return;
+    }
+    if (production.active?.isEnding == true) {
+      _notice = const UiNotice(
+        'Üretim bitiriliyor. Yeni alt parça talebi açılamaz.',
+        UiNoticeSeverity.error,
+      );
+      notifyListeners();
+      return;
+    }
+    if (_batchMode) {
+      if (isAltPartSelected(part.partId)) {
+        _selectedAltParts.removeWhere((item) => item.partId == part.partId);
+      } else {
+        _selectedAltParts.add(part);
+      }
+      notifyListeners();
+      return;
+    }
+    final machine = _context?.machine;
+    if (machine == null || !productionTransportReady) {
+      _notice = UiNotice(
+        'Alt parça talebi için aktif üretim gerekir.',
+        UiNoticeSeverity.error,
+      );
+      notifyListeners();
+      return;
+    }
+    if (_altDemandInFlight.contains(part.partId) || !mutationGate.canMutate) {
+      return;
+    }
+    final key = _altDemandKeys.putIfAbsent(
+      part.partId,
+      () => 'part-demand:${part.partId}:${_cartIdFactory.v4()}',
+    );
+    _altDemandInFlight.add(part.partId);
+    _setBusy(true);
+    try {
+      final result = await _repository.createPartDemand(
+        machineId: machine.id,
+        partId: part.partId,
+        idempotencyKey: key,
+      );
+      _altDemandKeys.remove(part.partId);
+      _notice = UiNotice(
+        result.predecessorRequestNo == null
+            ? '${part.partCode} talebi oluşturuldu. Talep #${result.requestNo}.'
+            : '${part.partCode} için mevcut palet kaldırılıp yeni palet isteniyor. Talep #${result.requestNo}.',
+        UiNoticeSeverity.success,
+      );
+      await refreshContext();
+    } on ConnectivityException {
+      _notice = UiNotice(
+        'Bağlantı yok — alt parça talebi gönderilemedi.',
+        UiNoticeSeverity.warning,
+      );
+    } on ApiProblem catch (problem) {
+      if (problem.code == 'PART_REQUEST_ALREADY_ACTIVE') {
+        _notice = UiNotice(problem.detail, UiNoticeSeverity.warning);
+        _altDemandKeys.remove(part.partId);
+        await refreshContext();
+      } else {
+        _notice = UiNotice(problem.operatorMessage, UiNoticeSeverity.error);
+      }
+    } finally {
+      _altDemandInFlight.remove(part.partId);
+      _setBusy(false);
+    }
+  }
+
+  Future<void> submitSelectedAltParts() async {
+    if (production.active?.isEnding == true) {
+      _notice = const UiNotice(
+        'Üretim bitiriliyor. Yeni alt parça talebi açılamaz.',
+        UiNoticeSeverity.error,
+      );
+      notifyListeners();
+      return;
+    }
+    final machine = _context?.machine;
+    if (machine == null ||
+        _selectedAltParts.isEmpty ||
+        !mutationGate.canMutate) {
+      return;
+    }
+    final key = _altBatchKey ??= 'part-demand-batch:${_cartIdFactory.v4()}';
+    final partIds = _selectedAltParts.map((part) => part.partId).toList();
+    _setBusy(true);
+    try {
+      final result = await _repository.createPartDemandBatch(
+        machineId: machine.id,
+        partIds: partIds,
+        idempotencyKey: key,
+      );
+      final rejected = result.rejectedItems;
+      final remainingIds = rejected
+          .where((item) => item.code != 'PART_REQUEST_ALREADY_ACTIVE')
+          .map((item) => item.partId)
+          .toSet();
+      final details = rejected
+          .map((item) {
+            final part = _selectedAltParts.where(
+              (part) => part.partId == item.partId,
+            );
+            return '${part.isEmpty ? 'Parça' : part.first.partCode}: ${item.message}';
+          })
+          .join('\n');
+      _notice = UiNotice(
+        '${result.items.length} alt parça talebi oluşturuldu.${details.isEmpty ? '' : '\n$details'}',
+        rejected.isEmpty ? UiNoticeSeverity.success : UiNoticeSeverity.warning,
+      );
+      _selectedAltParts.removeWhere(
+        (part) => !remainingIds.contains(part.partId),
+      );
+      _altBatchKey = null;
+      _batchMode = _selectedAltParts.isNotEmpty;
+      await refreshContext();
+    } on ConnectivityException {
+      _notice = UiNotice(
+        'Bağlantı yok — toplu alt parça talebi gönderilemedi.',
+        UiNoticeSeverity.warning,
+      );
+    } on ApiProblem catch (problem) {
+      if (problem.code == 'PART_REQUEST_ALREADY_ACTIVE') {
+        _notice = UiNotice(problem.detail, UiNoticeSeverity.warning);
+        await refreshContext();
+      } else {
+        _notice = UiNotice(problem.operatorMessage, UiNoticeSeverity.error);
+      }
+    } finally {
+      _setBusy(false);
+    }
   }
 
   /// Adds [part] (main, RELATED or ALT) to the cart. Returns false without
@@ -892,7 +1455,10 @@ class AppController extends ChangeNotifier {
     if (variantId == null ||
         layoutId == null ||
         _batchCart.any((item) => item.variantId != variantId)) {
-      _notice = 'Grup, makinenin tek etkin varyantıyla uyumlu değil.';
+      _notice = UiNotice(
+        'Grup, makinenin tek etkin varyantıyla uyumlu değil.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
@@ -913,9 +1479,12 @@ class AppController extends ChangeNotifier {
         idempotencyKey: key,
         productionSessionId: _containerBatchProductionId,
       );
-      _notice = result.idempotentReplay
-          ? 'Grup talebi doğrulandı.'
-          : 'Grup talebi oluşturuldu: ${result.items.length} işlem.';
+      _notice = UiNotice(
+        result.idempotentReplay
+            ? 'Grup talebi doğrulandı.'
+            : 'Grup talebi oluşturuldu: ${result.items.length} işlem.',
+        UiNoticeSeverity.success,
+      );
       _containerBatchKey = null;
       _containerBatchAmbiguous = false;
       exitBatchSelection();
@@ -923,8 +1492,10 @@ class AppController extends ChangeNotifier {
     } on AmbiguousMutationException {
       _containerBatchAmbiguous = true;
       _offline = true;
-      _notice =
-          'Grup gönderiminin sonucu belirsiz. Aynı seçim aynı anahtarla yeniden denenebilir.';
+      _notice = const UiNotice(
+        'Grup gönderiminin sonucu belirsiz. Aynı seçim aynı anahtarla yeniden denenebilir.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       _problem = problem;
       if (problem.shouldRefetch) {
@@ -947,18 +1518,16 @@ class AppController extends ChangeNotifier {
   /// machine selection or part-first state.
   final PreparationCoordinator preparation;
 
-  /// The warehouse tablet home. Same roles as the preparation console: the
-  /// backend's WarehousePreparation policy is the authority, this only decides
-  /// what to draw.
+  /// The warehouse tablet home.
   void enterWarehouseHome() {
-    if (!canAccessWarehousePreparation || isMutationInFlight) return;
+    if (!canAccessAnyWarehouse || isMutationInFlight) return;
     _stage = AppStage.warehouseHome;
     _clearFeedback();
     notifyListeners();
   }
 
   void enterPreparationAreas() {
-    if (!canAccessWarehousePreparation || isMutationInFlight) return;
+    if (!canAccessSemiFinishedWarehouse || isMutationInFlight) return;
     _stage = AppStage.preparationAreas;
     _clearFeedback();
     notifyListeners();
@@ -967,8 +1536,11 @@ class AppController extends ChangeNotifier {
 
   void leavePreparationAreas() {
     if (preparation.inFlight) return;
-    preparation.stop();
-    _stage = AppStage.warehouseHome;
+    if (canAccessAnyWarehouse) {
+      _stage = AppStage.warehouseHome;
+    } else {
+      _stage = AppStage.machines;
+    }
     _clearFeedback();
     notifyListeners();
   }
@@ -978,7 +1550,7 @@ class AppController extends ChangeNotifier {
   final StoreCoordinator store;
 
   void enterFinishedGoodsStore() {
-    if (!canAccessWarehousePreparation || isMutationInFlight) return;
+    if (!canAccessFinishedGoodsWarehouse || isMutationInFlight) return;
     _stage = AppStage.finishedGoodsStore;
     _clearFeedback();
     notifyListeners();
@@ -987,14 +1559,19 @@ class AppController extends ChangeNotifier {
 
   void leaveFinishedGoodsStore() {
     if (store.inFlight) return;
-    store.stop();
-    _stage = AppStage.warehouseHome;
+    if (canAccessAnyWarehouse) {
+      _stage = AppStage.warehouseHome;
+    } else {
+      _stage = AppStage.machines;
+    }
     _clearFeedback();
     notifyListeners();
   }
 
   void leaveWarehouseHome() {
     if (isMutationInFlight) return;
+    preparation.stop();
+    store.stop();
     _stage = AppStage.machines;
     _clearFeedback();
     notifyListeners();
@@ -1005,16 +1582,12 @@ class AppController extends ChangeNotifier {
   /// Kept separate from the line-operator part-selection flow: this stage
   /// never touches machine selection or part-first state, and vice versa.
   Future<void> enterWarehousePreparation() async {
-    if (!canAccessWarehousePreparation || isMutationInFlight) return;
-    _stage = AppStage.warehousePreparation;
-    _clearFeedback();
-    notifyListeners();
-    await loadWarehousePreparationRequests();
+    enterPreparationAreas();
   }
 
   void leaveWarehousePreparation() {
     if (isMutationInFlight) return;
-    _stage = AppStage.machines;
+    _stage = canAccessAnyWarehouse ? AppStage.warehouseHome : AppStage.machines;
     _warehouseRequests = const [];
     _warehouseError = null;
     _clearFeedback();
@@ -1056,15 +1629,22 @@ class AppController extends ChangeNotifier {
       _warehouseRequests = _warehouseRequests
           .where((request) => request.requestId != requestId)
           .toList(growable: false);
-      _notice =
-          'Hazırlık onaylandı. Taşıma, koşullar uygun olduğunda otomatik başlayacak.';
+      _notice = const UiNotice(
+        'Hazırlık onaylandı. Taşıma, koşullar uygun olduğunda otomatik başlayacak.',
+        UiNoticeSeverity.success,
+      );
     } on ConnectivityException {
       _offline = true;
-      _notice = 'Bağlantı yok — hazır durumu doğrulanamadı. Yeniden deneyin.';
+      _notice = UiNotice(
+        'Bağlantı yok — hazır durumu doğrulanamadı. Yeniden deneyin.',
+        UiNoticeSeverity.warning,
+      );
     } on AmbiguousMutationException {
       _offline = true;
-      _notice =
-          'Hazır durumunun sunucuya ulaştığı doğrulanamadı. Yeniden deneyebilirsiniz.';
+      _notice = const UiNotice(
+        'Hazır durumunun sunucuya ulaştığı doğrulanamadı. Yeniden deneyebilirsiniz.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       _problem = problem;
     } finally {
@@ -1192,7 +1772,10 @@ class AppController extends ChangeNotifier {
             ),
           );
     if (option == null) {
-      _notice = 'Seçilen varyant için düzenli bir yerleşim bulunamadı.';
+      _notice = UiNotice(
+        'Seçilen varyant için düzenli bir yerleşim bulunamadı.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
@@ -1211,13 +1794,18 @@ class AppController extends ChangeNotifier {
 
   Future<void> _loadContainerPositions(int generation) async {
     final current = _context;
-    final part = _selectedEffectivePart;
+    final part = _mamulDemandPart;
     final variant = _resolvedCompatibleVariant;
+    final active = production.active;
     final layoutId = current?.activeLayoutId;
     if (current == null ||
         part == null ||
         variant == null ||
-        layoutId == null) {
+        layoutId == null ||
+        (active != null &&
+            (variant.variantId != active.variantId ||
+                variant.productGroupId != active.productGroupId ||
+                part.partId != active.mainPartId))) {
       _resetContainerPositions();
       return;
     }
@@ -1229,11 +1817,11 @@ class AppController extends ChangeNotifier {
         machineId: current.machine.id,
         variantId: variant.variantId,
         layoutId: layoutId,
-        productGroupId: variant.productGroupId,
+        productGroupId: active?.productGroupId ?? variant.productGroupId,
         partId: part.partId,
       );
       if (generation == _partResolutionGeneration &&
-          _selectedEffectivePart?.partId == part.partId &&
+          _mamulDemandPart?.partId == part.partId &&
           _resolvedCompatibleVariant?.variantId == variant.variantId) {
         _containerPositions = positions;
       }
@@ -1267,9 +1855,9 @@ class AppController extends ChangeNotifier {
     ContainerPosition position,
     String action,
   ) async {
-    if (!productionTransportReady) return;
+    if (!mamulActionsReady) return;
     final current = _context;
-    final part = _selectedEffectivePart;
+    final part = _mamulDemandPart;
     final variant = _resolvedCompatibleVariant;
     final variantId = current?.activeVariantId;
     final layoutId = current?.activeLayoutId;
@@ -1279,7 +1867,10 @@ class AppController extends ChangeNotifier {
         variantId == null ||
         layoutId == null ||
         variant.variantId != variantId) {
-      _notice = 'İşlem bağlamı değişti. Bilgileri yenileyin.';
+      _notice = UiNotice(
+        'İşlem bağlamı değişti. Bilgileri yenileyin.',
+        UiNoticeSeverity.warning,
+      );
       notifyListeners();
       return;
     }
@@ -1288,7 +1879,10 @@ class AppController extends ChangeNotifier {
         ? position.fullAction
         : position.emptyAction;
     if (!availability.enabled) {
-      _notice = availability.disabledMessage ?? 'Bu işlem şu anda hazır değil.';
+      _notice = UiNotice(
+        availability.disabledMessage ?? 'Bu işlem şu anda hazır değil.',
+        UiNoticeSeverity.warning,
+      );
       notifyListeners();
       return;
     }
@@ -1304,22 +1898,27 @@ class AppController extends ChangeNotifier {
       return;
     }
 
-    if (_batchMode) {
+    if (_batchMode && production.active == null) {
       final existingIndex = _batchCart.indexWhere(
         (item) =>
             item.effectivePart.partId == part.partId &&
             item.command?.positionNumber == position.positionNumber,
       );
       if (existingIndex != -1) {
-        _notice = '${part.partCode} · ${position.label} zaten sepette ekli.';
+        _notice = UiNotice(
+          '${part.partCode} · ${position.label} zaten sepette ekli.',
+          UiNoticeSeverity.error,
+        );
         notifyListeners();
         return;
       }
 
       if (_batchCart.isNotEmpty &&
           _batchCart.any((item) => item.variantId != variantId)) {
-        _notice =
-            'Tüm toplu talepler aynı varyanta (${_batchCart.first.variantCode}) ait olmalıdır.';
+        _notice = UiNotice(
+          'Tüm toplu talepler aynı varyanta (${_batchCart.first.variantCode}) ait olmalıdır.',
+          UiNoticeSeverity.error,
+        );
         notifyListeners();
         return;
       }
@@ -1337,8 +1936,10 @@ class AppController extends ChangeNotifier {
             ..variantId = variantId;
 
       _batchCart.add(cartItem);
-      _notice =
-          '${part.partCode} · ${position.label} (${action == 'FULL' ? 'Dolu' : 'Boş'}) sepete eklendi.';
+      _notice = UiNotice(
+        '${part.partCode} · ${position.label} (${action == 'FULL' ? 'Dolu' : 'Boş'}) sepete eklendi.',
+        UiNoticeSeverity.success,
+      );
       notifyListeners();
       return;
     }
@@ -1395,9 +1996,12 @@ class AppController extends ChangeNotifier {
       _ambiguousPendingOperation = null;
       _ambiguousContainerPosition = null;
       _ambiguousContainerAction = null;
-      _notice = result.idempotentReplay
-          ? 'Mevcut kasa talebi doğrulandı.'
-          : '${position.label} talebi oluşturuldu.';
+      _notice = UiNotice(
+        result.idempotentReplay
+            ? 'Mevcut kasa talebi doğrulandı.'
+            : '${position.label} talebi oluşturuldu.',
+        UiNoticeSeverity.success,
+      );
       await refreshContext();
     } on AmbiguousMutationException {
       _activePendingOperation = null;
@@ -1405,8 +2009,10 @@ class AppController extends ChangeNotifier {
       _ambiguousContainerPosition = position;
       _ambiguousContainerAction = action;
       _offline = true;
-      _notice =
-          'Gönderim sonucu belirsiz. Aynı kasa işlemi aynı anahtarla yeniden denenecek.';
+      _notice = const UiNotice(
+        'Gönderim sonucu belirsiz. Aynı kasa işlemi aynı anahtarla yeniden denenecek.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       _activePendingOperation = null;
       _containerActionKeys.remove(material);
@@ -1468,17 +2074,22 @@ class AppController extends ChangeNotifier {
       _removeAllKey = null;
       _removeAllProductionId = null;
       _removeAllAmbiguous = false;
-      _notice = result.idempotentReplay
-          ? 'Kaldırma grubu doğrulandı.'
-          : '${result.itemCount} kasa için kaldırma talebi oluşturuldu.';
+      _notice = UiNotice(
+        result.idempotentReplay
+            ? 'Kaldırma grubu doğrulandı.'
+            : '${result.itemCount} kasa için kaldırma talebi oluşturuldu.',
+        UiNoticeSeverity.success,
+      );
       await refreshContext();
     } on AmbiguousMutationException {
       _activePendingOperation = null;
       _ambiguousPendingOperation = pending;
       _removeAllAmbiguous = true;
       _offline = true;
-      _notice =
-          'Tüm kasaları kaldırma sonucunun ulaştığı doğrulanamadı. Aynı istek yeniden denenebilir.';
+      _notice = const UiNotice(
+        'Tüm kasaları kaldırma sonucunun ulaştığı doğrulanamadı. Aynı istek yeniden denenebilir.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       _activePendingOperation = null;
       _removeAllKey = null;
@@ -1495,6 +2106,9 @@ class AppController extends ChangeNotifier {
 
   Future<void> enterTasks() async {
     if (!_session.isAuthenticated || isMutationInFlight) return;
+    if (_stage != AppStage.tasks) {
+      _taskReturnStage = _stage;
+    }
     _stage = AppStage.tasks;
     _operatorQueueTerminal = false;
     _clearFeedback();
@@ -1505,10 +2119,17 @@ class AppController extends ChangeNotifier {
   void leaveTasks() {
     if (isMutationInFlight) return;
     _stopQueuePolling();
-    _stage = AppStage.machines;
+    final returnStage =
+        _taskReturnStage ??
+        (isBoundLineTerminalOperator ? AppStage.operation : AppStage.machines);
+    _taskReturnStage = null;
+    _stage = returnStage;
     _operatorQueue = null;
     _operatorQueueError = null;
     notifyListeners();
+    if (_stage == AppStage.operation && _selectedMachine != null) {
+      unawaited(refreshContext());
+    }
   }
 
   Future<void> setOperatorQueueTerminal(bool value) async {
@@ -1531,6 +2152,7 @@ class AppController extends ChangeNotifier {
         offset: offset,
       );
       _offline = false;
+      _lastSuccessfulQueueRefresh = DateTime.now();
     } on ConnectivityException {
       _offline = true;
       if (!silent) {
@@ -1569,38 +2191,6 @@ class AppController extends ChangeNotifier {
     _queuePollTimer = null;
   }
 
-  Future<void> cancelQueueItem(String requestId) async {
-    if (!mutationGate.canMutate) {
-      return;
-    }
-    _setBusy(true);
-    _clearFeedback();
-    try {
-      final result = await _repository.cancel(requestId);
-      _notice = result.status == 'CANCELLED'
-          ? 'Görev iptal edildi.'
-          : 'İptal durumu sunucudan güncellendi.';
-      await loadOperatorQueue(
-        offset: _operatorQueue?.offset ?? 0,
-        silent: true,
-      );
-    } on AmbiguousMutationException {
-      _offline = true;
-      _notice =
-          'İptal sonucunun fiziksel olarak tamamlandığı doğrulanamadı. Durumu yenileyin.';
-    } on ApiProblem catch (problem) {
-      _problem = problem;
-      if (problem.shouldRefetch) {
-        await loadOperatorQueue(
-          offset: _operatorQueue?.offset ?? 0,
-          silent: true,
-        );
-      }
-    } finally {
-      _setBusy(false);
-    }
-  }
-
   Future<void> refreshRobots() async {
     if (!_session.isAuthenticated) return;
     try {
@@ -1616,10 +2206,16 @@ class AppController extends ChangeNotifier {
     _setBusy(true);
     try {
       await _repository.pauseRobot(vehicles);
-      _notice = 'Robot navigasyonu duraklatıldı.';
+      _notice = UiNotice(
+        'Robot navigasyonu duraklatıldı.',
+        UiNoticeSeverity.success,
+      );
       await refreshRobots();
     } catch (_) {
-      _notice = 'Robot duraklatılamadı.';
+      _notice = const UiNotice(
+        'Robot duraklatılamadı.',
+        UiNoticeSeverity.error,
+      );
     } finally {
       _setBusy(false);
     }
@@ -1630,10 +2226,16 @@ class AppController extends ChangeNotifier {
     _setBusy(true);
     try {
       await _repository.resumeRobot(vehicles);
-      _notice = 'Robot navigasyonu devam ettirildi.';
+      _notice = UiNotice(
+        'Robot navigasyonu devam ettirildi.',
+        UiNoticeSeverity.success,
+      );
       await refreshRobots();
     } catch (_) {
-      _notice = 'Robot devam ettirilemedi.';
+      _notice = const UiNotice(
+        'Robot devam ettirilemedi.',
+        UiNoticeSeverity.error,
+      );
     } finally {
       _setBusy(false);
     }
@@ -1644,10 +2246,16 @@ class AppController extends ChangeNotifier {
     _setBusy(true);
     try {
       await _repository.clearRobotErrors(vehicles);
-      _notice = 'Robot hataları temizlendi.';
+      _notice = UiNotice(
+        'Robot hataları temizlendi.',
+        UiNoticeSeverity.success,
+      );
       await refreshRobots();
     } catch (_) {
-      _notice = 'Robot hataları temizlenemedi.';
+      _notice = const UiNotice(
+        'Robot hataları temizlenemedi.',
+        UiNoticeSeverity.error,
+      );
     } finally {
       _setBusy(false);
     }
@@ -1658,13 +2266,19 @@ class AppController extends ChangeNotifier {
     _setBusy(true);
     try {
       await _repository.setRequestPriority(requestId, priority);
-      _notice = 'Görev önceliği güncellendi.';
+      _notice = UiNotice(
+        'Görev önceliği güncellendi.',
+        UiNoticeSeverity.success,
+      );
       await loadOperatorQueue(
         offset: _operatorQueue?.offset ?? 0,
         silent: true,
       );
     } catch (_) {
-      _notice = 'Öncelik güncellenemedi.';
+      _notice = const UiNotice(
+        'Öncelik güncellenemedi.',
+        UiNoticeSeverity.error,
+      );
     } finally {
       _setBusy(false);
     }
@@ -1702,7 +2316,10 @@ class AppController extends ChangeNotifier {
       ),
     );
     if (group == null) {
-      _notice = 'Seçilen ana ürünün üretim bilgileri doğrulanamadı.';
+      _notice = UiNotice(
+        'Seçilen ana ürünün üretim bilgileri doğrulanamadı.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return;
     }
@@ -1716,11 +2333,14 @@ class AppController extends ChangeNotifier {
     );
     final error = production.error;
     await refreshContext();
-    _notice =
-        error ??
-        (production.active != null
-            ? 'Üretim başladı.'
-            : 'Üretim durumu güncellendi.');
+    _notice = error != null
+        ? UiNotice(error, UiNoticeSeverity.error)
+        : UiNotice(
+            production.active != null
+                ? 'Üretim başladı.'
+                : 'Üretim durumu güncellendi.',
+            UiNoticeSeverity.success,
+          );
     notifyListeners();
   }
 
@@ -1729,7 +2349,14 @@ class AppController extends ChangeNotifier {
     await production.end();
     final error = production.error;
     await refreshContext();
-    _notice = error ?? 'Üretim durumu güncellendi.';
+    _notice = error != null
+        ? UiNotice(error, UiNoticeSeverity.error)
+        : UiNotice(
+            production.active?.isEnding == true
+                ? 'Üretim bitiriliyor. Paletler sırayla kaldırılacak.'
+                : 'Üretim bitirildi. Kaldırma görevleri arka planda devam ediyor; yeni işe geçebilirsiniz.',
+            UiNoticeSeverity.success,
+          );
     notifyListeners();
   }
 
@@ -1743,7 +2370,7 @@ class AppController extends ChangeNotifier {
     await production.retry();
     final error = production.error;
     await refreshContext();
-    if (error != null) _notice = error;
+    if (error != null) _notice = UiNotice(error, UiNoticeSeverity.error);
     notifyListeners();
   }
 
@@ -1800,8 +2427,20 @@ class AppController extends ChangeNotifier {
             (part) => MachineRelatedPart(
               partId: part.partId,
               partCode: part.partCode,
-              description: null,
+              description: _firstOrNull(
+                main.relatedParts.where((item) => item.partId == part.partId),
+              )?.description,
               relationType: part.relationType,
+              requestable:
+                  part.relationType != 'ALT_PART' ||
+                  (part.containerTypeId != null &&
+                      part.containerTypeId!.isNotEmpty),
+              blockers:
+                  part.relationType == 'ALT_PART' &&
+                      (part.containerTypeId == null ||
+                          part.containerTypeId!.isEmpty)
+                  ? const ['CONTAINER_TYPE_MISSING']
+                  : const [],
             ),
           )
           .toList(growable: false),
@@ -1899,7 +2538,10 @@ class AppController extends ChangeNotifier {
     }
     if (!_submission.hasAmbiguousRequest &&
         _operationInProgress(command.operation, command.partId)) {
-      _notice = 'Bu işlem için aktif bir taşıma talebi zaten var.';
+      _notice = UiNotice(
+        'Bu işlem için aktif bir taşıma talebi zaten var.',
+        UiNoticeSeverity.error,
+      );
       notifyListeners();
       return null;
     }
@@ -1911,17 +2553,22 @@ class AppController extends ChangeNotifier {
         command,
         _repository.createTransport,
       );
-      _notice = result.idempotentReplay
-          ? 'Mevcut talep doğrulandı.'
-          : 'Taşıma talebi oluşturuldu.';
+      _notice = UiNotice(
+        result.idempotentReplay
+            ? 'Mevcut talep doğrulandı.'
+            : 'Taşıma talebi oluşturuldu.',
+        UiNoticeSeverity.success,
+      );
       await refreshContext();
       _ambiguousCommand = null;
       return result;
     } on AmbiguousMutationException {
       _ambiguousCommand = command;
       _offline = true;
-      _notice =
-          'Gönderim sonucu belirsiz. Aynı komut aynı anahtarla yeniden denenebilir veya durum yenilenebilir.';
+      _notice = const UiNotice(
+        'Gönderim sonucu belirsiz. Aynı komut aynı anahtarla yeniden denenebilir veya durum yenilenebilir.',
+        UiNoticeSeverity.warning,
+      );
       return null;
     } on ApiProblem catch (problem) {
       // refreshContext() unconditionally clears _problem on success, so it
@@ -1935,7 +2582,10 @@ class AppController extends ChangeNotifier {
       _problem = problem;
       return null;
     } on StateError {
-      _notice = 'İşlem bilgileri değişti. Durumu yenileyip tekrar deneyin.';
+      _notice = UiNotice(
+        'İşlem bilgileri değişti. Durumu yenileyip tekrar deneyin.',
+        UiNoticeSeverity.warning,
+      );
       return null;
     } finally {
       _submittingOperation = null;
@@ -1995,16 +2645,21 @@ class AppController extends ChangeNotifier {
       _ambiguousPendingOperation = null;
       _ambiguousContainerPosition = null;
       _ambiguousContainerAction = null;
-      _notice = result.idempotentReplay
-          ? 'Mevcut kasa talebi doğrulandı.'
-          : '${pending.logicalContainerNumber ?? 1}. Kasa talebi oluşturuldu.';
+      _notice = UiNotice(
+        result.idempotentReplay
+            ? 'Mevcut kasa talebi doğrulandı.'
+            : '${pending.logicalContainerNumber ?? 1}. Kasa talebi oluşturuldu.',
+        UiNoticeSeverity.success,
+      );
       await refreshContext();
     } on AmbiguousMutationException {
       _activePendingOperation = null;
       _ambiguousPendingOperation = pending;
       _offline = true;
-      _notice =
-          'Gönderim sonucu belirsiz. Aynı kasa işlemi aynı anahtarla yeniden denenecek.';
+      _notice = const UiNotice(
+        'Gönderim sonucu belirsiz. Aynı kasa işlemi aynı anahtarla yeniden denenecek.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       _activePendingOperation = null;
       _ambiguousPendingOperation = null;
@@ -2019,21 +2674,32 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> cancelTransport(ActiveTransportRequest request) async {
-    if (!request.canCancel || !mutationGate.canMutate) {
+    if (_stage != AppStage.operation ||
+        _selectedMachine == null ||
+        !request.canCancel ||
+        !mutationGate.canMutate) {
       return;
     }
     _setBusy(true);
     _clearFeedback();
     try {
-      final result = await _repository.cancel(request.requestId);
-      _notice = result.status == 'CANCELLED'
-          ? 'Talep iptal edildi.'
-          : 'İptal durumu sunucudan güncellendi.';
+      final result = await _repository.cancel(
+        machineId: _selectedMachine!.id,
+        requestId: request.requestId,
+      );
+      _notice = UiNotice(
+        result.status == 'CANCELLED'
+            ? 'Talep iptal edildi.'
+            : 'İptal durumu sunucudan güncellendi.',
+        UiNoticeSeverity.success,
+      );
       await refreshContext();
     } on AmbiguousMutationException {
       _offline = true;
-      _notice =
-          'İptal sonucunun fiziksel olarak tamamlandığı doğrulanamadı. Durumu yenileyin.';
+      _notice = const UiNotice(
+        'İptal sonucunun fiziksel olarak tamamlandığı doğrulanamadı. Durumu yenileyin.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       _problem = problem;
       if (problem.shouldRefetch) {
@@ -2062,7 +2728,10 @@ class AppController extends ChangeNotifier {
       }
     } on ConnectivityException {
       _offline = true;
-      _notice = 'Bağlantı yok — bilgiler güncel olmayabilir.';
+      _notice = UiNotice(
+        'Bağlantı yok — bilgiler güncel olmayabilir.',
+        UiNoticeSeverity.warning,
+      );
     } on ApiProblem catch (problem) {
       _problem = problem;
     } finally {
@@ -2139,6 +2808,7 @@ class AppController extends ChangeNotifier {
     _operatorQueueError = null;
     _operatorQueueLoading = false;
     _operatorQueueTerminal = false;
+    _taskReturnStage = null;
     _containerBatchKey = null;
     _containerBatchAmbiguous = false;
     _activePendingOperation = null;
@@ -2157,10 +2827,17 @@ class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _stopHeartbeat();
     _stopPolling();
     _stopQueuePolling();
+    preparation.stop();
+    preparation.dispose();
+    store.stop();
+    store.dispose();
     production.removeListener(notifyListeners);
     production.dispose();
+    warehouseNotifications.removeListener(notifyListeners);
+    warehouseNotifications.dispose();
     super.dispose();
   }
 }

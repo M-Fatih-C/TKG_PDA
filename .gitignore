@@ -71,4 +71,8 @@ Thumbs.db
 /.runtime/
 /scratch/
 /TKG_PDA_Arsiv/
+*.zip
+/build_staging/
+/outputs/
+artifacts/release/
 

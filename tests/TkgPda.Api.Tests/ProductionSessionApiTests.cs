@@ -10,6 +10,55 @@ namespace TkgPda.Api.Tests;
 public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFixture<ApiTestFixture>
 {
     [Fact]
+    public async Task Demo_new_production_resets_stale_unused_variant_positions()
+    {
+        var setup = await SetupAsync();
+        await fixture.SetSlotAsync(setup.Slot, "OCCUPIED", "FULL", setup.MainPart);
+        using var client = await fixture.LoginClientAsync(setup.User);
+        (await StartAsync(client, setup, "demo-fresh-session")).EnsureSuccessStatusCode();
+
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        Assert.Equal(1, await DemoSimulationWorker.ResetFreshProductionSlotsAsync(
+            connection,
+            CancellationToken.None));
+
+        Assert.Equal("VACANT", await fixture.ScalarAsync<string>(
+            "SELECT occupancy_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+        Assert.Equal("UNKNOWN", await fixture.ScalarAsync<string>(
+            "SELECT load_state FROM ops.slot_runtime_state WHERE layout_slot_id = @slot",
+            ("slot", setup.Slot)));
+    }
+
+    [Fact]
+    public async Task Bound_line_terminal_can_start_and_end_without_legacy_user_machine_permissions()
+    {
+        var setup = await SetupAsync();
+        await fixture.ExecuteAsync("DELETE FROM auth.user_machine_permissions WHERE user_id = @user", ("user", setup.User.UserId));
+        using var client = await fixture.LoginClientAsync(setup.User);
+        var started = await StartAsync(client, setup, "terminal-start");
+        Assert.Equal(HttpStatusCode.Created, started.StatusCode);
+        var session = (await ReadAsync(started)).Session;
+        var ended = await EndAsync(client, setup, session.Id);
+        Assert.Equal(HttpStatusCode.OK, ended.StatusCode);
+        Assert.Equal("ENDED", (await ReadAsync(ended)).Session.Status);
+    }
+
+    [Fact]
+    public async Task Storage_boundary_rejects_line_terminal_rebound_to_another_machine()
+    {
+        var setup = await SetupAsync();
+        var other = await fixture.ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = 'SH-01-B'");
+        await fixture.ExecuteAsync("UPDATE audit.client_devices SET machine_id = @machine WHERE id = @device", ("machine", other), ("device", setup.User.DeviceId));
+        await using var store = new TkgPda.Infrastructure.Postgres.PostgresTransportWorkflowStore(fixture.ConnectionString);
+        var error = await Assert.ThrowsAsync<TkgPda.Domain.WorkflowRuleException>(() => store.StartAsync(new(
+            setup.Context.MachineId, setup.Context.VariantId, setup.Group, setup.MainPart, setup.User.UserId, setup.User.DeviceId, "rebound")));
+        Assert.Equal("PRODUCTION_ACCESS_DENIED", error.Code);
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_sessions"));
+    }
+
+    [Fact]
     public async Task Start_end_and_retries_persist_server_time_actor_device_and_one_audit_each()
     {
         var setup = await SetupAsync();
@@ -108,9 +157,10 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
     [InlineData("QUEUED")]
     [InlineData("SENT_TO_RDS")]
     [InlineData("RUNNING")]
-    public async Task End_blocks_every_active_transport_status_without_changing_request_or_readiness(string status)
+    public async Task End_keeps_every_active_transport_status_and_moves_cleanup_to_the_background(string status)
     {
         var setup = await SetupAsync();
+        await SeedProductionEndRemovalAsync(setup, "REMOVE_EMPTY", 70);
         using var client = await fixture.LoginClientAsync(setup.User);
         var session = (await ReadAsync(await StartAsync(client, setup, "session"))).Session;
         var transport = await BringAsync(client, setup, "transport");
@@ -118,13 +168,13 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         // Synthetic executor state in isolated PostgreSQL; never call a robot.
         await fixture.ExecuteAsync("UPDATE ops.transport_requests SET status = @status", ("status", status));
         var response = await EndAsync(client, setup, session.Id);
-        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("ACTIVE_TRANSPORT_EXISTS", await ApiTestFixture.ErrorCodeAsync(response));
-        Assert.Equal(status, await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests"));
-        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>("SELECT readiness_state FROM ops.transport_requests"));
-        Assert.Equal(session.Id, await fixture.ScalarAsync<Guid>("SELECT production_session_id FROM ops.transport_requests"));
-        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_sessions WHERE ended_at IS NULL"));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(status, await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests WHERE idempotency_key = 'transport'"));
+        Assert.Equal("WAITING_PREPARATION", await fixture.ScalarAsync<string>("SELECT readiness_state FROM ops.transport_requests WHERE idempotency_key = 'transport'"));
+        Assert.Equal(session.Id, await fixture.ScalarAsync<Guid>("SELECT production_session_id FROM ops.transport_requests WHERE idempotency_key = 'transport'"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_sessions WHERE ended_at IS NULL"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM audit.audit_logs WHERE action = 'PRODUCTION_ENDED'"));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.production_end_run_items"));
     }
 
     [Fact]
@@ -135,7 +185,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var session = (await ReadAsync(await StartAsync(client, setup, "session"))).Session;
         (await BringAsync(client, setup, "bring")).EnsureSuccessStatusCode();
         var requestId = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests WHERE idempotency_key = 'bring'");
-        (await client.PostAsync($"/api/v1/transport-requests/{requestId}/cancel", null)).EnsureSuccessStatusCode();
+        (await client.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{requestId}/cancel", null)).EnsureSuccessStatusCode();
         Assert.Equal(HttpStatusCode.OK, (await EndAsync(client, setup, session.Id)).StatusCode);
         Assert.Equal("CANCELLED", await fixture.ScalarAsync<string>("SELECT status FROM ops.transport_requests"));
     }
@@ -324,6 +374,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var secondSlot = (await fixture.LogisticsSlotsAsync(setup.Context.LayoutId, 2))[1];
         await fixture.ExecuteAsync("INSERT INTO master.layout_slot_parts(layout_slot_id, part_id) VALUES (@slot, @part)", ("slot", secondSlot), ("part", setup.MainPart));
         await fixture.SetSlotAsync(secondSlot, "VACANT", "UNKNOWN");
+        await SeedProductionEndRemovalAsync(setup, "REMOVE_EMPTY", 70);
         var session = (await ReadAsync(await StartAsync(client, setup, "start"))).Session;
         using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/machines/{setup.Context.MachineId}/container-actions/batch")
         {
@@ -335,7 +386,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests WHERE production_session_id = @id", ("id", session.Id)));
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(DISTINCT idempotency_key) FROM ops.transport_requests"));
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(DISTINCT batch_id) FROM ops.transport_requests"));
-        Assert.Equal(HttpStatusCode.Conflict, (await EndAsync(client, setup, session.Id)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await EndAsync(client, setup, session.Id)).StatusCode);
     }
 
     [Fact]
@@ -399,9 +450,9 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var otherVariant = await fixture.ContextAsync("SH-01-A", "2");
         var invalid = await Assert.ThrowsAsync<PostgresException>(() => fixture.ExecuteAsync("""
             INSERT INTO ops.production_sessions(machine_id, variant_id, product_group_id, main_part_id, start_key,
-                started_by, started_device_id, started_at, ended_by, ended_device_id, ended_at)
+                started_by, started_device_id, started_at, ended_by, ended_device_id, ended_at, status)
             SELECT machine_id, @wrong_variant, product_group_id, main_part_id, 'wrong-group-variant',
-                started_by, started_device_id, started_at, started_by, started_device_id, clock_timestamp()
+                started_by, started_device_id, started_at, started_by, started_device_id, clock_timestamp(), 'ENDED'
             FROM ops.production_sessions
             """, ("wrong_variant", otherVariant.VariantId)));
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, invalid.SqlState);
@@ -445,7 +496,7 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         var session = (await ReadAsync(await StartAsync(client, setup, "start"))).Session;
         (await BringAsync(client, setup, "bring", session.Id)).EnsureSuccessStatusCode();
         var id = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests");
-        (await client.PostAsync($"/api/v1/transport-requests/{id}/cancel", null)).EnsureSuccessStatusCode();
+        (await client.PostAsync($"/api/v1/machines/{setup.Context.MachineId}/transport-requests/{id}/cancel", null)).EnsureSuccessStatusCode();
         (await EndAsync(client, setup, session.Id)).EnsureSuccessStatusCode();
         (await BringAsync(client, setup, "bring", session.Id)).EnsureSuccessStatusCode();
         var wrong = await BringAsync(client, setup, "bring", Guid.NewGuid());
@@ -493,6 +544,23 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         return new(context, user, group, part, slot);
     }
 
+    private Task SeedProductionEndRemovalAsync(Setup setup, string operation, int priority) =>
+        fixture.ExecuteAsync(
+            """
+            INSERT INTO master.production_end_priorities (operation_code, priority)
+            VALUES (@operation, @priority)
+            ON CONFLICT (operation_code) DO UPDATE SET priority = EXCLUDED.priority;
+            INSERT INTO master.task_templates (
+                variant_id, product_group_id, task_type_id, rds_task_label, priority, is_active, config_json)
+            SELECT @variant, @group, tt.id, 'PRODUCTION-END-TEST', 10, true, '{}'::jsonb
+            FROM master.task_types tt
+            WHERE tt.code = @operation;
+            """,
+            ("operation", operation),
+            ("priority", priority),
+            ("variant", setup.Context.VariantId),
+            ("group", setup.Group));
+
     private static string Path(Setup setup) => $"/api/v1/machines/{setup.Context.MachineId}/production-sessions";
     private static Task<HttpResponseMessage> StartAsync(HttpClient client, Setup setup, string? key)
     {
@@ -503,7 +571,12 @@ public sealed class ProductionSessionApiTests(ApiTestFixture fixture) : IClassFi
         if (key is not null) request.Headers.Add(ApiHeaders.IdempotencyKey, key);
         return client.SendAsync(request);
     }
-    private static Task<HttpResponseMessage> EndAsync(HttpClient client, Setup setup, Guid id) => client.PostAsync(Path(setup) + $"/{id}/end", null);
+    private static Task<HttpResponseMessage> EndAsync(HttpClient client, Setup setup, Guid id)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, Path(setup) + $"/{id}/end");
+        request.Headers.Add(ApiHeaders.IdempotencyKey, "production-end");
+        return client.SendAsync(request);
+    }
     private static async Task<ProductionSessionResult> ReadAsync(HttpResponseMessage response)
     {
         response.EnsureSuccessStatusCode();

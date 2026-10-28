@@ -9,19 +9,70 @@ using TkgPda.Application;
 using TkgPda.Infrastructure.Postgres;
 
 var builder = WebApplication.CreateBuilder(args);
+var serviceName = Environment.GetEnvironmentVariable("TKG_SERVICE_NAME") ?? "TKG PDA Server";
+builder.Host.UseWindowsService(options => options.ServiceName = serviceName);
 
-var connectionString = builder.Configuration.GetConnectionString("TkgPda")
-    ?? throw new InvalidOperationException("ConnectionStrings:TkgPda is required.");
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+
+var fileLoggerProvider = new TkgFileLoggerProvider();
+builder.Logging.AddProvider(fileLoggerProvider);
+builder.Services.AddSingleton(fileLoggerProvider);
+
+var commonAppData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+var envProgramData = Environment.GetEnvironmentVariable("TKG_PROGRAM_DATA");
+
+string? programDataConfigPath = null;
+if (!string.IsNullOrWhiteSpace(envProgramData) && File.Exists(Path.Combine(envProgramData, "Config", "appsettings.Production.json")))
+{
+    programDataConfigPath = Path.Combine(envProgramData, "Config", "appsettings.Production.json");
+}
+else if (File.Exists(Path.Combine(commonAppData, "TKG PDA Demo", "Config", "appsettings.Production.json")))
+{
+    programDataConfigPath = Path.Combine(commonAppData, "TKG PDA Demo", "Config", "appsettings.Production.json");
+}
+else if (File.Exists(Path.Combine(commonAppData, "TKG PDA", "Config", "appsettings.Production.json")))
+{
+    programDataConfigPath = Path.Combine(commonAppData, "TKG PDA", "Config", "appsettings.Production.json");
+}
+
+if (!string.IsNullOrEmpty(programDataConfigPath))
+{
+    builder.Configuration.AddJsonFile(programDataConfigPath, optional: true, reloadOnChange: true);
+}
+
+var rawConnectionString = builder.Configuration.GetConnectionString("TkgPda");
+if (string.IsNullOrWhiteSpace(rawConnectionString))
+{
+    var configLogger = fileLoggerProvider.CreateLogger("TkgPda.Configuration");
+    configLogger.LogCritical("ConnectionStrings:TkgPda is missing. Configuration path checked: '{Path}'. Ensure installer finished or provide connection string.", programDataConfigPath);
+    throw new InvalidOperationException($"ConnectionStrings:TkgPda is required. Configuration path checked: '{programDataConfigPath}'.");
+}
+
+var connectionString = TkgSecureConfig.UnprotectIfNeeded(rawConnectionString)
+    ?? throw new InvalidOperationException("ConnectionStrings:TkgPda could not be decrypted or was empty.");
 var jwtOptions = new JwtOptions(
     builder.Configuration["Authentication:Jwt:Issuer"] ?? "tkg-pda",
     builder.Configuration["Authentication:Jwt:Audience"] ?? "tkg-pda-clients",
-    builder.Configuration["Authentication:Jwt:SigningKey"] ?? string.Empty,
+    TkgSecureConfig.UnprotectIfNeeded(builder.Configuration["Authentication:Jwt:SigningKey"] ?? string.Empty),
     builder.Configuration.GetValue("Authentication:Jwt:ExpiryMinutes", 15),
     builder.Configuration.GetValue("Authentication:Jwt:ClockSkewSeconds", 30));
 jwtOptions.Validate();
+var fieldSessionOptions = new FieldSessionOptions(
+    builder.Configuration.GetValue("Authentication:FieldSession:LeaseSeconds", 120),
+    builder.Configuration.GetValue("Authentication:FieldSession:HeartbeatSeconds", 30));
+fieldSessionOptions.Validate();
 var rdsOptions = RdsOptions.FromConfiguration(builder.Configuration);
 var rdsCoreDiscoveryOptions = RdsCoreDiscoveryOptions.FromConfiguration(builder.Configuration);
 var rdsCoreExecutionOptions = RdsCoreExecutionOptions.FromConfiguration(builder.Configuration);
+var demoOptions = DemoModeOptions.FromConfiguration(builder.Configuration);
+demoOptions.Validate(builder.Configuration);
+if (demoOptions.Enabled)
+{
+    rdsOptions = rdsOptions with { Enabled = false, DispatchEnabled = false };
+    rdsCoreExecutionOptions = rdsCoreExecutionOptions with { Enabled = false };
+    rdsCoreDiscoveryOptions = rdsCoreDiscoveryOptions with { Enabled = false };
+}
 var operatorWebOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
     .Get<string[]>()?
@@ -51,14 +102,18 @@ builder.Services.Configure<JsonOptions>(options =>
     options.SerializerOptions.WriteIndented = false;
 });
 builder.Services.AddSingleton(jwtOptions);
+builder.Services.AddSingleton(fieldSessionOptions);
 builder.Services.AddSingleton(rdsOptions);
 builder.Services.AddSingleton(rdsCoreDiscoveryOptions);
 builder.Services.AddSingleton(rdsCoreExecutionOptions);
+builder.Services.AddSingleton(demoOptions);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<Pbkdf2PasswordHasher>();
 builder.Services.AddSingleton<IPasswordHashService>(services => services.GetRequiredService<Pbkdf2PasswordHasher>());
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddSingleton(NpgsqlDataSource.Create(connectionString));
+builder.Services.AddSingleton<PostgresFieldSessionStore>();
+builder.Services.AddSingleton<IFieldSessionStore>(services => services.GetRequiredService<PostgresFieldSessionStore>());
 builder.Services.AddSingleton<PostgresApiDataStore>();
 builder.Services.AddSingleton<IApiDataStore>(services => services.GetRequiredService<PostgresApiDataStore>());
 builder.Services.AddSingleton<IOperatorTransportQueueStore>(services => services.GetRequiredService<PostgresApiDataStore>());
@@ -128,15 +183,26 @@ builder.Services.AddSingleton<RdsIntegrationService>();
 builder.Services.AddSingleton<IRdsWorkSiteReconciler>(services =>
     services.GetRequiredService<RdsIntegrationService>());
 builder.Services.AddSingleton<AdminConfigurationService>();
+builder.Services.AddSingleton(new RdsPhysicalAvailabilityPolicy(
+    TimeSpan.FromSeconds(rdsOptions.WorkSiteFreshnessSeconds),
+    isSimulationMode: demoOptions.Enabled));
 builder.Services.AddSingleton(services =>
-    new PostgresTransportWorkflowStore(services.GetRequiredService<NpgsqlDataSource>()));
+    new PostgresTransportWorkflowStore(services.GetRequiredService<NpgsqlDataSource>(),
+        physicalPolicy: services.GetRequiredService<RdsPhysicalAvailabilityPolicy>()));
 builder.Services.AddSingleton<ITransportWorkflowStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<IContainerActionStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
+builder.Services.AddSingleton<IPartDemandStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
+builder.Services.AddSingleton<PartDemandService>();
 builder.Services.AddSingleton<TransportWorkflowService>();
+builder.Services.AddSingleton<DemoCancellationRecovery>();
 builder.Services.AddSingleton<IProductionSessionStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<ProductionSessionService>();
 builder.Services.AddSingleton<IWarehousePreparationStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<WarehousePreparationService>();
+builder.Services.Configure<DeviceNotificationOptions>(builder.Configuration.GetSection("DeviceNotifications"));
+builder.Services.AddSingleton<IDeviceNotificationStore, PostgresDeviceNotificationStore>();
+builder.Services.AddSingleton<IOperationalEvidenceStore, PostgresOperationalEvidenceStore>();
+builder.Services.AddSingleton<IOperationalReportStore, PostgresOperationalReportStore>();
 builder.Services.AddSingleton<IFinishedGoodsStore>(services => services.GetRequiredService<PostgresTransportWorkflowStore>());
 builder.Services.AddSingleton<FinishedGoodsStoreService>();
 builder.Services.AddSingleton<ContainerActionService>();
@@ -149,7 +215,15 @@ builder.Services.AddSingleton(new RdsExecutionSettings(
     rdsOptions.EmptyContentValue,
     rdsOptions.FullContentValue));
 builder.Services.AddSingleton<RdsExecutionCoordinator>();
-builder.Services.AddHostedService<RdsExecutionWorker>();
+if (!demoOptions.Enabled)
+{
+    builder.Services.AddHostedService<RdsExecutionWorker>();
+    builder.Services.AddHostedService<RdsAlarmObservationWorker>();
+}
+else
+{
+    builder.Services.AddHostedService<DemoSimulationWorker>();
+}
 builder.Services.AddCors(options => options.AddPolicy("OperatorWeb", policy =>
 {
     if (operatorWebOrigins.Length > 0)
@@ -208,6 +282,12 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy(PolicyNames.WarehousePreparation, policy => policy
         .RequireRole(RoleCodes.WarehousePreparationRoles)
         .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
+    options.AddPolicy(PolicyNames.SemiFinishedWarehouse, policy => policy
+        .RequireRole(RoleCodes.SemiFinishedWarehouseRoles)
+        .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
+    options.AddPolicy(PolicyNames.FinishedGoodsWarehouse, policy => policy
+        .RequireRole(RoleCodes.FinishedGoodsWarehouseRoles)
+        .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
     options.AddPolicy(PolicyNames.ProductionOperator, policy => policy
         .RequireRole(RoleCodes.Admin, RoleCodes.Supervisor, RoleCodes.LineOperator)
         .RequireClaim(ApiClaimNames.ClientType, ClientTypes.DeviceBound));
@@ -247,7 +327,8 @@ var app = builder.Build();
 
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("TkgPda.Startup");
 startupLogger.LogInformation(
-    "RDS Integration: {Status}, RDS Dispatch: {Dispatch}, RDSCore: {Endpoint}",
+    "DEMO MODE: {DemoMode}, RDS Integration: {Status}, RDS Dispatch: {Dispatch}, RDSCore: {Endpoint}",
+    demoOptions.Enabled ? "ENABLED (OFFLINE SIMULATION)" : "DISABLED",
     rdsOptions.Enabled ? "ENABLED" : "DISABLED",
     rdsOptions.DispatchEnabled ? "ENABLED" : "DISABLED",
     rdsCoreExecutionOptions.BaseAddressDisplaySafe ?? "NONE");
@@ -262,29 +343,45 @@ app.Use(async (context, next) =>
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    if (demoOptions.Enabled)
+    {
+        context.Response.Headers["X-TKG-Demo-Mode"] = "true";
+    }
     await next();
 });
 app.UseCors("OperatorWeb");
+app.UseTkgStaticWebHosting();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<DeviceContextMiddleware>();
+app.UseMiddleware<FieldSessionValidationMiddleware>();
 app.UseAuthorization();
 
-app.MapGet("/health/live", () => Results.Ok(new { status = "live" })).AllowAnonymous();
+app.MapGet("/health/live", () => Results.Ok(new { status = "live", demoMode = demoOptions.Enabled })).AllowAnonymous();
 app.MapGet("/health/ready", async (IApiDataStore store, CancellationToken cancellationToken) =>
 {
     var ready = await store.IsReadyAsync(cancellationToken);
     return Results.Json(
-        new { status = ready ? "ready" : "not-ready" },
+        new { status = ready ? "ready" : "not-ready", demoMode = demoOptions.Enabled },
         statusCode: ready ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
 }).AllowAnonymous();
 app.MapTkgPdaApi();
 app.MapProductionSessions();
 app.MapWarehousePreparation();
 app.MapFinishedGoodsStore();
+app.MapDeviceNotifications();
 app.MapTkgPdaAdminApi();
 app.MapTkgPdaRdsIntegrationApi();
 
-app.Run();
+try
+{
+    app.Run();
+}
+catch (Exception ex)
+{
+    var fatalLogger = fileLoggerProvider.CreateLogger("TkgPda.Fatal");
+    fatalLogger.LogCritical(ex, "FATAL: Server terminated unexpectedly: {Message}", ex.Message);
+    throw;
+}
 
 public partial class Program;

@@ -2,10 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:uuid/uuid.dart';
 
+import '../../app/app_controller.dart' show AppStage;
 import '../../core/errors/api_problem.dart';
+import '../../data/models/preparation_area.dart';
 import '../../data/models/store_location.dart';
 import '../../data/repositories/pda_repository.dart';
+import 'warehouse_notification_coordinator.dart';
 
 /// Server-owned state for the finished-goods store.
 ///
@@ -13,21 +17,32 @@ import '../../data/repositories/pda_repository.dart';
 /// that carried it completes. This only reports what the operator physically
 /// took away, and always with the row version the screen was showing.
 class StoreCoordinator extends ChangeNotifier {
-  StoreCoordinator(this.repository);
+  StoreCoordinator(this.repository, {this.notificationCoordinator, Uuid? uuid})
+    : _uuid = uuid ?? const Uuid();
 
   final PdaDataSource repository;
+  final WarehouseNotificationCoordinator? notificationCoordinator;
+  final Uuid _uuid;
 
   /// The customer asked for a 5-10 second refresh.
   static const pollInterval = Duration(seconds: 6);
 
   List<StoreLocation> locations = const [];
+  List<PreparationArea> preparationAreas = const [];
+  List<WarehouseDemand> emptyContainerDemands = const [];
   bool loading = false;
   bool inFlight = false;
   String? error;
+  DateTime? lastSuccessfulRefresh;
 
   /// Containers that arrived since the operator last looked. Cleared only by an
   /// explicit acknowledgement, so a later poll cannot swallow one.
   Set<String> unseenUnitIds = const {};
+
+  /// Empty-container preparation demands that arrived after the first load.
+  /// They stay marked until the warehouse operator explicitly acknowledges
+  /// them, matching the semi-finished preparation screen.
+  Set<String> unseenDemandIds = const {};
 
   Timer? _timer;
   bool _disposed = false;
@@ -37,16 +52,20 @@ class StoreCoordinator extends ChangeNotifier {
 
   bool isBusy(String id) => _busy.contains(id);
   bool get hasUnseenUnits => unseenUnitIds.isNotEmpty;
+  bool get hasUnseenDemands => unseenDemandIds.isNotEmpty;
 
   int get totalUnits =>
       locations.fold(0, (sum, location) => sum + location.unitCount);
 
-  /// Locations at their stated capacity. Empty while no capacity is known.
-  List<StoreLocation> get fullLocations =>
-      locations.where((location) => location.isFull).toList(growable: false);
+  /// Locations whose stated capacity is occupied by finished product waiting
+  /// for warehouse pickup. EMPTY pallets are robot pickup sources, so they do
+  /// not produce a "clear this area" warning.
+  List<StoreLocation> get fullLocations => locations
+      .where((location) => location.isFullOfFinishedProducts)
+      .toList(growable: false);
 
   List<StoreLocation> get nearlyFullLocations => locations
-      .where((location) => location.isNearlyFull)
+      .where((location) => location.isNearlyFullOfFinishedProducts)
       .toList(growable: false);
 
   void start() {
@@ -61,7 +80,10 @@ class StoreCoordinator extends ChangeNotifier {
     _stopTimer();
     _generation++;
     locations = const [];
+    preparationAreas = const [];
+    emptyContainerDemands = const [];
     unseenUnitIds = const {};
+    unseenDemandIds = const {};
     _primed = false;
     error = null;
     _notify();
@@ -76,6 +98,9 @@ class StoreCoordinator extends ChangeNotifier {
 
     try {
       final loaded = await repository.storeLocations();
+      final loadedPreparationAreas = await repository
+          .finishedGoodsPreparationAreas();
+      final loadedDemands = await repository.finishedGoodsPreparationDemands();
       if (generation != _generation || _disposed) return;
 
       final live = {
@@ -92,12 +117,79 @@ class StoreCoordinator extends ChangeNotifier {
         final arrived = live.difference(known);
         if (arrived.isNotEmpty) {
           unseenUnitIds = {...unseenUnitIds, ...arrived};
-          _alert();
+          if (notificationCoordinator != null) {
+            for (final unitId in arrived) {
+              for (final location in loaded) {
+                final unit = location.units
+                    .where((u) => u.id == unitId)
+                    .firstOrNull;
+                if (unit != null) {
+                  notificationCoordinator!.notifyDelivery(
+                    unitId: unit.id,
+                    locationName: location.displayName,
+                    partCode: unit.partCode ?? 'Parça',
+                    machineCode: unit.machineCode,
+                    requestNo: unit.requestNo,
+                  );
+                  break;
+                }
+              }
+            }
+          } else {
+            _alert();
+          }
+        }
+
+        final knownDemands = emptyContainerDemands
+            .map((demand) => demand.requestId)
+            .toSet();
+        final arrivedDemands = loadedDemands
+            .where((demand) => !knownDemands.contains(demand.requestId))
+            .toList(growable: false);
+        if (arrivedDemands.isNotEmpty) {
+          unseenDemandIds = {
+            ...unseenDemandIds,
+            ...arrivedDemands.map((demand) => demand.requestId),
+          };
+          if (notificationCoordinator != null) {
+            for (final demand in arrivedDemands) {
+              notificationCoordinator!.notifyDemand(
+                requestId: demand.requestId,
+                machineCode: demand.machineCode,
+                partCode: demand.partCode ?? 'Parça',
+                needsMaterial: demand.needsMaterial,
+                requestNo: demand.requestNo,
+                targetStage: AppStage.finishedGoodsStore,
+              );
+            }
+          } else {
+            _alert();
+          }
         }
       }
 
       locations = loaded;
+      preparationAreas = loadedPreparationAreas;
+      emptyContainerDemands = loadedDemands;
+      lastSuccessfulRefresh = DateTime.now();
+
+      // Check capacity warning for store locations with defined capacity
+      if (notificationCoordinator != null) {
+        for (final loc in fullLocations) {
+          notificationCoordinator!.notifyStoreCapacity(
+            locationId: loc.id,
+            locationName: loc.displayName,
+            unitCount: loc.unitCount,
+            capacity: loc.capacity ?? loc.unitCount,
+          );
+        }
+      }
+
       unseenUnitIds = unseenUnitIds.intersection(live);
+      final liveDemandIds = loadedDemands
+          .map((demand) => demand.requestId)
+          .toSet();
+      unseenDemandIds = unseenDemandIds.intersection(liveDemandIds);
       _primed = true;
       if (!keepError) error = null;
     } on ConnectivityException {
@@ -120,6 +212,12 @@ class StoreCoordinator extends ChangeNotifier {
     _notify();
   }
 
+  void acknowledgeDemands() {
+    if (unseenDemandIds.isEmpty) return;
+    unseenDemandIds = const {};
+    _notify();
+  }
+
   /// The operator states they physically removed this container.
   Future<bool> removeUnit(StoreUnit unit) => _mutate(unit.id, () async {
     await repository.removeStoreUnit(
@@ -127,6 +225,60 @@ class StoreCoordinator extends ChangeNotifier {
       expectedRowVersion: unit.rowVersion,
     );
   });
+
+  List<WarehouseDemand> get unclaimedEmptyContainerDemands =>
+      emptyContainerDemands
+          .where((demand) => !demand.isClaimed)
+          .toList(growable: false);
+
+  Future<bool> prepareEmptyContainer({
+    required PreparationArea area,
+    required WarehouseDemand demand,
+    String? containerTypeId,
+  }) => _mutate(area.id, () async {
+    await repository.placeFinishedGoodsPreparation(
+      areaId: area.id,
+      containerTypeId: containerTypeId ?? demand.containerTypeId,
+      transportRequestId: demand.requestId,
+      idempotencyKey: _uuid.v4(),
+    );
+  });
+
+  Future<bool> markPreparationReady(PreparationPallet pallet) =>
+      _mutate(pallet.id, () async {
+        await repository.markFinishedGoodsPreparationReady(
+          palletId: pallet.id,
+          expectedRowVersion: pallet.rowVersion,
+        );
+      });
+
+  Future<bool> releasePreparation(PreparationPallet pallet, String reason) =>
+      _mutate(pallet.id, () async {
+        await repository.releaseFinishedGoodsPreparation(
+          palletId: pallet.id,
+          expectedRowVersion: pallet.rowVersion,
+          reason: reason,
+        );
+      });
+
+  final Map<String, String> _emptyContainerKeys = {};
+
+  /// Records an empty container standing in a vacant area. This is not inferred
+  /// from the absence of a finished product.
+  Future<bool> recordEmptyContainer(StoreLocation location) {
+    final key = _emptyContainerKeys.putIfAbsent(
+      location.id,
+      () =>
+          'empty-container:${location.id}:${DateTime.now().microsecondsSinceEpoch}',
+    );
+    return _mutate(location.id, () async {
+      await repository.recordEmptyContainer(
+        locationId: location.id,
+        idempotencyKey: key,
+      );
+      _emptyContainerKeys.remove(location.id);
+    });
+  }
 
   /// Everything standing in one location left together, the lorry case.
   Future<bool> clearLocation(StoreLocation location) =>

@@ -48,8 +48,53 @@ public sealed record CreateTransportRequest(
     Guid? SourceSlotId,
     Guid? DestinationSlotId,
     int Priority = 100,
-    bool RequiresPreparation = false)
+    bool RequiresPreparation = false,
+    bool RequiresFinishedGoodsDestination = false,
+    string? DestinationBusinessCode = null,
+    string? SourceBusinessCode = null)
 {
+    /// <summary>
+    /// WP-08: a REMOVE_FULL created by the machine-side container flow (Kasa
+    /// Doldu / remove-all) is only valid when its server-resolved destination
+    /// is linked to an enabled finished-goods store location. The store never
+    /// learns about a delivery the transport cannot attribute, so the request
+    /// is refused before anything is reserved, persisted or dispatched.
+    /// Ignored for every other operation.
+    /// </summary>
+    public bool EnforcesFinishedGoodsDestination =>
+        RequiresFinishedGoodsDestination && TaskType == TransportTaskType.RemoveFull;
+
+    /// <summary>
+    /// A repeated alt-part demand creates BRING_FULL while the machine area
+    /// is still occupied by the pallet the predecessor will remove. The
+    /// successor is not execution-eligible until that predecessor completes.
+    /// </summary>
+    public bool AllowsDependentMachineOccupancy { get; init; }
+
+    /// <summary>
+    /// The operator intent may be queued before its mapped machine position can
+    /// be used. While this flag is set the position is an intended endpoint,
+    /// not an active physical reservation. The workflow worker activates it
+    /// only after earlier work and the required slot state are both satisfied.
+    /// </summary>
+    public bool DefersMachineSlotReservation { get; init; }
+
+    /// <summary>
+    /// Operator-originated production intent is persisted when a currently
+    /// occupied slot, shared endpoint or physical WorkSite prevents immediate
+    /// execution. Permanent master-data/configuration gaps remain errors.
+    /// </summary>
+    public bool QueuesWhenResourcesUnavailable { get; init; }
+
+    /// <summary>
+    /// A requested empty container is prepared against the demand in one of
+    /// the finished-goods warehouse's six preparation areas. No source pallet
+    /// exists when the request is created, so source allocation is deferred
+    /// until that exact pallet is placed and confirmed ready.
+    /// </summary>
+    public bool DefersStoreSourceReservation =>
+        TaskType == TransportTaskType.BringEmpty && RequiresPreparation;
+
     /// <summary>
     /// WP-05A: the BUSINESS readiness a new request starts at.
     /// RequiresPreparation=false (the default) preserves every existing
@@ -99,6 +144,10 @@ public sealed record CreateTransportRequest(
         {
             throw new WorkflowRuleException("SAME_SOURCE_DESTINATION", "Source and destination slots must be different.");
         }
+
+        // Every supported transport operation has one machine-side endpoint.
+        // Deferral changes only when that endpoint is reserved; it never makes
+        // the endpoint optional or changes the operation's physical meaning.
     }
 }
 
@@ -121,7 +170,9 @@ public sealed record TransportRequestSnapshot(
     Guid? DestinationSlotId,
     int Priority,
     TransportReadinessState ReadinessState,
-    DateTimeOffset? ReadyAt);
+    DateTimeOffset? ReadyAt,
+    string? DestinationBusinessCode = null,
+    string? SourceBusinessCode = null);
 
 /// <summary>
 /// WP-05A: readiness transition rules. Separate from

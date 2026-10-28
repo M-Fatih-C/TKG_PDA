@@ -67,8 +67,8 @@ class WarehousePreparationScreen extends StatelessWidget {
             if (controller.offline) const OfflineBanner(),
             if (controller.problem case final problem?)
               ProblemBanner(problem: problem),
-            if (controller.notice case final notice?)
-              NoticeBanner(message: notice),
+            if (controller.uiNotice case final notice?)
+              if (notice.persistent) NoticeBanner(notice: notice),
             Expanded(child: _Body(controller: controller)),
           ],
         ),
@@ -155,6 +155,7 @@ class _RequestCard extends StatelessWidget {
     final marking = controller.isMarkingReady(request.requestId);
     final knownOperation = const {
       'BRING_EMPTY',
+      'BRING_FULL',
       'REMOVE_FULL',
       'REMOVE_EMPTY',
     }.contains(request.operation);
@@ -172,6 +173,7 @@ class _RequestCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(switch (request.operation) {
               'BRING_EMPTY' => 'Boş taşıma kabı hazırlanacak',
+              'BRING_FULL' => 'Dolu malzeme / kasa hazırlanacak',
               'REMOVE_FULL' => 'Dolu taşıma kabı alınacak',
               'REMOVE_EMPTY' => 'Boş taşıma kabı alınacak',
               _ => 'Talep türü doğrulanamadı',

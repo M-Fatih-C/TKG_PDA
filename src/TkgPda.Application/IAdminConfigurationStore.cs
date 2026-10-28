@@ -54,5 +54,15 @@ public interface IAdminConfigurationStore
     Task<AdminContainerRecord> UpdateContainerAsync(Guid containerId, UpdateContainerCommand command, AdminMutationContext context, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<AdminDataIssueRecord>> ListDataIssuesAsync(CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<AdminAuditRecord>> ListAuditAsync(int limit, Guid? actorUserId, string? entityType, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<AdminAuditRecord>> ListAuditAsync(
+        int limit,
+        Guid? actorUserId,
+        string? entityType,
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? from = null,
+        DateTimeOffset? to = null,
+        string? action = null,
+        Guid? correlationId = null,
+        string? entityId = null,
+        string? actor = null);
 }

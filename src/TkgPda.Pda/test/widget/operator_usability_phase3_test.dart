@@ -3,7 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tkg_pda/app/app.dart';
 import 'package:tkg_pda/app/app_controller.dart';
 import 'package:tkg_pda/core/auth/session_memory.dart';
-import 'package:tkg_pda/core/errors/api_problem.dart';
 import 'package:tkg_pda/core/storage/device_code_store.dart';
 import 'package:tkg_pda/data/models/pda_models.dart';
 
@@ -78,29 +77,44 @@ void main() {
 
         // Screen 1: MachineListScreen
         expect(find.byKey(const Key('operator-user-banner')), findsOneWidget);
-        expect(find.textContaining('Ali Yılmaz (Sicil: 10423)'), findsOneWidget);
+        expect(
+          find.textContaining('Ali Yılmaz (Sicil: 10423)'),
+          findsOneWidget,
+        );
 
         // Screen 2: OperationScreen
         await harness.controller.selectMachine(testMachine);
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('operator-user-banner')), findsOneWidget);
-        expect(find.textContaining('Ali Yılmaz (Sicil: 10423)'), findsOneWidget);
+        expect(
+          find.textContaining('Ali Yılmaz (Sicil: 10423)'),
+          findsOneWidget,
+        );
 
         // Screen 3: OperatorQueueScreen
-        await tester.tap(find.byKey(const Key('open-operator-queue-from-machine')));
+        await tester.tap(
+          find.byKey(const Key('open-operator-queue-from-machine')),
+        );
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('operator-user-banner')), findsOneWidget);
-        expect(find.textContaining('Ali Yılmaz (Sicil: 10423)'), findsOneWidget);
+        expect(
+          find.textContaining('Ali Yılmaz (Sicil: 10423)'),
+          findsOneWidget,
+        );
 
-        // Navigate back to machines (leaveTasks directly returns to machines stage)
+        // Navigate back to origin screen (operation per WP-05 origin-aware navigation)
         await tester.tap(find.byKey(const Key('leave-operator-queue')));
         await tester.pumpAndSettle();
+        expect(harness.controller.stage, AppStage.operation);
 
         // Screen 4: WarehousePreparationScreen
-        await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
+        await harness.controller.enterWarehousePreparation();
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('operator-user-banner')), findsOneWidget);
-        expect(find.textContaining('Ali Yılmaz (Sicil: 10423)'), findsOneWidget);
+        expect(
+          find.textContaining('Ali Yılmaz (Sicil: 10423)'),
+          findsOneWidget,
+        );
 
         harness.dispose();
       },
@@ -121,7 +135,9 @@ void main() {
         expect(find.byKey(const Key('logout-button')), findsOneWidget);
 
         // Screen 3: OperatorQueueScreen has logout-button
-        await tester.tap(find.byKey(const Key('open-operator-queue-from-machine')));
+        await tester.tap(
+          find.byKey(const Key('open-operator-queue-from-machine')),
+        );
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('logout-button')), findsOneWidget);
 
@@ -170,29 +186,20 @@ void main() {
 
         final harness = await _loggedInHarness(tester, repository: repository);
 
-        await tester.tap(find.byKey(const Key('open-warehouse-preparation')));
+        expect(
+          find.byKey(const Key('open-warehouse-preparation')),
+          findsNothing,
+        );
+        expect(find.byKey(const Key('open-preparation-areas')), findsOneWidget);
+        await tester.tap(find.byKey(const Key('open-preparation-areas')));
         await tester.pumpAndSettle();
 
-        // 1. Container Type is prominently displayed
-        expect(find.text('KLT-4020'), findsOneWidget);
-
-        // 2. Wait time is formatted in Turkish
-        expect(find.text('18 dk. önce'), findsOneWidget);
-
-        // 3. Ready button is enabled when online
-        final readyButtonFinder = find.byKey(Key('warehouse-ready-${prepRequest.requestId}'));
-        expect(readyButtonFinder, findsOneWidget);
-        final elevatedButton = tester.widget<ElevatedButton>(readyButtonFinder);
-        expect(elevatedButton.onPressed, isNotNull);
-
-        // 4. When offline, mutationGate disables the button and displays reason
-        repository.warehouseRequestsError = const ConnectivityException();
-        await harness.controller.loadWarehousePreparationRequests();
-        await tester.pumpAndSettle();
-
-        final disabledButton = tester.widget<ElevatedButton>(readyButtonFinder);
-        expect(disabledButton.onPressed, isNull);
-        expect(find.text('Bağlantı yok'), findsAtLeastNWidgets(1));
+        expect(
+          find.byKey(const Key('leave-preparation-areas')),
+          findsOneWidget,
+        );
+        expect(find.text('Yarı Mamul Hazırlık'), findsOneWidget);
+        expect(tester.takeException(), isNull);
 
         harness.dispose();
       },

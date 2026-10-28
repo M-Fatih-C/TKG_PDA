@@ -17,6 +17,11 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     public TestRdsReadClient RdsClient { get; } = new();
     public TestRdsCoreDiscoveryClient RdsCoreDiscoveryClient { get; } = new();
 
+    public ApiTestFixture()
+    {
+        EnsureMasterDataBaselineAsync().GetAwaiter().GetResult();
+    }
+
     public string ConnectionString => Environment.GetEnvironmentVariable("TKG_PDA_API_TEST_CONNECTION_STRING")
         ?? throw new InvalidOperationException("TKG_PDA_API_TEST_CONNECTION_STRING is required.");
 
@@ -28,6 +33,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         builder.UseSetting("Cors:AllowedOrigins:0", "https://operator.example.test");
         builder.UseSetting("RdsCoreExecution:Enabled", "false");
         builder.UseSetting("Authentication:Jwt:ExpiryMinutes", "15");
+        builder.UseSetting("DeviceNotifications:LongPollSeconds", "0");
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<IRdsReadClient>();
@@ -39,11 +45,40 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
 
     public async Task ResetAsync()
     {
+        await ExecuteScriptAsync(MigrationFile("021_production_end_cleanup.sql"));
+        await ExecuteScriptAsync(MigrationFile("022_variant_scoped_rds_worksite_commissioning.sql"));
+        await ExecuteScriptAsync(MigrationFile("023_rds_variant_commissioning_hardening.sql"));
+        await ExecuteScriptAsync(MigrationFile("024_operational_reporting.sql"));
+        await ExecuteScriptAsync(MigrationFile("025_profile_scoped_shared_endpoints.sql"));
+        await ExecuteScriptAsync(MigrationFile("026_canonical_shared_endpoint_identities.sql"));
+        await ExecuteScriptAsync(MigrationFile("027_store_location_unit_capacity_constraint.sql"));
+        await ExecuteScriptAsync(MigrationFile("028_store_reservations_and_source_endpoint.sql"));
+        await ExecuteScriptAsync(MigrationFile("029_store_reservation_integrity.sql"));
+        await ExecuteScriptAsync(MigrationFile("030_deferred_part_demand_slot_reservation.sql"));
+        await ExecuteScriptAsync(MigrationFile("031_physical_reconciliation_and_removal_audit.sql"));
+        await ExecuteScriptAsync(MigrationFile("032_finished_goods_preparation_areas.sql"));
+        await ExecuteScriptAsync(MigrationFile("033_finished_goods_untyped_empty_preparation.sql"));
+        await ExecuteScriptAsync(MigrationFile("034_finished_product_container_options.sql"));
+        await ExecuteScriptAsync(MigrationFile("035_area_based_production_end_priorities.sql"));
+        await ExecuteScriptAsync(MigrationFile("036_deferred_transport_resources.sql"));
+        await ExecuteScriptAsync(MigrationFile("039_cancelled_preparation_cleanup.sql"));
+        await ExecuteScriptAsync(MigrationFile("042_user_machine_permission_consistency.sql"));
+        await ExecuteScriptAsync(MigrationFile("043_part_demand_batch_results.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(
             """
             TRUNCATE
+                ops.production_end_run_items,
+                ops.production_end_runs,
+                integration.robot_alarm_read_failures,
+                integration.robot_alarm_observations,
+                integration.robot_alarm_observation_state,
+                integration.notification_outbox,
+                integration.device_notification_registrations,
+                ops.store_reservations,
+                ops.store_events,
+                ops.store_units,
                 integration.rds_tasks,
                 ops.transport_request_events,
                 ops.transport_requests,
@@ -51,7 +86,52 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
                 ops.slot_runtime_state,
                 ops.machine_runtime_state
             RESTART IDENTITY CASCADE;
+            UPDATE master.layout_slots current
+            SET display_order = baseline.display_order,
+                is_enabled = baseline.is_enabled,
+                default_container_type_id = baseline.default_container_type_id,
+                metadata_json = baseline.metadata_json
+            FROM api_test_baseline.layout_slots baseline
+            WHERE current.id = baseline.id;
+            UPDATE master.parts current
+            SET description = baseline.description,
+                is_active = baseline.is_active
+            FROM api_test_baseline.parts baseline
+            WHERE current.id = baseline.id;
+            UPDATE master.task_templates current
+            SET variant_id = baseline.variant_id,
+                product_group_id = baseline.product_group_id,
+                task_type_id = baseline.task_type_id,
+                source_slot_group_id = baseline.source_slot_group_id,
+                destination_slot_group_id = baseline.destination_slot_group_id,
+                rds_task_label = baseline.rds_task_label,
+                priority = baseline.priority,
+                config_json = baseline.config_json,
+                is_active = baseline.is_active,
+                updated_at = baseline.updated_at
+            FROM api_test_baseline.task_templates baseline
+            WHERE current.id = baseline.id;
+            UPDATE ops.store_locations current
+            SET display_name = baseline.display_name,
+                capacity = baseline.capacity,
+                is_enabled = baseline.is_enabled,
+                area_purpose = baseline.area_purpose,
+                is_operator_visible = baseline.is_operator_visible,
+                updated_at = baseline.updated_at
+            FROM api_test_baseline.store_locations baseline
+            WHERE current.id = baseline.id;
+            DELETE FROM master.layout_slot_parts;
+            INSERT INTO master.layout_slot_parts
+            SELECT * FROM api_test_baseline.layout_slot_parts;
+            DELETE FROM master.product_group_parts;
+            INSERT INTO master.product_group_parts
+            SELECT * FROM api_test_baseline.product_group_parts;
+            DELETE FROM ops.store_location_delivery_slots;
+            INSERT INTO ops.store_location_delivery_slots
+            SELECT * FROM api_test_baseline.store_location_delivery_slots;
             DELETE FROM audit.audit_logs;
+            DELETE FROM master.production_end_area_priorities;
+            DELETE FROM master.production_end_priorities;
             DELETE FROM integration.layout_slot_rds_mapping
             WHERE rds_worksite_id IN (
                 SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'P07A-%');
@@ -64,10 +144,90 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             WHERE rds_worksite_id IN (
                 SELECT id FROM integration.rds_worksites WHERE area = 'OPTIMAK_SIM_2026');
             DELETE FROM integration.rds_worksites WHERE area = 'OPTIMAK_SIM_2026';
+            DELETE FROM integration.layout_slot_rds_profile_mapping
+            WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-SCOPE-%');
+            DELETE FROM integration.layout_slot_rds_mapping
+            WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-SCOPE-%');
+            DELETE FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-SCOPE-%';
+            DELETE FROM integration.layout_slot_rds_profile_mapping
+            WHERE navigation_profile_id IN (
+                SELECT id FROM master.navigation_profiles WHERE code LIKE 'TEST-NAV-ACT-%')
+               OR rds_worksite_id IN (
+                    SELECT w.id
+                    FROM integration.rds_worksites w
+                    JOIN integration.rds_worksite_plans p
+                      ON p.navigation_profile_id = w.navigation_profile_id
+                     AND p.planned_rds_site_id = w.rds_site_id);
+            DELETE FROM integration.layout_slot_rds_profile_mapping
+            WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-ACT-%');
+            DELETE FROM integration.layout_slot_rds_mapping
+            WHERE rds_worksite_id IN (
+                SELECT id FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-ACT-%');
+            DELETE FROM integration.rds_worksites WHERE rds_site_id LIKE 'TEST-NAV-ACT-%';
+            DELETE FROM integration.profile_shared_endpoint_bindings b
+            USING integration.rds_worksites w, integration.rds_worksite_plans p
+            WHERE b.rds_worksite_id = w.id
+              AND p.navigation_profile_id = w.navigation_profile_id
+              AND p.planned_rds_site_id = w.rds_site_id;
+            DELETE FROM integration.preparation_area_rds_mapping m
+            USING integration.rds_worksites w, integration.rds_worksite_plans p
+            WHERE m.rds_worksite_id = w.id
+              AND p.navigation_profile_id = w.navigation_profile_id
+              AND p.planned_rds_site_id = w.rds_site_id;
+            DELETE FROM integration.rds_worksites w
+            USING integration.rds_worksite_plans p
+            WHERE p.navigation_profile_id = w.navigation_profile_id
+              AND p.planned_rds_site_id = w.rds_site_id;
+            DELETE FROM master.variant_navigation_profile_assignments a
+            USING master.navigation_profiles p
+            WHERE p.id = a.navigation_profile_id AND p.code LIKE 'TEST-NAV-ACT-%';
+            DELETE FROM master.navigation_profiles WHERE code LIKE 'TEST-NAV-ACT-%';
+            UPDATE master.variant_navigation_profile_assignments a
+            SET is_default = false
+            FROM master.navigation_profiles p
+            WHERE p.id = a.navigation_profile_id
+              AND p.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
+            UPDATE master.navigation_profiles
+            SET status = 'DRAFT',
+                published_at = NULL,
+                config_json = jsonb_set(
+                    jsonb_set(config_json, '{commissioningState}', '"PLANNED"'::jsonb),
+                    '{geometryVerified}', 'false'::jsonb)
+            WHERE config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
+            UPDATE integration.rds_worksite_plans p
+            SET commissioning_state = 'PLANNED',
+                geometry_verified = false
+            FROM master.navigation_profiles n
+            WHERE p.navigation_profile_id = n.id
+              AND n.config_json ->> 'commissioningRegistry' = 'tkg_rds_variant_map_naming_v1';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'DEV-RDS-SIM-%';
             DELETE FROM master.navigation_profiles WHERE code LIKE 'P08A-%';
             DELETE FROM master.task_templates
-            WHERE config_json ->> 'testScope' = 'P07A';
+            WHERE config_json ->> 'testScope' IN ('P07A', 'TEST-NAV-GATE', 'PRODUCTION_END');
+            DELETE FROM master.slot_group_members m
+            USING master.slot_groups g
+            WHERE m.slot_group_id = g.id AND g.code LIKE 'PE-GROUP-%';
+            DELETE FROM master.slot_groups WHERE code LIKE 'PE-GROUP-%';
+            DELETE FROM master.layout_slot_parts m
+            USING master.parts p
+            WHERE m.part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_group_parts m
+            USING master.parts p
+            WHERE m.part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_group_parts m
+            USING master.product_groups g, master.parts p
+            WHERE m.product_group_id = g.id
+              AND g.main_part_id = p.id
+              AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.product_groups g
+            USING master.parts p
+            WHERE g.main_part_id = p.id AND p.part_code LIKE 'PE-%';
+            DELETE FROM master.layout_slots WHERE code LIKE 'PE-RETURN-%';
+            DELETE FROM master.parts WHERE part_code LIKE 'PE-%';
+            DELETE FROM auth.user_sessions;
             DELETE FROM auth.user_machine_permissions;
             DELETE FROM auth.user_roles;
             DELETE FROM auth.users;
@@ -95,6 +255,32 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             """);
     }
 
+    private async Task EnsureMasterDataBaselineAsync()
+    {
+        await using var connection = new NpgsqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            """
+            CREATE SCHEMA IF NOT EXISTS api_test_baseline;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.layout_slots AS
+                SELECT * FROM master.layout_slots;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.parts AS
+                SELECT * FROM master.parts;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.task_templates AS
+                SELECT * FROM master.task_templates;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.store_locations AS
+                SELECT * FROM ops.store_locations;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.layout_slot_parts AS
+                SELECT * FROM master.layout_slot_parts;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.product_group_parts AS
+                SELECT * FROM master.product_group_parts;
+            CREATE TABLE IF NOT EXISTS api_test_baseline.store_location_delivery_slots AS
+                SELECT * FROM ops.store_location_delivery_slots;
+            """,
+            connection);
+        await command.ExecuteNonQueryAsync();
+    }
+
     public async Task<TestIdentity> SeedIdentityAsync(
         string role = RoleCodes.LineOperator,
         bool active = true,
@@ -103,7 +289,10 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         bool canOperate = true,
         bool canChangeVariant = false,
         string? machineCode = "SH-01-A",
-        string? employeeNo = null)
+        string? employeeNo = null,
+        bool bindDeviceToMachine = true,
+        string? deviceBoundMachineCode = null,
+        bool includeUserMachinePermissions = true)
     {
         var suffix = Guid.NewGuid().ToString("N")[..10];
         var username = $"user-{suffix}";
@@ -129,32 +318,53 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             """,
             ("user_id", userId),
             ("role", role));
-        var deviceId = await ScalarAsync<Guid>(
-            """
-            INSERT INTO audit.client_devices (device_code, name, device_type, is_active)
-            VALUES (@code, @name, 'PDA', @active)
-            RETURNING id
-            """,
-            ("code", deviceCode),
-            ("name", $"Test PDA {suffix}"),
-            ("active", deviceActive));
 
         Guid? machineId = null;
         if (machineCode is not null)
         {
             machineId = await ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = @code", ("code", machineCode));
-            await ExecuteAsync(
-                """
-                INSERT INTO auth.user_machine_permissions (
-                    user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
-                VALUES (@user_id, @machine_id, @can_view, @can_operate, @can_change_variant, false)
-                """,
-                ("user_id", userId),
-                ("machine_id", machineId),
-                ("can_view", canView),
-                ("can_operate", canOperate),
-                ("can_change_variant", canChangeVariant));
+            if (includeUserMachinePermissions)
+            {
+                await ExecuteAsync(
+                    """
+                    INSERT INTO auth.user_machine_permissions (
+                        user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
+                    VALUES (@user_id, @machine_id, @can_view, @can_operate, @can_change_variant, false)
+                    """,
+                    ("user_id", userId),
+                    ("machine_id", machineId),
+                    ("can_view", canView),
+                    ("can_operate", canOperate),
+                    ("can_change_variant", canChangeVariant));
+            }
         }
+
+        var isWarehouseRole = role is RoleCodes.WarehouseOperator
+            or RoleCodes.SemiFinishedWarehouseOperator
+            or RoleCodes.FinishedGoodsWarehouseOperator;
+
+        Guid? deviceBoundMachineId = null;
+        if (deviceBoundMachineCode is not null)
+        {
+            deviceBoundMachineId = await ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = @code", ("code", deviceBoundMachineCode));
+        }
+        else if (bindDeviceToMachine && !isWarehouseRole && machineCode is not null)
+        {
+            deviceBoundMachineId = machineId.HasValue
+                ? machineId
+                : await ScalarAsync<Guid>("SELECT id FROM master.machines WHERE code = @code", ("code", machineCode));
+        }
+
+        var deviceId = await ScalarAsync<Guid>(
+            """
+            INSERT INTO audit.client_devices (device_code, name, device_type, is_active, machine_id)
+            VALUES (@code, @name, 'PDA', @active, @machine_id)
+            RETURNING id
+            """,
+            ("code", deviceCode),
+            ("name", $"Test PDA {suffix}"),
+            ("active", deviceActive),
+            ("machine_id", (object?)deviceBoundMachineId ?? DBNull.Value));
 
         return new TestIdentity(userId, username, password, deviceId, deviceCode, machineId, employeeNumber);
     }
@@ -209,8 +419,107 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             ("variant_id", context.VariantId),
             ("layout_id", context.LayoutId));
         await EnsureDefaultBufferSlotsAsync(context.LayoutId);
+        await EnsureDefaultFinishedGoodsDestinationAsync(context.LayoutId);
         return context;
     }
+
+    public const string FinishedGoodsTestDropCode = "FG-TEST-DROP";
+    public const string FinishedGoodsTestLocationCode = "TEST-FG-API";
+
+    /// <summary>
+    /// WP-08: Kasa Doldu is refused unless the DROP the server would actually
+    /// resolve is linked to an enabled store location. Customer layouts in the
+    /// API suite have no DROP role (simulation DROP-001 is seed 002d, not
+    /// loaded here), so a test-only DROP is inserted when the layout has none.
+    /// The mapping then follows the same first-enabled-DROP rule as dispatch.
+    /// Customer names are not modelled. The test surface exposes only the two
+    /// approved finished-goods delivery positions.
+    /// </summary>
+    private async Task EnsureDefaultFinishedGoodsDestinationAsync(Guid layoutId)
+    {
+        await ExecuteAsync(
+            """
+            UPDATE master.layout_slots SET is_enabled = true
+            WHERE layout_id = @layout_id AND slot_role = 'DROP';
+            INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
+            SELECT @layout_id, @code, 'Test Finished Goods Drop', 'DROP', 9001
+            WHERE NOT EXISTS (
+                SELECT 1 FROM master.layout_slots
+                WHERE layout_id = @layout_id AND slot_role = 'DROP');
+            INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+            SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
+            WHERE layout_id = @layout_id AND slot_role = 'DROP'
+            ON CONFLICT (layout_slot_id) DO NOTHING;
+            INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
+            VALUES (@location_code, 'Test Finished Goods Location', 1, 'DELIVERY')
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
+            INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
+            SELECT CASE WHEN i = 1 THEN 'TEST-FG-EMPTY' ELSE 'TEST-FG-EMPTY-' || lpad(i::text, 2, '0') END,
+                   'Test Empty Pallet Location ' || i,
+                   1,
+                   'DELIVERY'
+            FROM generate_series(1, 6) i
+            ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
+            INSERT INTO ops.store_units (store_location_id, load_state, delivered_at)
+            SELECT id, 'EMPTY', now() FROM ops.store_locations
+            WHERE (code = 'TEST-FG-EMPTY' OR code ~ '^TEST-FG-EMPTY-[0-9]{2}$')
+              AND NOT EXISTS (SELECT 1 FROM ops.store_units u WHERE u.store_location_id = ops.store_locations.id AND u.removed_at IS NULL);
+            INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
+            SELECT drop_slot.id, sl.id
+            FROM (
+                SELECT id FROM master.layout_slots
+                WHERE layout_id = @layout_id AND slot_role = 'DROP' AND is_enabled
+                ORDER BY display_order, id
+                LIMIT 1
+            ) drop_slot
+            CROSS JOIN ops.store_locations sl
+            WHERE sl.code = @location_code
+            ON CONFLICT (layout_slot_id) DO UPDATE SET store_location_id = EXCLUDED.store_location_id;
+            """,
+            ("layout_id", layoutId),
+            ("code", FinishedGoodsTestDropCode),
+            ("location_code", FinishedGoodsTestLocationCode));
+
+        for (var i = 2; i <= 6; i++)
+        {
+            var slotCode = $"{FinishedGoodsTestDropCode}-{i:00}";
+            var locationCode = $"{FinishedGoodsTestLocationCode}-{i:00}";
+            await ExecuteAsync(
+                """
+                INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
+                VALUES (@layout_id, @slot_code, @display_name, 'DROP', @display_order)
+                ON CONFLICT (layout_id, code) DO UPDATE SET is_enabled = true;
+                INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
+                SELECT id, 'VACANT', 'UNKNOWN' FROM master.layout_slots
+                WHERE layout_id = @layout_id AND code = @slot_code
+                ON CONFLICT (layout_slot_id) DO NOTHING;
+                INSERT INTO ops.store_locations (code, display_name, capacity, area_purpose)
+                VALUES (@location_code, @display_name, 1, 'DELIVERY')
+                ON CONFLICT (code) DO UPDATE SET is_enabled = true, capacity = 1, area_purpose = 'DELIVERY';
+                INSERT INTO ops.store_location_delivery_slots (layout_slot_id, store_location_id)
+                SELECT ls.id, sl.id
+                FROM master.layout_slots ls
+                CROSS JOIN ops.store_locations sl
+                WHERE ls.layout_id = @layout_id AND ls.code = @slot_code
+                  AND sl.code = @location_code
+                ON CONFLICT (layout_slot_id) DO UPDATE SET store_location_id = EXCLUDED.store_location_id;
+                """,
+                ("layout_id", layoutId),
+                ("slot_code", slotCode),
+                ("location_code", locationCode),
+                ("display_name", $"Test Finished Goods Location {i}"),
+                ("display_order", 9100 + i));
+        }
+    }
+
+    public Task<Guid> FinishedGoodsDropSlotAsync(Guid layoutId) => ScalarAsync<Guid>(
+        """
+        SELECT id FROM master.layout_slots
+        WHERE layout_id = @layout AND slot_role = 'DROP' AND is_enabled
+        ORDER BY display_order, id
+        LIMIT 1
+        """,
+        ("layout", layoutId));
 
     /// <summary>
     /// Customer Workflow — Empty Container Buffer: every BRING_EMPTY/
@@ -367,21 +676,25 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         return partId;
     }
 
-    public Task SetSlotAsync(Guid slotId, string occupancy, string load) => ExecuteAsync(
+    public Task SetSlotAsync(Guid slotId, string occupancy, string load) =>
+        SetSlotAsync(slotId, occupancy, load, null);
+
+    public Task SetSlotAsync(Guid slotId, string occupancy, string load, Guid? currentPartId) => ExecuteAsync(
         """
-        INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state)
-        VALUES (@slot_id, @occupancy, @load)
+        INSERT INTO ops.slot_runtime_state (layout_slot_id, occupancy_state, load_state, current_part_id)
+        VALUES (@slot_id, @occupancy, @load, @part_id)
         ON CONFLICT (layout_slot_id) DO UPDATE
         SET occupancy_state = EXCLUDED.occupancy_state,
             load_state = EXCLUDED.load_state,
-            current_part_id = NULL,
+            current_part_id = @part_id,
             current_container_type_id = NULL,
             row_version = ops.slot_runtime_state.row_version + 1,
             updated_at = now()
         """,
         ("slot_id", slotId),
         ("occupancy", occupancy),
-        ("load", load));
+        ("load", load),
+        ("part_id", currentPartId));
 
     public async Task<HttpResponseMessage> SendTransportAsync(
         HttpClient client,
@@ -411,6 +724,22 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await command.ExecuteNonQueryAsync();
     }
 
+    public Task ExecuteScriptAsync(string path) =>
+        ExecuteAsync(File.ReadAllText(path));
+
+    public static string MigrationFile(string name)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "db", "migrations", name)))
+        {
+            directory = directory.Parent;
+        }
+
+        return directory is null
+            ? throw new FileNotFoundException($"db/migrations/{name} was not found above the test output directory.")
+            : Path.Combine(directory.FullName, "db", "migrations", name);
+    }
+
     public async Task<T> ScalarAsync<T>(string sql, params (string Name, object? Value)[] parameters)
     {
         await using var connection = new NpgsqlConnection(ConnectionString);
@@ -418,7 +747,17 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await using var command = new NpgsqlCommand(sql, connection);
         AddParameters(command, parameters);
         var value = await command.ExecuteScalarAsync();
-        return value is T typed ? typed : throw new InvalidOperationException($"Scalar query did not return {typeof(T).Name}.");
+        if (value is T typed)
+        {
+            return typed;
+        }
+
+        if (typeof(T) == typeof(DateTimeOffset) && value is DateTime dt)
+        {
+            return (T)(object)new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc));
+        }
+
+        throw new InvalidOperationException($"Scalar query did not return {typeof(T).Name}.");
     }
 
     private async Task<Guid[]> QueryGuidsAsync(string sql, params (string Name, object? Value)[] parameters)

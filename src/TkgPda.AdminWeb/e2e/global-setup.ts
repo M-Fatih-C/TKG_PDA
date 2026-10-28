@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import {
   ADMIN_USERNAME,
@@ -76,12 +76,12 @@ export default async function globalSetup(): Promise<void> {
   try {
     run(pgTool('createdb'), ['-h', '127.0.0.1', '-p', String(PG_PORT), '-U', 'postgres', PG_DATABASE], { PGPASSWORD: 'trust' })
 
-    console.log('[e2e] applying schema baseline and Phase 02A/02B seeds…')
-    applySqlFile('db/migrations/001_initial_schema.sql')
-    applySqlFile('db/migrations/002_operator_employee_identity.sql')
-    applySqlFile('db/migrations/003_transport_batch.sql')
-    applySqlFile('db/migrations/004_transport_request_readiness.sql')
-    applySqlFile('db/migrations/005_layout_slot_part_mapping.sql')
+    console.log('[e2e] applying all SQL migrations and required customer master seeds…')
+    const migrationsDir = path.join(repoRoot, 'db/migrations')
+    const migrations = readdirSync(migrationsDir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+    for (const migration of migrations) applySqlFile(`db/migrations/${migration}`)
     applySqlFile('db/seeds/generated/002a_customer_textual_master_data.sql')
     applySqlFile('db/seeds/generated/002b_customer_physical_layouts.sql')
     applySqlFile('db/seeds/generated/002c_customer_layout_slot_part_assignments.sql')
@@ -109,6 +109,10 @@ export default async function globalSetup(): Promise<void> {
         ...process.env,
         ConnectionStrings__TkgPda: connectionString,
         Authentication__Jwt__SigningKey: jwtSigningKey,
+        Rds__Enabled: 'false',
+        Rds__DispatchEnabled: 'false',
+        RdsCoreDiscovery__Enabled: 'false',
+        RdsCoreExecution__Enabled: 'false',
         ASPNETCORE_ENVIRONMENT: 'Production',
         DOTNET_CLI_TELEMETRY_OPTOUT: '1',
       },

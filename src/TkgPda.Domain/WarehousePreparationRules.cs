@@ -4,7 +4,7 @@ namespace TkgPda.Domain;
 /// Physical pallet content, not the product for which an empty container will
 /// later be used. An empty pallet has no material PartId. No quantity is inferred.
 /// </summary>
-public sealed record WarehousePalletContent(Guid ContainerTypeId, LoadState Load, Guid? PartId);
+public sealed record WarehousePalletContent(Guid? ContainerTypeId, LoadState Load, Guid? PartId);
 
 /// <summary>
 /// Evidence to be loaded by the application from a persisted inbound demand,
@@ -12,7 +12,7 @@ public sealed record WarehousePalletContent(Guid ContainerTypeId, LoadState Load
 /// operation and does not make REMOVE_FULL an inbound material request.
 /// </summary>
 public sealed record WarehousePreparationDemand(
-    Guid RequestId, Guid MachineId, Guid PartId, Guid ContainerTypeId,
+    Guid RequestId, Guid MachineId, Guid PartId, Guid? ContainerTypeId,
     LoadState RequestedLoad, TransportRequestStatus Status, TransportReadinessState Readiness);
 
 /// <summary>
@@ -44,11 +44,12 @@ public static class WarehousePreparationRules
     public static void EnsurePalletMatchesDemand(WarehousePalletContent pallet, WarehousePreparationDemand? demand)
     {
         ArgumentNullException.ThrowIfNull(pallet);
-        RequireIdentity(pallet.ContainerTypeId);
         if (pallet.Load is not (LoadState.Empty or LoadState.Full))
             throw new WorkflowRuleException("PREPARATION_LOAD_UNKNOWN", "Hazırlanan paletin boş veya dolu olduğu bilinmelidir.");
         if (pallet.Load == LoadState.Full)
         {
+            if (pallet.ContainerTypeId is not { } fullContainerTypeId || fullContainerTypeId == Guid.Empty)
+                throw new WorkflowRuleException("PREPARATION_CONTAINER_REQUIRED", "Dolu paletteki taşıma kabı tipi bilinmelidir.");
             if (pallet.PartId is not { } partId || partId == Guid.Empty)
                 throw new WorkflowRuleException("PREPARATION_PART_REQUIRED", "Dolu paletteki parça bilinmelidir.");
             if (demand is null)
@@ -59,9 +60,14 @@ public static class WarehousePreparationRules
             throw new WorkflowRuleException("EMPTY_PALLET_HAS_MATERIAL", "Boş palet içinde malzeme varmış gibi kaydedilemez.");
         }
 
-        if (demand is null) return; // Unassigned EMPTY stock is explicitly allowed.
+        if (demand is null)
+        {
+            if (pallet.ContainerTypeId is not { } emptyContainerTypeId || emptyContainerTypeId == Guid.Empty)
+                throw new WorkflowRuleException("PREPARATION_CONTAINER_REQUIRED", "Talebe bağlı olmayan boş paletin taşıma kabı tipi bilinmelidir.");
+            return; // Unassigned EMPTY stock is explicitly allowed when its type is known.
+        }
 
-        RequireIdentity(demand.RequestId, demand.MachineId, demand.PartId, demand.ContainerTypeId);
+        RequireIdentity(demand.RequestId, demand.MachineId, demand.PartId);
         if (demand.RequestedLoad != pallet.Load)
             throw new WorkflowRuleException("PREPARATION_LOAD_MISMATCH", "Hazırlanan içerik talebin boş/dolu gereksinimiyle uyuşmuyor.");
         if (demand.ContainerTypeId != pallet.ContainerTypeId)

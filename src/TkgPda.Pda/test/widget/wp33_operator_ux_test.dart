@@ -15,12 +15,12 @@ void main() {
   ) async {
     final harness = await _operationHarness(tester);
 
-    expect(find.text('1. Kasa Doldu'), findsOneWidget);
-    expect(find.text('1. Kasa Boş'), findsOneWidget);
-    expect(find.text('Tüm Kasaları Kaldır'), findsOneWidget);
+    expect(find.text('Kasa Doldu'), findsOneWidget);
+    expect(find.text('Boş Kasa Getir'), findsOneWidget);
+    expect(find.text('Tüm Kasaları Kaldır'), findsNothing);
     expect(find.byKey(const Key('direct-action-REMOVE_EMPTY-1')), findsNothing);
 
-    await tester.tap(find.text('1. Kasa Doldu'));
+    await tester.tap(find.text('Kasa Doldu'));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(harness.repository.containerActionCount, 1);
@@ -63,8 +63,8 @@ void main() {
       const Offset(-260, 0),
     );
     await tester.pumpAndSettle();
-    expect(find.text('2. Kasa Doldu'), findsOneWidget);
-    expect(find.text('2. Kasa Boş'), findsOneWidget);
+    expect(find.text('Kasa Doldu'), findsNWidgets(2));
+    expect(find.text('Boş Kasa Getir'), findsNWidgets(2));
 
     // Each logical container must own its action keys. These previously collided:
     // every card rendered the position-independent 'direct-action-BRING_EMPTY', so a
@@ -72,19 +72,24 @@ void main() {
     // "2 widgets found". This is the case that should have caught it — the other
     // widget fixtures have exactly one container position, so the collision was
     // invisible to them.
-    expect(find.byKey(const Key('direct-action-BRING_EMPTY-1')), findsOneWidget);
-    expect(find.byKey(const Key('direct-action-BRING_EMPTY-2')), findsOneWidget);
-    expect(find.byKey(const Key('direct-action-REMOVE_FULL-1')), findsOneWidget);
-    expect(find.byKey(const Key('direct-action-REMOVE_FULL-2')), findsOneWidget);
-
-    // Position 2 reports its empty action disabled, so its key must exist but be
-    // inert — proving the keys track per-container availability, not just presence.
     expect(
-      tester.widget<ElevatedButton>(
-        find.byKey(const Key('direct-action-BRING_EMPTY-2')),
-      ).onPressed,
-      isNull,
+      find.byKey(const Key('direct-action-BRING_EMPTY-1')),
+      findsOneWidget,
     );
+    expect(
+      find.byKey(const Key('direct-action-REMOVE_FULL-1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const Key('direct-action-REMOVE_FULL-2')),
+      findsOneWidget,
+    );
+    // Both buttons remain visible; position 2's empty action is disabled.
+    expect(find.byKey(const Key('direct-action-BRING_EMPTY-2')), findsOneWidget);
+    final bringEmpty2 = tester.widget<ElevatedButton>(
+      find.byKey(const Key('direct-action-BRING_EMPTY-2')),
+    );
+    expect(bringEmpty2.enabled, isFalse);
     harness.dispose();
   });
 
@@ -97,7 +102,7 @@ void main() {
       );
     final harness = await _operationHarness(tester, repository: repository);
 
-    await tester.tap(find.text('Tüm Kasaları Kaldır'));
+    await harness.controller.removeAllContainers();
     await tester.pumpAndSettle();
     final firstKey = repository.lastRemoveAllIdempotencyKey;
     expect(
@@ -154,107 +159,94 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('active operator queue item can be cancelled with confirmation', (
-    tester,
-  ) async {
-    const testRequestId = 'req-12345';
-    final repository = FakePdaRepository()
-      ..operatorQueueValue = OperatorQueuePage(
-        terminal: false,
-        offset: 0,
-        limit: 50,
-        hasMore: false,
-        items: [
-          OperatorQueueItem(
-            queuePosition: 1,
-            machine: 'SH-01-A · Hücre',
-            part: '71550BN000-10-HAOS',
-            logicalContainerNumber: 2,
-            businessAction: 'Dolu kasa kaldırılıyor',
-            requestedAt: DateTime.utc(2026, 9, 3, 9, 30),
-            state: 'IN_PROGRESS',
-            etaSeconds: 90,
-            etaState: 'AVAILABLE',
-            requestId: testRequestId,
-            canCancel: true,
-          ),
-        ],
-      );
-    final harness = await _loggedInHarness(tester, repository);
+  testWidgets(
+    'active operator queue item is read-only and has no cancel button',
+    (tester) async {
+      const testRequestId = 'req-12345';
+      final repository = FakePdaRepository()
+        ..operatorQueueValue = OperatorQueuePage(
+          terminal: false,
+          offset: 0,
+          limit: 50,
+          hasMore: false,
+          items: [
+            OperatorQueueItem(
+              queuePosition: 1,
+              machine: 'SH-01-A · Hücre',
+              part: '71550BN000-10-HAOS',
+              logicalContainerNumber: 2,
+              businessAction: 'Dolu kasa kaldırılıyor',
+              requestedAt: DateTime.utc(2026, 9, 3, 9, 30),
+              state: 'IN_PROGRESS',
+              etaSeconds: 90,
+              etaState: 'AVAILABLE',
+              requestId: testRequestId,
+            ),
+          ],
+        );
+      final harness = await _loggedInHarness(tester, repository);
 
-    await tester.tap(find.byKey(const Key('open-operator-queue')));
-    await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('open-operator-queue')));
+      await tester.pumpAndSettle();
 
-    // The raw AGV identifier is no longer part of the model at all.
-    expect(find.textContaining('sim_02'), findsNothing);
-    expect(find.text('Yaklaşık 2 dakika'), findsOneWidget);
+      // The raw AGV identifier is no longer part of the model at all.
+      expect(find.textContaining('sim_02'), findsNothing);
+      expect(find.text('Yaklaşık 2 dakika'), findsOneWidget);
 
-    final cancelButton = find.byKey(const Key('cancel-queue-req-12345'));
-    expect(cancelButton, findsOneWidget);
-
-    await tester.tap(cancelButton);
-    await tester.pumpAndSettle();
-
-    expect(find.text('Taşıma İptali'), findsOneWidget);
-    expect(find.byKey(const Key('confirm-cancel-queue')), findsOneWidget);
-
-    await tester.tap(find.byKey(const Key('confirm-cancel-queue')));
-    await tester.pumpAndSettle();
-
-    expect(repository.cancelCount, 1);
-    harness.dispose();
-  });
+      final cancelButton = find.byKey(const Key('cancel-queue-req-12345'));
+      expect(cancelButton, findsNothing);
+      expect(repository.cancelCount, 0);
+      harness.dispose();
+    },
+  );
 
   testWidgets(
-      'waiting preparation queue item displays Hazırlık Bekleniyor badge and can be cancelled',
-      (tester) async {
-    const testRequestId = 'req-prep-123';
-    final repository = FakePdaRepository()
-      ..operatorQueueValue = OperatorQueuePage(
-        terminal: false,
-        offset: 0,
-        limit: 20,
-        hasMore: false,
-        items: [
-          OperatorQueueItem(
-            queuePosition: 1,
-            machine: 'SH-01-A · Hücre',
-            part: '67115BN050-10-HAOS',
-            logicalContainerNumber: 1,
-            businessAction: 'Boş kasa (Depo hazırlığı bekleniyor)',
-            requestedAt: DateTime.utc(2026, 9, 3, 9, 30),
-            state: 'WAITING_PREPARATION',
-            etaSeconds: null,
-            etaState: 'UNAVAILABLE',
-            requestId: testRequestId,
-            canCancel: true,
-          ),
-        ],
+    'waiting preparation queue item displays Hazırlık Bekleniyor badge and has no cancel button',
+    (tester) async {
+      const testRequestId = 'req-prep-123';
+      final repository = FakePdaRepository()
+        ..operatorQueueValue = OperatorQueuePage(
+          terminal: false,
+          offset: 0,
+          limit: 20,
+          hasMore: false,
+          items: [
+            OperatorQueueItem(
+              queuePosition: 1,
+              machine: 'SH-01-A · Hücre',
+              part: '67115BN050-10-HAOS',
+              logicalContainerNumber: 1,
+              businessAction: 'Boş kasa (Depo hazırlığı bekleniyor)',
+              requestedAt: DateTime.utc(2026, 9, 3, 9, 30),
+              state: 'WAITING_PREPARATION',
+              etaSeconds: null,
+              etaState: 'UNAVAILABLE',
+              requestId: testRequestId,
+            ),
+          ],
+        );
+      final harness = await _loggedInHarness(tester, repository);
+
+      await tester.tap(find.byKey(const Key('open-operator-queue')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Hazırlık Bekleniyor'), findsOneWidget);
+      expect(
+        find.textContaining('Boş kasa (Depo hazırlığı bekleniyor)'),
+        findsOneWidget,
       );
-    final harness = await _loggedInHarness(tester, repository);
+      expect(find.text('Süre bilgisi yok'), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('open-operator-queue')));
-    await tester.pumpAndSettle();
+      final cancelButton = find.byKey(const Key('cancel-queue-req-prep-123'));
+      expect(cancelButton, findsNothing);
+      expect(repository.cancelCount, 0);
+      harness.dispose();
+    },
+  );
 
-    expect(find.text('Hazırlık Bekleniyor'), findsOneWidget);
-    expect(find.textContaining('Boş kasa (Depo hazırlığı bekleniyor)'), findsOneWidget);
-    expect(find.text('Süre bilgisi yok'), findsOneWidget);
-
-    final cancelButton = find.byKey(const Key('cancel-queue-req-prep-123'));
-    expect(cancelButton, findsOneWidget);
-
-    await tester.tap(cancelButton);
-    await tester.pumpAndSettle();
-
-    expect(find.text('Taşıma İptali'), findsOneWidget);
-    await tester.tap(find.byKey(const Key('confirm-cancel-queue')));
-    await tester.pumpAndSettle();
-
-    expect(repository.cancelCount, 1);
-    harness.dispose();
-  });
-
-  testWidgets('robot status bar shows business info without maintenance controls', (tester) async {
+  testWidgets('robot status bar shows business info without maintenance controls', (
+    tester,
+  ) async {
     // The Operator model no longer has fields for raw RDS telemetry at all — the
     // API refuses to serialize them — so this is now a contract guarantee rather
     // than a rendering choice.
@@ -284,11 +276,11 @@ void main() {
     harness.dispose();
   });
 
-  testWidgets('robot card reports unknown battery and connectivity honestly', (tester) async {
+  testWidgets('robot card reports unknown battery and connectivity honestly', (
+    tester,
+  ) async {
     final repository = FakePdaRepository()
-      ..robotsValue = [
-        const RobotTelemetry(displayName: 'HELIFORK'),
-      ];
+      ..robotsValue = [const RobotTelemetry(displayName: 'HELIFORK')];
     final harness = await _loggedInHarness(tester, repository);
 
     await tester.tap(find.byKey(const Key('open-operator-queue')));
@@ -305,27 +297,30 @@ void main() {
     harness.dispose();
   });
 
-  test('operator queue item ignores a raw AGV identifier even if the server sends one', () {
-    // The model has no agvId field, so the compiler prevents it being carried and
-    // a stray server value is dropped rather than reaching the Operator.
-    final item = OperatorQueueItem.fromJson(const {
-      'queuePosition': 1,
-      'machine': 'SH-01-A · Hücre',
-      'part': '71550BN000-10-HAOS',
-      'logicalContainerNumber': 2,
-      'businessAction': 'Dolu kasa kaldırılıyor',
-      'requestedAt': '2026-09-03T09:30:00Z',
-      'state': 'IN_PROGRESS',
-      'etaSeconds': 90,
-      'etaState': 'AVAILABLE',
-      'requestId': 'req-1',
-      'agvId': 'Sfl-Cbd15',
-    });
+  test(
+    'operator queue item ignores a raw AGV identifier even if the server sends one',
+    () {
+      // The model has no agvId field, so the compiler prevents it being carried and
+      // a stray server value is dropped rather than reaching the Operator.
+      final item = OperatorQueueItem.fromJson(const {
+        'queuePosition': 1,
+        'machine': 'SH-01-A · Hücre',
+        'part': '71550BN000-10-HAOS',
+        'logicalContainerNumber': 2,
+        'businessAction': 'Dolu kasa kaldırılıyor',
+        'requestedAt': '2026-09-03T09:30:00Z',
+        'state': 'IN_PROGRESS',
+        'etaSeconds': 90,
+        'etaState': 'AVAILABLE',
+        'requestId': 'req-1',
+        'agvId': 'Sfl-Cbd15',
+      });
 
-    expect(item.requestId, 'req-1');
-    expect(item.machine, 'SH-01-A · Hücre');
-    expect(item.toString(), isNot(contains('Sfl-Cbd15')));
-  });
+      expect(item.requestId, 'req-1');
+      expect(item.machine, 'SH-01-A · Hücre');
+      expect(item.toString(), isNot(contains('Sfl-Cbd15')));
+    },
+  );
 }
 
 Future<_Harness> _operationHarness(

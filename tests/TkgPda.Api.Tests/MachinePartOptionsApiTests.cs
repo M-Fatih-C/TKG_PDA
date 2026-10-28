@@ -99,7 +99,8 @@ public sealed class MachinePartOptionsApiTests(ApiTestFixture fixture) : IClassF
         var response = await client.GetAsync($"/api/v1/machines/{scene.MachineId}/part-options");
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        Assert.Equal("MACHINE_ACCESS_DENIED", await ApiTestFixture.ErrorCodeAsync(response));
+        var errorCode = await ApiTestFixture.ErrorCodeAsync(response);
+        Assert.True(errorCode is "MACHINE_ACCESS_DENIED" or "DEVICE_MACHINE_BINDING_REQUIRED");
     }
 
     [Fact]

@@ -14,7 +14,7 @@ class ProductionCoordinator extends ChangeNotifier {
   bool verified = false, loading = false, inFlight = false;
   String? error;
   ProductionStartCommand? _start;
-  String? _startKey, _endId;
+  String? _startKey, _endId, _endKey;
   int _generation = 0;
   bool _disposed = false;
   bool get hasPending => _start != null || _endId != null;
@@ -27,7 +27,7 @@ class ProductionCoordinator extends ChangeNotifier {
     active = null;
     verified = loading = inFlight = false;
     _start = null;
-    _startKey = _endId = error = null;
+    _startKey = _endId = _endKey = error = null;
   }
 
   Future<void> refresh() async {
@@ -77,6 +77,7 @@ class ProductionCoordinator extends ChangeNotifier {
   Future<void> end() async {
     if (inFlight || hasPending || !verified || active == null) return;
     _endId = active!.id;
+    _endKey ??= 'production-end:${const Uuid().v4()}';
     await retry();
   }
 
@@ -92,10 +93,11 @@ class ProductionCoordinator extends ChangeNotifier {
     try {
       final result = _start != null
           ? await repository.startProduction(_start!, _startKey!)
-          : await repository.endProduction(machine, _endId!);
+          : await repository.endProduction(machine, _endId!, _endKey!);
       if (!_current(generation)) return;
       if (result.machineId != machine ||
-          (_endId != null && (result.id != _endId || result.isActive)) ||
+          (_endId != null &&
+              (result.id != _endId || (result.isActive && !result.isEnding))) ||
           (_start != null &&
               (result.variantId != _start!.variantId ||
                   result.productGroupId != _start!.productGroupId ||
@@ -103,7 +105,7 @@ class ProductionCoordinator extends ChangeNotifier {
         throw const FormatException('Unexpected production response');
       }
       _start = null;
-      _startKey = _endId = null;
+      _startKey = _endId = _endKey = null;
       active = result.isActive ? result : null;
       verified = true;
     } on ApiProblem catch (failure) {
@@ -113,7 +115,7 @@ class ProductionCoordinator extends ChangeNotifier {
           : failure.operatorMessage;
       if (failure.status < 500) {
         _start = null;
-        _startKey = _endId = null;
+        _startKey = _endId = _endKey = null;
       }
     } on Object catch (failure) {
       if (_current(generation)) error = _message(failure);

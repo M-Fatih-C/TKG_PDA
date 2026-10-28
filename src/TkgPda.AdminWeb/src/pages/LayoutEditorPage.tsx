@@ -599,10 +599,10 @@ export function LayoutEditorPage() {
         <Panel>
           <div className="panel-header">
             <div>
-              <h2>Geometrisi olmayan slotlar</h2>
-              <p>Bu kayıtlar korunur; fiziksel kanıt olmadan koordinat tahmin edilmez.</p>
+              <h2>Konum Koordinatı Bekleyen İstasyonlar</h2>
+              <p>Henüz yerleşim koordinatı atanmamış istasyon ve slot kayıtları.</p>
             </div>
-            <StatusPill value={`${unplaced.length} NULL`} tone="warning" />
+            <StatusPill value={`${unplaced.length} KONUM`} tone="warning" />
           </div>
           <div className="unplaced-list">
             {unplaced.map((slot) => (
@@ -652,7 +652,7 @@ function SlotPartAssociationInspector({
   const [busy, setBusy] = useState(false)
 
   const availableParts = useMemo(() => {
-    const assignedIds = new Set(slotParts.map((p) => p.id))
+    const assignedIds = new Set(slotParts.map((p) => p.partId ?? p.id))
     return allParts.filter((p) => p.isActive && !assignedIds.has(p.id))
   }, [allParts, slotParts])
 
@@ -721,25 +721,28 @@ function SlotPartAssociationInspector({
           <p className="slot-parts-empty">Atanmış parça yok (genel buffer veya serbest slot).</p>
         ) : (
           <ul className="slot-parts-items">
-            {slotParts.map((part) => (
-              <li key={part.id} className="slot-part-item">
-                <div className="slot-part-info">
-                  <strong>{part.partCode}</strong>
-                  {part.description && <small>{part.description}</small>}
-                </div>
-                {editable && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => void remove(part.id)}
-                    aria-label={`${part.partCode} eşlemesini kaldır`}
-                  >
-                    <Trash2 size={14} />
-                  </Button>
-                )}
-              </li>
-            ))}
+            {slotParts.map((part) => {
+              const partId = part.partId ?? part.id!
+              return (
+                <li key={partId} className="slot-part-item">
+                  <div className="slot-part-info">
+                    <strong>{part.partCode}</strong>
+                    {part.description && <small>{part.description}</small>}
+                  </div>
+                  {editable && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => void remove(partId)}
+                      aria-label={`${part.partCode} eşlemesini kaldır`}
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
       </div>

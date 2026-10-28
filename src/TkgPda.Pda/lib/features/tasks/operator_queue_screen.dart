@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../../app/app_controller.dart';
+import '../../app/design_tokens.dart';
 import '../../data/models/pda_models.dart';
 import '../../shared/widgets/feedback_banners.dart';
+import '../../shared/widgets/pda_empty_state.dart';
 
 class OperatorQueueScreen extends StatelessWidget {
   const OperatorQueueScreen({required this.controller, super.key});
@@ -24,7 +27,31 @@ class OperatorQueueScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Görevler'),
+            Row(
+              children: [
+                const Text('Görevler'),
+                if (controller.lastSuccessfulQueueRefresh case final last?) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    controller.offline || controller.operatorQueueError != null
+                        ? '· Bağlantı kesildi (${DateFormat('HH:mm:ss').format(last)})'
+                        : '· ${DateFormat('HH:mm:ss').format(last)}',
+                    key: controller.offline ||
+                            controller.operatorQueueError != null
+                        ? const Key('queue-stale-warning')
+                        : const Key('queue-last-update'),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.normal,
+                      color: controller.offline ||
+                              controller.operatorQueueError != null
+                          ? const Color(0xFFFCA5A5)
+                          : Colors.white70,
+                    ),
+                  ),
+                ],
+              ],
+            ),
             if (controller.user case final user?)
               Text(
                 '${user.fullName.trim().isNotEmpty ? user.fullName : user.username} (Sicil: ${user.employeeNo?.trim().isNotEmpty == true ? user.employeeNo! : "—"})',
@@ -262,13 +289,16 @@ class _QueueBody extends StatelessWidget {
     final page = controller.operatorQueue;
     final items = page?.items ?? const <OperatorQueueItem>[];
     if (items.isEmpty) {
-      return Center(
-        child: Text(
-          controller.operatorQueueTerminal
-              ? 'Yakın zamanda tamamlanan görev yok.'
-              : 'Aktif görev yok.',
-          key: const Key('operator-queue-empty'),
-        ),
+      final isTerminal = controller.operatorQueueTerminal;
+      return PdaEmptyState(
+        icon: isTerminal ? Icons.history_rounded : Icons.task_outlined,
+        title: isTerminal
+            ? 'Yakın zamanda tamamlanan görev yok.'
+            : 'Aktif görev yok.',
+        subtitle: isTerminal
+            ? 'Tamamlanan veya iptal edilen taşıma görevleri burada listelenecektir.'
+            : 'Makinelerden yeni bir taşıma talebi başlatıldığında görev listesi otomatik olarak güncellenecektir.',
+        textKey: const Key('operator-queue-empty'),
       );
     }
     return Column(
@@ -333,92 +363,127 @@ class _QueueCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final canCancel =
-        !controller.operatorQueueTerminal &&
-        item.requestId != null &&
-        item.canCancel;
+    final stateColor = PdaStatusColors.of(item.state);
+    final stateBg = PdaStatusColors.surfaceOf(item.state);
+
     return Card(
-      child: ListTile(
-        leading: CircleAvatar(child: Text('${item.queuePosition}')),
-        title: Text(
-          item.machine,
-          style: const TextStyle(fontWeight: FontWeight.w900),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: Color(0xFFE2E8F0)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
           children: [
-            Text(item.part),
-            Text(
-              '${item.logicalContainerNumber == null ? 'Kasa' : '${item.logicalContainerNumber}. Kasa'} · ${item.businessAction}',
-            ),
-            Text(_requestTime(item.requestedAt)),
-            Text(
-              _etaText(item),
-              style: TextStyle(
-                color: item.etaState == 'AVAILABLE'
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
-                fontWeight: item.etaState == 'AVAILABLE'
-                    ? FontWeight.w600
-                    : null,
+            Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: const Color(0xFF0B4F6C),
+                borderRadius: BorderRadius.circular(10),
               ),
-            ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Chip(label: Text(_stateText(item.state))),
-            if (canCancel) ...[
-              const SizedBox(width: 4),
-              IconButton(
-                key: Key('cancel-queue-${item.requestId}'),
-                icon: const Icon(
-                  Icons.cancel_outlined,
-                  color: Colors.redAccent,
+              child: Text(
+                '#${item.queuePosition}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 14,
                 ),
-                tooltip: 'Görevi İptal Et',
-                onPressed: controller.mutationGate.canMutate
-                    ? () => _confirmCancel(context)
-                    : null,
               ),
-            ],
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        item.machine,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                          color: Color(0xFF0F172A),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          item.part,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14,
+                            color: Color(0xFF334155),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${item.logicalContainerNumber == null ? 'Kasa' : '${item.logicalContainerNumber}. Kasa'} · ${item.businessAction}',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF475569),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text(
+                        _requestTime(item.requestedAt),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                      const Text(
+                        ' · ',
+                        style: TextStyle(color: Color(0xFF94A3B8)),
+                      ),
+                      Expanded(
+                        child: Text(
+                          _etaText(item),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: item.etaState == 'AVAILABLE'
+                                ? const Color(0xFF0B4F6C)
+                                : const Color(0xFF64748B),
+                            fontWeight: item.etaState == 'AVAILABLE'
+                                ? FontWeight.w700
+                                : FontWeight.normal,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Chip(
+              backgroundColor: stateBg,
+              side: BorderSide(color: stateColor.withValues(alpha: 0.3)),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              label: Text(
+                _stateText(item.state),
+                style: TextStyle(
+                  color: stateColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
-  }
-
-  Future<void> _confirmCancel(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Taşıma İptali'),
-        content: Text(
-          '${item.machine} hücresine ait ${item.part} taşıma talebini iptal etmek istediğinize emin misiniz?',
-        ),
-        actions: [
-          TextButton(
-            key: const Key('dismiss-cancel-queue'),
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Vazgeç'),
-          ),
-          ElevatedButton(
-            key: const Key('confirm-cancel-queue'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('İptal Et'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true && item.requestId != null) {
-      await controller.cancelQueueItem(item.requestId!);
-    }
   }
 }
 

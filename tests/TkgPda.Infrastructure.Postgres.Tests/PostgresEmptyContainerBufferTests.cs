@@ -313,6 +313,13 @@ public sealed class PostgresEmptyContainerBufferTests
             DELETE FROM integration.rds_worksites WHERE rds_site_id LIKE 'EMPTYBUF-%';
             DELETE FROM master.task_templates WHERE config_json ->> 'testScope' = 'EMPTY_BUFFER';
             DELETE FROM master.layout_slots WHERE metadata_json ->> 'testScope' = 'EMPTY_BUFFER';
+            INSERT INTO ops.store_units (store_location_id, load_state)
+            SELECT location.id, 'EMPTY'
+            FROM ops.store_locations location
+            WHERE location.code LIKE 'PHASE03-EMPTY-%'
+              AND NOT EXISTS (
+                  SELECT 1 FROM ops.store_units unit
+                  WHERE unit.store_location_id = location.id AND unit.removed_at IS NULL);
             """);
     }
 

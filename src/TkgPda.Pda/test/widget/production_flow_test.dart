@@ -10,6 +10,36 @@ import '../support/fakes.dart';
 
 void main() {
   testWidgets(
+    'ENDING retry requires confirmation and explains field verification',
+    (tester) async {
+      final original = activeRecord();
+      final ending = ProductionSession(
+        id: original.id,
+        machineId: original.machineId,
+        variantId: original.variantId,
+        productGroupId: original.productGroupId,
+        mainPartId: original.mainPartId,
+        startedAt: original.startedAt,
+        status: 'ENDING',
+      );
+      final repo = FakePdaRepository()..productionValue = ending;
+      await harness(tester, repo);
+      expect(
+        find.byKey(const Key('production-end-retry-guidance')),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Saha durumunu doğruladıktan'),
+        findsOneWidget,
+      );
+      await tap(tester, const Key('production-end'));
+      expect(repo.productionEndCount, 0);
+      await tap(tester, const Key('confirm-production-end'));
+      expect(repo.productionEndCount, 1);
+    },
+  );
+
+  testWidgets(
     'start is on workspace; no quantity or transport before production',
     (tester) async {
       final repo = FakePdaRepository();
@@ -21,6 +51,9 @@ void main() {
         isNull,
       );
       await tap(tester, Key('main-part-${testMainPartOption.partId}'));
+      expect(c.production.active, isNull);
+      expect(repo.productionStartCount, 0);
+      expect(find.byKey(const Key('production-start')), findsOneWidget);
       expect(c.transportActionsReady, isFalse);
       expect(find.text('Miktar'), findsNothing);
       expect(
@@ -31,19 +64,13 @@ void main() {
       expect(c.production.active, isNotNull);
       expect(repo.productionStartCount, 1);
       expect(repo.createCount, 0);
-      expect(find.text('Üretim Devam Ediyor'), findsOneWidget);
-      await reveal(tester, const Key('change-main-part'));
-      expect(
-        tester
-            .widget<OutlinedButton>(find.byKey(const Key('change-main-part')))
-            .onPressed,
-        isNull,
-      );
+      expect(find.text('ÜRETİM AKTİF'), findsOneWidget);
+      expect(find.byKey(const Key('change-main-part')), findsNothing);
       expect(c.transportActionsReady, isTrue);
     },
   );
 
-  testWidgets('active open transport explains why end is disabled', (
+  testWidgets('active open transport continues while production can end', (
     tester,
   ) async {
     final repo = FakePdaRepository()
@@ -54,10 +81,59 @@ void main() {
       tester
           .widget<OutlinedButton>(find.byKey(const Key('production-end')))
           .onPressed,
-      isNull,
+      isNotNull,
     );
     expect(find.byKey(const Key('production-open-transports')), findsOneWidget);
+    expect(
+      find.textContaining('görev yöneticisinde devam ediyor'),
+      findsOneWidget,
+    );
+    await tap(tester, const Key('production-end'));
+    expect(find.byKey(const Key('confirm-production-end')), findsOneWidget);
     expect(repo.productionEndCount, 0);
+  });
+
+  testWidgets('open transport does not block starting the next production', (
+    tester,
+  ) async {
+    final backgroundRequest = ActiveTransportRequest(
+      requestId: 'background-production-end-request',
+      requestNo: 43,
+      operation: 'REMOVE_EMPTY',
+      status: 'QUEUED',
+      requestedBy: testActiveRequest.requestedBy,
+      requestedByUsername: testActiveRequest.requestedByUsername,
+      isMine: true,
+      sourceSlotId: testActiveRequest.sourceSlotId,
+      destinationSlotId: testActiveRequest.destinationSlotId,
+      productGroupId: testActiveRequest.productGroupId,
+      partId: testActiveRequest.partId,
+      containerTypeId: testActiveRequest.containerTypeId,
+      priority: testActiveRequest.priority,
+      createdAt: testActiveRequest.createdAt,
+      canCancel: true,
+      cancelDisabledCode: null,
+      cancelDisabledMessage: null,
+      execution: testActiveRequest.execution,
+      productionEnd: true,
+      blocksProductionTransition: false,
+    );
+    final repo = FakePdaRepository()
+      ..contextValue = testContext(activeRequests: [backgroundRequest]);
+    await harness(tester, repo);
+    await tap(tester, Key('main-part-${testMainPartOption.partId}'));
+
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('production-start')))
+          .onPressed,
+      isNotNull,
+    );
+    expect(find.byKey(const Key('production-open-transports')), findsOneWidget);
+    expect(
+      find.textContaining('Yeni üretimi başlatabilirsiniz'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('end needs explicit confirmation and returns to main selection', (
@@ -67,10 +143,7 @@ void main() {
     final c = await harness(tester, repo);
     await tap(tester, const Key('production-end'));
     expect(repo.productionEndCount, 0);
-    expect(
-      find.textContaining('taşıma görevlerini tamamlamaz'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('sırasıyla kaldırılacaktır'), findsOneWidget);
     await tester.tap(find.text('Vazgeç'));
     await tester.pumpAndSettle();
     expect(c.production.active, isNotNull);
@@ -114,29 +187,23 @@ void main() {
     },
   );
 
-  testWidgets('main and related containers form a batch under one production', (
-    tester,
-  ) async {
-    final repo = FakePdaRepository()..productionValue = activeRecord();
-    final c = await harness(tester, repo);
-    await tap(tester, const Key('enter-batch-selection'));
-    await c.submitContainerAction(c.containerPositions.first, 'EMPTY');
-    await tester.pumpAndSettle();
-    expect(c.batchCart, hasLength(1));
-    expect(c.canEndProduction, isFalse);
-    await tap(tester, const Key('related-part-$testRelatedPartId'));
-    expect(c.selectedEffectivePart!.partId, testRelatedPartId);
-    await c.submitContainerAction(c.containerPositions.first, 'FULL');
-    await tester.pumpAndSettle();
-    expect(c.batchCart, hasLength(2));
-    expect(c.batchCart.map((i) => i.variantId).toSet(), {testVariantV1Id});
-    expect(repo.createCount, 0);
-    await c.submitBatch();
-    await tester.pumpAndSettle();
-    expect(repo.containerActionBatchCount, 1);
-    expect(repo.lastProductionSessionId, 'production-1');
-    expect(c.production.active!.id, 'production-1');
-  });
+  testWidgets(
+    'active production requests an alt part without retargeting mamul',
+    (tester) async {
+      final repo = FakePdaRepository()..productionValue = activeRecord();
+      final c = await harness(tester, repo);
+      expect(c.selectedEffectivePart!.partId, testMainPartId);
+      expect(
+        find.byKey(const Key('related-part-$testRelatedPartId')),
+        findsNothing,
+      );
+      await tap(tester, const Key('alt-part-$testAltPartId'));
+      expect(c.selectedEffectivePart!.partId, testMainPartId);
+      expect(repo.partDemandCount, 1);
+      expect(repo.containerActionCount, 0);
+      expect(find.textContaining('Kasa Doldu'), findsWidgets);
+    },
+  );
 
   testWidgets('remote end clears unsent cart instead of offering stale parts', (
     tester,
@@ -144,8 +211,10 @@ void main() {
     final repo = FakePdaRepository()..productionValue = activeRecord();
     final c = await harness(tester, repo);
     c.enterBatchSelection();
-    await c.submitContainerAction(c.containerPositions.first, 'EMPTY');
-    expect(c.batchCart, isNotEmpty);
+    await c.requestAltPart(testMainPartOption.relatedParts.first);
+    expect(c.batchCart, isEmpty);
+    expect(c.mamulActionsReady, isTrue);
+    expect(c.selectedEffectivePart!.partId, testMainPartId);
     repo.productionValue = null;
     await c.refreshContext();
     await tester.pumpAndSettle();
@@ -171,7 +240,7 @@ void main() {
       await reveal(tester, const Key('production-end'));
       expect(find.byKey(const Key('production-panel')), findsOneWidget);
       expect(tester.takeException(), isNull);
-      await reveal(tester, const Key('related-part-$testRelatedPartId'));
+      await reveal(tester, const Key('alt-part-$testAltPartId'));
       expect(tester.takeException(), isNull);
     });
   }

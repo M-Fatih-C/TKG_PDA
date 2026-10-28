@@ -42,6 +42,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
                 : error.Code is "NAVIGATION_PROFILE_REQUIRED" or "ID_REQUIRED"
                     ? StatusCodes.Status400BadRequest
                     : error.Code is "MACHINE_REGION_MAPPING_FORBIDDEN" or "RDS_WORKSITE_NOT_PHYSICAL"
+                        or "RDS_WORKSITE_PLAN_NAME_MISMATCH" or "SLOT_NOT_TRANSPORT_ELIGIBLE"
                         ? StatusCodes.Status422UnprocessableEntity
                         : StatusCodes.Status409Conflict;
             await ApiErrorWriter.WriteAsync(context, status, error.Code, error.Message);
@@ -107,7 +108,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
                 context,
                 StatusCodes.Status503ServiceUnavailable,
                 "DATABASE_UNAVAILABLE",
-                "The database is temporarily unavailable.");
+                "Veritabanı bağlantısı geçici olarak kullanılamıyor. Sunucu hazır olduğunda Yenile ile tekrar deneyin.");
         }
         catch (Exception error)
         {
@@ -125,6 +126,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
         "PRODUCTION_ACCESS_DENIED" => StatusCodes.Status403Forbidden,
         "PRODUCTION_SESSION_NOT_FOUND" => StatusCodes.Status404NotFound,
         "PRODUCTION_SESSION_ALREADY_ACTIVE" or "PRODUCTION_CONTEXT_MISMATCH" or "PRODUCTION_SESSION_ACTIVE" or "PRODUCTION_SESSION_CHANGED"
+            or "PRODUCTION_ENDING" or "PRODUCTION_END_IN_PROGRESS"
             => StatusCodes.Status409Conflict,
         "REQUEST_NOT_FOUND" or "SLOT_NOT_FOUND" or "PART_NOT_FOUND" or "CONTAINER_NOT_FOUND" or "TASK_TYPE_NOT_FOUND"
             => StatusCodes.Status404NotFound,
@@ -135,9 +137,9 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
             or "CONTAINER_ACTION_INVALID" or "CONTAINER_POSITION_INVALID" or "CONTAINER_BATCH_ITEM_INVALID"
             or "QUEUE_PAGE_INVALID"
             => StatusCodes.Status400BadRequest,
-        "IDEMPOTENCY_KEY_REUSED" or "SLOT_ALREADY_RESERVED" or "ACTIVE_TRANSPORT_EXISTS"
+        "IDEMPOTENCY_KEY_REUSED" or "SLOT_ALREADY_RESERVED" or "ACTIVE_TRANSPORT_EXISTS" or "PART_REQUEST_ALREADY_ACTIVE"
             or "RUNTIME_CONTEXT_MISMATCH" or "NAVIGATION_CONTEXT_MISMATCH" or "VARIANT_LAYOUT_CONFLICT"
-            or "NAVIGATION_PROFILE_CONFLICT" or "PRODUCT_GROUP_CONFLICT" or "PART_CONFLICT"
+            or "NAVIGATION_PROFILE_CONFLICT" or "NAVIGATION_PROFILE_AMBIGUOUS" or "PRODUCT_GROUP_CONFLICT" or "PART_CONFLICT"
             or "CONTAINER_CONFLICT" or "INVALID_SLOT_STATE" or "ILLEGAL_STATUS_TRANSITION"
             or "CANCELLATION_AFTER_EXECUTION_DEFERRED" or "REQUEST_LOCK_SCOPE_CHANGED" or "CANCELLATION_NOT_ALLOWED"
             or "SLOT_NOT_IN_ACTIVE_LAYOUT" or "OCCUPIED_SLOT_REQUIRED" or "SLOT_BUSY"
@@ -158,6 +160,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
         {
             "WEAK_PASSWORD" or "INVALID_FIELD" or "INVALID_ENUM_VALUE" or "INVALID_JSON_OBJECT"
                 or "ID_REQUIRED" or "ROLE_REQUIRED" or "UNKNOWN_ROLE" or "CONCURRENCY_TOKEN_REQUIRED"
+                or "MACHINE_VIEW_PERMISSION_REQUIRED"
                 => StatusCodes.Status400BadRequest,
             "INVALID_SLOT_GEOMETRY" or "INVALID_CONTAINER_DIMENSIONS"
                 => StatusCodes.Status422UnprocessableEntity,

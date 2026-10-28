@@ -422,7 +422,7 @@ void main() {
         tester
             .widget<Text>(find.byKey(const Key('effective-part-summary')))
             .data,
-        startsWith('Alternatif parça için talep:'),
+        startsWith('Alt parça için talep:'),
       );
       expect(repository.switchCount, 1);
       expect(repository.lastSwitchVariantId, testVariantV2Id);
@@ -516,6 +516,7 @@ void main() {
       ),
     );
     final repository = FakePdaRepository()
+      ..loginUser = testSupervisor
       ..machineValues = [testMachine, secondMachine];
     final harness = await _harness(tester, repository: repository);
 

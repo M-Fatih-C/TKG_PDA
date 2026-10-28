@@ -41,8 +41,8 @@ public sealed class OperatorOperationAuthorityApiTests(ApiTestFixture fixture) :
                 Headers = { { ApiHeaders.IdempotencyKey, $"remove-empty-direct-{role}" } },
             });
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        Assert.Equal("OPERATION_NOT_OPERATOR_SELECTABLE", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(role == RoleCodes.WarehouseOperator ? HttpStatusCode.Forbidden : HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(role == RoleCodes.WarehouseOperator ? "ROLE_NOT_AUTHORIZED" : "OPERATION_NOT_OPERATOR_SELECTABLE", await ApiTestFixture.ErrorCodeAsync(response));
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 

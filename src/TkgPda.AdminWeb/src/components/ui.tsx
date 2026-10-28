@@ -1,6 +1,7 @@
-import { AlertTriangle, Inbox, LoaderCircle, RefreshCw, Search, X } from 'lucide-react'
+import { AlertTriangle, CircleHelp, Inbox, LoaderCircle, RefreshCw, Search, X } from 'lucide-react'
 import type { ButtonHTMLAttributes, InputHTMLAttributes, PropsWithChildren, ReactNode, SelectHTMLAttributes } from 'react'
 import { ApiProblem } from '../api/client'
+import { displayStatusLabel } from '../displayLabels'
 
 export function Button({ className = '', variant = 'primary', size = 'md', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' | 'danger'; size?: 'sm' | 'md' }) {
   return <button className={`button button--${variant} button--${size} ${className}`} {...props} />
@@ -27,9 +28,14 @@ export function PanelHeader({ title, description, action }: { title: string; des
   return <div className="panel-header"><div><h2>{title}</h2>{description && <p>{description}</p>}</div>{action}</div>
 }
 
+export function InfoBox({ title, children, tone = 'info', className = '' }: PropsWithChildren<{ title: string; tone?: 'info' | 'warning'; className?: string }>) {
+  return <aside className={`info-box info-box--${tone} ${className}`} aria-label={`${title} bilgisi`}><CircleHelp size={20} /><div><strong>{title}</strong><span>{children}</span></div></aside>
+}
+
 export function StatusPill({ value, tone }: { value: string; tone?: 'success' | 'warning' | 'danger' | 'neutral' | 'info' }) {
   const normalized = tone ?? (['ACTIVE', 'PUBLISHED', 'LOW'].includes(value) ? 'success' : ['DRAFT', 'MEDIUM'].includes(value) ? 'warning' : ['ARCHIVED', 'HIGH', 'INACTIVE'].includes(value) ? 'danger' : 'neutral')
-  return <span className={`status status--${normalized}`}>{value}</span>
+  const label = displayStatusLabel(value)
+  return <span className={`status status--${normalized}`} title={label === value ? undefined : `Teknik kod: ${value}`}>{label}</span>
 }
 
 export function Field({ label, hint, error, children }: PropsWithChildren<{ label: string; hint?: string; error?: string }>) {
@@ -75,12 +81,13 @@ export function EmptyState({ title, description, action }: { title: string; desc
 
 export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   const problem = error instanceof ApiProblem ? error : null
+  const databaseUnavailable = problem?.code === 'DATABASE_UNAVAILABLE'
   return (
     <div className={`error-state ${problem?.isConcurrencyConflict ? 'error-state--conflict' : ''}`} role="alert">
       <AlertTriangle />
       <div>
-        <strong>{problem?.isConcurrencyConflict ? 'Güncel sürüm gerekli' : 'Veri alınamadı'}</strong>
-        <p>{error instanceof Error ? error.message : 'Beklenmeyen bir hata oluştu.'}</p>
+        <strong>{problem?.isConcurrencyConflict ? 'Güncel sürüm gerekli' : databaseUnavailable ? 'Sunucu hazırlanıyor' : 'Veri alınamadı'}</strong>
+        <p>{databaseUnavailable ? 'Veritabanı bağlantısı henüz hazır değil. Birkaç saniye sonra Yenile ile tekrar deneyin.' : error instanceof Error ? error.message : 'Beklenmeyen bir hata oluştu.'}</p>
         {problem && <small>{problem.code}{problem.correlationId ? ` · ${problem.correlationId}` : ''}</small>}
       </div>
       {onRetry && <Button variant="secondary" size="sm" onClick={onRetry}><RefreshCw size={15} /> Yenile</Button>}

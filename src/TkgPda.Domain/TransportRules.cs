@@ -31,12 +31,17 @@ public static class TransportRules
                 "EMPTY_STORAGE is reserved for backend buffer allocation and cannot be used as the machine-side transport slot.");
         }
 
+        if (request.AllowsDependentMachineOccupancy && request.TaskType == TransportTaskType.BringFull)
+        {
+            return;
+        }
+
         var expected = request.TaskType switch
         {
             // Both inbound operations need the machine position already clear:
             // BRING_EMPTY to have somewhere to put the empty container,
-            // BRING_FULL because the customer rule is that the spent container
-            // must physically leave before filled material is requested.
+            // BRING_FULL because the spent container must physically leave
+            // before the prepared replacement may be dispatched to the line.
             TransportTaskType.BringEmpty or TransportTaskType.BringFull =>
                 new SlotState(OccupancyState.Vacant, LoadState.Unknown, null, null),
             TransportTaskType.RemoveFull => reservedSlot.State with { Occupancy = OccupancyState.Occupied, Load = LoadState.Full },
@@ -52,6 +57,41 @@ public static class TransportRules
         }
 
         ValidateAssociations(request, reservedSlot);
+    }
+
+    /// <summary>
+    /// Validates the intended machine endpoint of a queued operator intent.
+    /// Current occupancy and current pallet identity are deliberately excluded:
+    /// they govern later physical dispatch, not whether an operator may order
+    /// a separately prepared pallet.
+    /// </summary>
+    public static void ValidateDeferredMachineEndpoint(CreateTransportRequest request, SlotSnapshot destination)
+    {
+        ValidateSuppliedSlot(request, destination);
+        if (!request.DefersMachineSlotReservation)
+        {
+            throw new WorkflowRuleException(
+                "DEFERRED_SLOT_RESERVATION_NOT_SUPPORTED",
+                "The request does not declare a deferred machine endpoint.");
+        }
+
+        if (destination.Role == SlotRole.EmptyStorage)
+        {
+            throw new WorkflowRuleException(
+                "EMPTY_STORAGE_MACHINE_SLOT_FORBIDDEN",
+                "EMPTY_STORAGE is reserved for backend buffer allocation and cannot be used as the machine-side transport slot.");
+        }
+
+        if (!request.PartId.HasValue || !destination.KnownPartIds.Contains(request.PartId.Value))
+        {
+            throw new WorkflowRuleException(
+                "PART_SLOT_NOT_CONFIGURED",
+                "Bu parça için makine alanı tanımlı değil.");
+        }
+
+        // The explicit Part-to-Slot mapping above is the operational routing
+        // authority. DefaultContainerTypeId is baseline presentation metadata,
+        // not a per-part allow-list for a shared machine position.
     }
 
     public static SlotState CancellationState(TransportTaskType taskType, SlotState current) => taskType switch
@@ -76,8 +116,10 @@ public static class TransportRules
     };
 
     /// <summary>
-    /// Customer Workflow — Empty Container Buffer: BRING_EMPTY draws an empty
-    /// container from a configured EMPTY_STORAGE slot (its source);
+    /// Customer Workflow — Empty Container Buffer: an unprepared BRING_EMPTY
+    /// draws an empty container from a configured EMPTY_STORAGE slot (its
+    /// source). A request with a confirmed finished-goods preparation pallet
+    /// uses that preparation area as its source instead;
     /// REMOVE_EMPTY returns one to a configured EMPTY_STORAGE slot (its
     /// destination). REMOVE_FULL never touches the buffer. Returns null for
     /// task types that have no buffer side.
@@ -190,7 +232,11 @@ public static class TransportRules
 
         if (request.ContainerTypeId.HasValue)
         {
-            if (slot.DefaultContainerTypeId.HasValue && slot.DefaultContainerTypeId != request.ContainerTypeId)
+            var hasExplicitPartMapping = request.PartId.HasValue
+                && slot.KnownPartIds.Contains(request.PartId.Value);
+            if (!hasExplicitPartMapping
+                && slot.DefaultContainerTypeId.HasValue
+                && slot.DefaultContainerTypeId != request.ContainerTypeId)
             {
                 throw new WorkflowRuleException("CONTAINER_CONFLICT", "The requested container conflicts with the slot's source-backed container mapping.");
             }

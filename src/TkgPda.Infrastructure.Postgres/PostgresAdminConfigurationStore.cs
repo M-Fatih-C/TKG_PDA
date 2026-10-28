@@ -49,7 +49,7 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
     {
         var result = new List<AdminDeviceRecord>();
         await using var command = dataSource.CreateCommand(
-            "SELECT id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint FROM audit.client_devices ORDER BY device_code");
+            "SELECT id, device_code, name, device_type, is_active, metadata_json::text, (xmin::text)::bigint, machine_id FROM audit.client_devices ORDER BY device_code");
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -191,17 +191,17 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
                 WHERE ppm.source_note IS NOT NULL AND btrim(ppm.source_note) <> ''
                 UNION ALL
                 SELECT 'UNKNOWN_CONTAINER_FOOTPRINT', 'MEDIUM', 'CONTAINER_TYPE', c.id::text, c.code,
-                       'One or more physical footprint dimensions are unknown and remain NULL.'
+                       'Kasa tipinin bir veya daha fazla fiziksel ölçüsü tanımlanmamış.'
                 FROM master.container_types c
                 WHERE c.length_mm IS NULL OR c.width_mm IS NULL OR c.height_mm IS NULL
                 UNION ALL
                 SELECT 'UNRESOLVED_SLOT_PART', 'HIGH', 'LAYOUT_SLOT', s.id::text, s.code,
-                       'The source layout did not prove a canonical part association.'
+                       'Kaynak yerleşimde bu alan için doğrulanmış parça eşleştirmesi bulunmuyor.'
                 FROM master.layout_slots s
                 WHERE COALESCE((s.metadata_json->>'part_association_unresolved')::boolean, false)
                 UNION ALL
                 SELECT 'UNRESOLVED_SLOT_CONTAINER', 'HIGH', 'LAYOUT_SLOT', s.id::text, s.code,
-                       'The source layout did not prove a container association.'
+                       'Kaynak yerleşimde bu alan için doğrulanmış kasa veya palet eşleştirmesi bulunmuyor.'
                 FROM master.layout_slots s
                 WHERE COALESCE((s.metadata_json->>'container_association_unresolved')::boolean, false)
                 UNION ALL
@@ -209,6 +209,12 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
                        'Physical-layout extraction confidence is ' || (s.metadata_json->>'confidence') || '.'
                 FROM master.layout_slots s
                 WHERE s.metadata_json->>'confidence' IN ('MEDIUM','LOW')
+                UNION ALL
+                SELECT 'ALT_PART_CONTAINER_MISSING', 'HIGH', 'PRODUCT_GROUP_PART', gpp.id::text, p.part_code,
+                       'Alt parça taşıma kabı bilgisi yok; talep açılamaz.'
+                FROM master.product_group_parts gpp
+                JOIN master.parts p ON p.id = gpp.part_id
+                WHERE gpp.relation_type = 'ALT_PART' AND gpp.is_active AND gpp.container_type_id IS NULL
             ) issues
             ORDER BY severity DESC, issue_kind, code, entity_id
             """);
@@ -226,7 +232,13 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
         int limit,
         Guid? actorUserId,
         string? entityType,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? from = null,
+        DateTimeOffset? to = null,
+        string? action = null,
+        Guid? correlationId = null,
+        string? entityId = null,
+        string? actor = null)
     {
         var result = new List<AdminAuditRecord>();
         await using var command = dataSource.CreateCommand(
@@ -238,11 +250,23 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
             LEFT JOIN auth.users u ON u.id = a.actor_user_id
             WHERE (@actor_user_id IS NULL OR a.actor_user_id = @actor_user_id)
               AND (@entity_type IS NULL OR a.entity_type = @entity_type)
+              AND (@from IS NULL OR a.created_at >= @from)
+              AND (@to IS NULL OR a.created_at < @to)
+              AND (@action IS NULL OR a.action = @action)
+              AND (@correlation_id IS NULL OR a.correlation_id = @correlation_id)
+              AND (@entity_id IS NULL OR a.entity_id = @entity_id)
+              AND (@actor IS NULL OR u.username ILIKE @actor OR u.employee_no ILIKE @actor)
             ORDER BY a.created_at DESC, a.id DESC
             LIMIT @limit
             """);
         AddNullableUuid(command, "actor_user_id", actorUserId);
         AddNullableText(command, "entity_type", entityType);
+        command.Parameters.Add(new NpgsqlParameter("from", NpgsqlDbType.TimestampTz) { Value = from.HasValue ? from.Value : DBNull.Value });
+        command.Parameters.Add(new NpgsqlParameter("to", NpgsqlDbType.TimestampTz) { Value = to.HasValue ? to.Value : DBNull.Value });
+        AddNullableText(command, "action", action);
+        AddNullableUuid(command, "correlation_id", correlationId);
+        AddNullableText(command, "entity_id", entityId);
+        AddNullableText(command, "actor", string.IsNullOrWhiteSpace(actor) ? null : $"%{actor.Trim()}%");
         command.Parameters.AddWithValue("limit", limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -388,7 +412,8 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
     }
 
     private static AdminDeviceRecord ReadDevice(NpgsqlDataReader reader) => new(
-        reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetBoolean(4), ParseJson(reader.GetString(5)), reader.GetInt64(6));
+        reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetBoolean(4), ParseJson(reader.GetString(5)), reader.GetInt64(6),
+        reader.IsDBNull(7) ? null : reader.GetGuid(7));
 
     private static AdminMachineRecord ReadMachine(NpgsqlDataReader reader) => new(
         reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetInt32(3), reader.GetBoolean(4), reader.GetInt64(5));
@@ -447,6 +472,7 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
 
     private static AdminRuleException NotFound(string code, string message) => new(code, message);
     private static AdminRuleException Conflict(string code, string message) => new(code, message);
+    private static AdminRuleException Rule(string code, string message) => new(code, message);
 
     private static JsonElement ParseJson(string json) => JsonDocument.Parse(json).RootElement.Clone();
     private static JsonElement? NullableJson(NpgsqlDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : ParseJson(reader.GetString(ordinal));

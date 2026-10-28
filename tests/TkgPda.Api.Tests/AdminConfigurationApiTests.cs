@@ -294,6 +294,15 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
         {
             var user = await CreateUserAsync(client, "p05.permission", RoleCodes.LineOperator);
             var machine = Assert.Single((await client.GetFromJsonAsync<AdminMachineRecord[]>("/api/v1/admin/machines"))!, machine => machine.Code == "SH-01-A");
+            var invalid = await SendAsync(
+                client,
+                HttpMethod.Put,
+                $"/api/v1/admin/users/{user.Id}/machine-permissions/{machine.Id}",
+                new SetMachinePermissionRequest(false, true, false, false),
+                user.ConcurrencyToken);
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+            Assert.Equal("MACHINE_VIEW_PERMISSION_REQUIRED", await ApiTestFixture.ErrorCodeAsync(invalid));
+
             var set = await SendAsync(
                 client,
                 HttpMethod.Put,
@@ -315,7 +324,7 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
     }
 
     [Fact]
-    public async Task Warehouse_operator_is_limited_to_own_bring_empty_requests()
+    public async Task Warehouse_operator_cannot_create_or_cancel_machine_requests()
     {
         await fixture.ResetAsync();
         var identity = await fixture.SeedIdentityAsync(RoleCodes.WarehouseOperator);
@@ -330,16 +339,27 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
                 await fixture.PartForSlotAsync(slot, "P05-ADMREMOVE"), null, "REMOVE_FULL"),
             "p05-warehouse-remove");
         Assert.Equal(HttpStatusCode.Forbidden, remove.StatusCode);
-        Assert.Equal("OPERATION_NOT_ALLOWED_FOR_ROLE", await ApiTestFixture.ErrorCodeAsync(remove));
+        Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(remove));
 
         var bring = await fixture.SendTransportAsync(
             client,
             new CreateTransportHttpRequest(context.MachineId, context.VariantId, context.LayoutId, null, null,
                 await fixture.PartForSlotAsync(slot, "P05-ADMBRING"), null, "BRING_EMPTY"),
             "p05-warehouse-bring");
-        Assert.Equal(HttpStatusCode.Created, bring.StatusCode);
-        var created = await bring.Content.ReadFromJsonAsync<TransportHttpResponse>();
-        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/v1/transport-requests/{created!.Id}/cancel", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, bring.StatusCode);
+        Assert.Equal("ROLE_NOT_AUTHORIZED", await ApiTestFixture.ErrorCodeAsync(bring));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+        var supervisor = await fixture.SeedIdentityAsync(RoleCodes.Supervisor);
+        using var supervisorClient = await fixture.LoginClientAsync(supervisor);
+        var allowed = await fixture.SendTransportAsync(supervisorClient,
+            new CreateTransportHttpRequest(context.MachineId, context.VariantId, context.LayoutId, null, null,
+                await fixture.PartForSlotAsync(slot, "P05-ADMBRING"), null, "BRING_EMPTY"), "p05-supervisor-bring");
+        Assert.Equal(HttpStatusCode.Created, allowed.StatusCode);
+        var created = await allowed.Content.ReadFromJsonAsync<TransportHttpResponse>();
+        var warehouseCancel = await client.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{created!.Id}/cancel", null);
+        Assert.Equal(HttpStatusCode.Forbidden, warehouseCancel.StatusCode);
+
+        Assert.Equal(HttpStatusCode.OK, (await supervisorClient.PostAsync($"/api/v1/machines/{context.MachineId}/transport-requests/{created.Id}/cancel", null)).StatusCode);
     }
 
     [Fact]
@@ -567,22 +587,15 @@ public sealed class AdminConfigurationApiTests(ApiTestFixture fixture) : IClassF
         var cloneResponse = await SendAsync(admin, HttpMethod.Post, $"/api/v1/admin/layouts/{layout.Id}/versions", null, published!.ConcurrencyToken);
         var clone = await cloneResponse.Content.ReadFromJsonAsync<AdminLayoutRecord>();
 
-        // Customer Workflow — Empty Container Buffer: BRING_EMPTY now auto-allocates
-        // its source from a configured EMPTY_STORAGE slot, so the active layout needs
-        // one. Added after cloning so the draft clone's slot count is unaffected.
-        var bufferSlotId = await fixture.ScalarAsync<Guid>(
-            """
-            INSERT INTO master.layout_slots (layout_id, code, display_name, slot_role, display_order)
-            VALUES (@layout_id, 'P05-ACTIVE-BUFFER-1', 'Test Buffer', 'EMPTY_STORAGE', 9000)
-            RETURNING id
-            """,
-            ("layout_id", layout.Id));
-        await fixture.SetSlotAsync(bufferSlotId, "OCCUPIED", "EMPTY");
+        // Use a removal request here: this test needs only an active transport
+        // reservation. BRING_EMPTY belongs to the request-bound finished-goods
+        // preparation workflow and cannot be fabricated without a prepared pallet.
+        await fixture.SetSlotAsync(slot, "OCCUPIED", "FULL");
 
         var active = await fixture.SendTransportAsync(
             oper,
             new CreateTransportHttpRequest(machine.Id, variant.Id, layout.Id, null, null,
-                await fixture.PartForSlotAsync(slot, "P05-ADMACTIVE", variant.Id), null, "BRING_EMPTY"),
+                await fixture.PartForSlotAsync(slot, "P05-ADMACTIVE", variant.Id), null, "REMOVE_FULL"),
             "p05-active-publish");
         Assert.Equal(HttpStatusCode.Created, active.StatusCode);
 

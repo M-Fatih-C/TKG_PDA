@@ -6,7 +6,8 @@ test('02 · dashboard renders real backend data (nine canonical machines)', asyn
   await loginAsAdmin(page)
   const machineCard = page.locator('a.stat-card', { hasText: 'Tanımlı makine' })
   await expect(machineCard.locator('strong')).toHaveText('9')
-  await expect(page.locator('a.stat-card', { hasText: 'Published layout' })).toBeVisible()
+  await expect(page.locator('a.stat-card', { hasText: 'Aktif PDA' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Devreye Alma Hazırlığı' })).toHaveCount(0)
 
   // The nine machine masters are the real seeded records, not layout MACHINE regions.
   await page.getByRole('link', { name: 'Makine & Varyantlar' }).click()
@@ -45,12 +46,12 @@ test.describe.serial('user lifecycle', () => {
     await row.getByRole('button', { name: 'Düzenle' }).click()
 
     const dialog = page.getByRole('dialog')
-    await dialog.getByLabel('Supervisor', { exact: true }).check()
+    await dialog.getByLabel('Operatör Lideri', { exact: true }).check()
     await dialog.getByRole('button', { name: 'Kaydet' }).click()
 
     await expect(page.getByText('Kullanıcı güncellendi')).toBeVisible()
     await page.getByPlaceholder('Ad, kullanıcı adı veya sicil ara…').fill(username)
-    await expect(page.locator('tr', { hasText: `@${username}` }).getByText('SUPERVISOR', { exact: true })).toBeVisible()
+    await expect(page.locator('tr', { hasText: `@${username}` }).getByText('Operatör Lideri', { exact: true })).toBeVisible()
   })
 
   test('05 · modify a machine permission for the user', async ({ page }) => {
@@ -90,7 +91,7 @@ test.describe.serial('device lifecycle', () => {
     await expect(page.getByText('Cihaz sağlandı')).toBeVisible()
     await page.getByPlaceholder('Cihaz kodu, ad veya tip ara…').fill(code)
     const row = page.locator('tr', { hasText: code })
-    await expect(row.getByText('ACTIVE', { exact: true })).toBeVisible()
+    await expect(row.getByText('Aktif', { exact: true })).toBeVisible()
   })
 
   test('07 · deactivate the PDA device', async ({ page }) => {
@@ -106,16 +107,13 @@ test.describe.serial('device lifecycle', () => {
 
     await expect(page.getByText('Cihaz güncellendi')).toBeVisible()
     await page.getByPlaceholder('Cihaz kodu, ad veya tip ara…').fill(code)
-    await expect(page.locator('tr', { hasText: code }).getByText('INACTIVE', { exact: true })).toBeVisible()
+    await expect(page.locator('tr', { hasText: code }).getByText('Pasif', { exact: true })).toBeVisible()
   })
 })
 
-test('13 · data-quality surfaces real seeded evidence read-only', async ({ page }) => {
+test('13 · retired configuration pages stay out of the operator-leader navigation', async ({ page }) => {
   await loginAsAdmin(page)
-  await page.getByRole('link', { name: 'Veri Kalitesi' }).click()
-  await expect(page.getByRole('heading', { name: 'Veri kalitesi' })).toBeVisible()
-  await expect(page.getByText('Bu sayfa salt okunurdur.')).toBeVisible()
-  // The Phase 02A/02B/05 evidence produces at least one issue row from the real seed.
-  await expect(page.locator('tbody tr').first()).toBeVisible()
-  expect(await page.locator('tbody tr').count()).toBeGreaterThan(0)
+  await expect(page.getByRole('link', { name: 'Devreye Alma Hazırlığı' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Fiziksel Layoutlar' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Veri Kalitesi' })).toHaveCount(0)
 })

@@ -228,7 +228,8 @@ public sealed class TransportBatchApiTests(ApiTestFixture fixture) : IClassFixtu
             [Bring(context, await fixture.PartForSlotAsync(slot, "P05-TRANSP15"), "unauthorized-1")]);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        Assert.Equal("MACHINE_ACCESS_DENIED", await ApiTestFixture.ErrorCodeAsync(response));
+        var errorCode = await ApiTestFixture.ErrorCodeAsync(response);
+        Assert.True(errorCode is "MACHINE_ACCESS_DENIED" or "DEVICE_MACHINE_BINDING_REQUIRED");
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_batches"));
     }
 

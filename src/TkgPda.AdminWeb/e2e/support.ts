@@ -16,7 +16,7 @@ export const uniqueCode = (prefix: string): string => {
 
 export async function loginAsAdmin(page: Page): Promise<void> {
   const { adminUsername, adminPassword } = runtime()
-  await page.goto('/login')
+  await page.goto('/admin/login')
   await page.getByLabel('Kullanıcı adı').fill(adminUsername)
   await page.getByLabel('Parola').fill(adminPassword)
   await page.getByRole('button', { name: 'Yönetim merkezine gir' }).click()
