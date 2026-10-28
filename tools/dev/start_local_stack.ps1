@@ -285,6 +285,8 @@ foreach ($migration in @(
     '034_finished_product_container_options.sql',
     '035_area_based_production_end_priorities.sql',
     '036_deferred_transport_resources.sql',
+    '037_fleet_provider_compatibility.sql',
+    '038_m4_readonly_discovery.sql',
     '043_part_demand_batch_results.sql'
 )) {
     Write-Host "Applying migration $migration..." -ForegroundColor Cyan

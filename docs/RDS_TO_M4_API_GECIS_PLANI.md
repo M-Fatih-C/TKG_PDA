@@ -803,6 +803,8 @@ RDS mevcut davranışla çalışmaya devam eder ve domain katmanı M4 sınıflar
 
 ### WP-M4-02 — SQL compatibility migration
 
+**Uygulama durumu — 19 Ekim 2026:** Tamamlandı. `037_fleet_provider_compatibility.sql` ile mevcut navigation profile ve transport request kayıtları `RDS` olarak geriye dönük dolduruldu; provider-neutral order, endpoint, slot mapping, callback inbox ve physical evidence tabloları eklendi. Mevcut `integration.rds_tasks` kayıtları `integration.fleet_orders` tablosuna backfill edilir ve compatibility trigger ile güncel tutulur. Provider/request, external order, upstream identity, callback dedupe ve profile/provider eşleşme constraint'leri fail-close çalışır. Ayrı rollback script'i M4 verisi varsa geri dönüşü reddeder ve yalnız RDS verisi varken provider-neutral ekleri kaldırır. Geçici PostgreSQL kümesindeki migration, replay, coexistence, constraint ve rollback testi geçmiştir.
+
 **İşler**
 
 - Additive SQL migration
@@ -816,6 +818,8 @@ RDS mevcut davranışla çalışmaya devam eder ve domain katmanı M4 sınıflar
 Mevcut RDS verisi kaybolmadan RDS ve M4 kayıtları birlikte tutulabilir.
 
 ### WP-M4-03 — M4 HTTP/auth client
+
+**Uygulama durumu — 19 Ekim 2026:** Tamamlandı. Ayrı typed `M4HttpClient`, `xyy-app-id` / `xyy-app-key` authentication handler'ı, exact-origin allow-list, remote HTTP opt-in, redirect/cookie kapatma, bounded response okuma, timeout ve yalnız read-only transient istekler için sınırlı retry eklendi. Client allow-list dışında kalan order/robot/scene mutation route'larını ve authority override denemelerini ağ erişiminden önce reddeder. HTTP ve M4 provider hata kodları normalize edilir; credential değerleri provider mesajlarından redakte edilir ve structured loglarda yalnız method, path, status, süre, attempt ve correlation bulunur. Fake handler üzerindeki 11 health/auth/error/retry/allow-list testi geçmiştir. Canlı M4 credential veya endpoint kullanılmamıştır.
 
 **İşler**
 
@@ -832,6 +836,8 @@ Mevcut RDS verisi kaybolmadan RDS ve M4 kayıtları birlikte tutulabilir.
 Fake M4 server üzerinde health/auth/error contract testleri geçer.
 
 ### WP-M4-04 — Read-only discovery
+
+**Uygulama durumu — 24 Ekim 2026:** Yerel uygulama katmanı tamamlandı. Scene listesi, robotlar, scene schema ve scene snapshot kaynaklarını yalnız izin verilen read-only M4 route'larından okuyan typed discovery client; kaynak bazında `SUCCESS` / `UNKNOWN` sonuçları; `PARTIAL` / `FAILED` snapshot durumu; freshness/stale hesabı; ham yanıtların PostgreSQL `jsonb` kaydı ve yalnız Admin rolüne açık capture/latest/detail API'leri eklendi. Scene belirtilmediğinde uygulama kendiliğinden scene veya saha eşlemesi seçmez. Demo modunda M4 erişimi zorla kapalıdır. Fake HTTP, application service, Admin API ve SQL migration testleri geçmiştir. Bu aşamada canlı M4 çağrısı veya robot mutation yapılmamıştır; gerçek M4 üzerindeki çıkış kriteri güncel project credential ve scene ile ayrıca doğrulanacaktır.
 
 **İşler**
 
@@ -1462,11 +1468,12 @@ Sıradaki uygulama sırası:
 6. Açıkça seçilmiş simulator location'larla no-motion payload ve ardından ayrı onaylı create/query/cancel lifecycle doğrulanır.
 7. RoboShop/M4 commissioning ile gerçek map, robot ve production Fleet Scene hazırlanır.
 8. Production authenticated read-only scene/robot/point/storage-bin discovery tamamlanır.
-8. TKG navigation profile -> M4 scene eşlemesi müşteri/SEER onayıyla oluşturulur.
-9. TKG logical endpoint -> M4 point/storage-bin eşlemesi müşteri/SEER onayıyla oluşturulur.
-10. Dört operasyonun step ve `BinTask` sözleşmesi onaylanır.
-11. Physical evidence kaynağı ve freshness semantiği kanıtlanır.
-12. Provider-neutral interface ve additive SQL migration implementasyonuna başlanır.
+9. TKG navigation profile -> M4 scene eşlemesi müşteri/SEER onayıyla oluşturulur.
+10. TKG logical endpoint -> M4 point/storage-bin eşlemesi müşteri/SEER onayıyla oluşturulur.
+11. Dört operasyonun step ve `BinTask` sözleşmesi onaylanır.
+12. Physical evidence kaynağı ve freshness semantiği kanıtlanır.
+13. Provider-neutral interface, additive SQL migration, fake-server HTTP/auth client ve read-only discovery adapter'ı tamamlandı.
+14. Sıradaki doğrulama, güncel project credential ile gerçek M4 scene/robot/endpoint snapshot'ının hareket üretmeden alınmasıdır.
 
 Bu sıralama, doğrulanmamış scene, location, binTask, robot veya occupancy değerlerinin kod ve veritabanına girmesini engeller.
 

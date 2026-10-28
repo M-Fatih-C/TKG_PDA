@@ -16,6 +16,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
     public const string CallbackKey = "phase08b-test-callback-key-0000000000000000";
     public TestRdsReadClient RdsClient { get; } = new();
     public TestRdsCoreDiscoveryClient RdsCoreDiscoveryClient { get; } = new();
+    public TestM4DiscoveryClient M4DiscoveryClient { get; } = new();
 
     public ApiTestFixture()
     {
@@ -40,6 +41,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
             services.AddSingleton<IRdsReadClient>(RdsClient);
             services.RemoveAll<IRdsCoreDiscoveryClient>();
             services.AddSingleton<IRdsCoreDiscoveryClient>(RdsCoreDiscoveryClient);
+            services.RemoveAll<IM4DiscoveryClient>();
+            services.AddSingleton<IM4DiscoveryClient>(M4DiscoveryClient);
         });
     }
 
@@ -61,14 +64,18 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("034_finished_product_container_options.sql"));
         await ExecuteScriptAsync(MigrationFile("035_area_based_production_end_priorities.sql"));
         await ExecuteScriptAsync(MigrationFile("036_deferred_transport_resources.sql"));
+        await ExecuteScriptAsync(MigrationFile("037_fleet_provider_compatibility.sql"));
+        await ExecuteScriptAsync(MigrationFile("038_m4_readonly_discovery.sql"));
         await ExecuteScriptAsync(MigrationFile("039_cancelled_preparation_cleanup.sql"));
         await ExecuteScriptAsync(MigrationFile("042_user_machine_permission_consistency.sql"));
         await ExecuteScriptAsync(MigrationFile("043_part_demand_batch_results.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
+        M4DiscoveryClient.Reset();
         await ExecuteAsync(
             """
             TRUNCATE
+                integration.m4_discovery_snapshots,
                 ops.production_end_run_items,
                 ops.production_end_runs,
                 integration.robot_alarm_read_failures,
@@ -876,5 +883,47 @@ public sealed class TestRdsCoreDiscoveryClient : IRdsCoreDiscoveryClient
             new("NOT_CAPTURED", new Dictionary<string, JsonElement>()),
             [],
             []));
+    }
+}
+
+public sealed class TestM4DiscoveryClient : IM4DiscoveryClient
+{
+    public int Calls { get; private set; }
+    public M4DiscoveryCommand? LastCommand { get; private set; }
+
+    public void Reset()
+    {
+        Calls = 0;
+        LastCommand = null;
+    }
+
+    public Task<M4DiscoverySnapshot> CaptureAsync(
+        M4DiscoveryCommand command,
+        Guid correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        Calls++;
+        LastCommand = command;
+        var capturedAt = DateTimeOffset.UtcNow;
+        using var raw = JsonDocument.Parse(
+            """[{"id":"scene-test","name":"OneDemo","disabled":false}]""");
+        return Task.FromResult(new M4DiscoverySnapshot(
+            Guid.NewGuid(),
+            correlationId,
+            M4DiscoveryStatuses.Success,
+            command.SceneId,
+            command.SceneName,
+            capturedAt,
+            capturedAt.AddMinutes(5),
+            [new M4DiscoveredScene("scene-test", "OneDemo", false)],
+            [new M4DiscoveredRobot("robot-test", "Box-01", true, true, "Idle")],
+            [new M4DiscoveredEndpoint("point-test", "P1", "POINT")],
+            [new M4DiscoveryResource(
+                M4DiscoveryResourceKinds.SceneList,
+                null,
+                true,
+                null,
+                null,
+                raw.RootElement.Clone())]));
     }
 }

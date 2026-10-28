@@ -631,6 +631,7 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
         }
     }
 
+
     [Fact]
     public async Task Reservation_is_released_when_request_is_completed()
     {

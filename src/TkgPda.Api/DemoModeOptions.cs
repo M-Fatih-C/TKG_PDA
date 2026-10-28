@@ -53,9 +53,11 @@ public sealed class DemoModeOptions
         // Safety Invariant: Demo Mode must NEVER connect or send commands to real external field hardware/RDS.
         var rdsBaseUrl = configuration["Rds:BaseUrl"];
         var rdsCoreBaseUrl = configuration["RdsCore:BaseUrl"];
+        var m4BaseUrl = configuration["M4:BaseUrl"];
 
         AssertNotRemoteUrl("Rds:BaseUrl", rdsBaseUrl);
         AssertNotRemoteUrl("RdsCore:BaseUrl", rdsCoreBaseUrl);
+        AssertNotRemoteUrl("M4:BaseUrl", m4BaseUrl);
     }
 
     private static void AssertNotRemoteUrl(string key, string? url)

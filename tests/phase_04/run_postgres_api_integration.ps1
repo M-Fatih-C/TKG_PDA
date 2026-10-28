@@ -1,7 +1,7 @@
 param(
     [string]$PgBin = 'C:\Program Files\PostgreSQL\18\bin',
     [int]$Port = 55439,
-    [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~ProductionEndCleanupApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests|FullyQualifiedName~GlobalTaskVisibilityAndCancellationScopeApiTests|FullyQualifiedName~OperationalAuditEventsApiTests|FullyQualifiedName~OperationalAuditContainerActionEventsApiTests|FullyQualifiedName~ActiveTransportProjectionApiTests|FullyQualifiedName~FinishedContainerFlowApiTests|FullyQualifiedName~PartDemandApiTests|FullyQualifiedName~DeviceNotificationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests|FullyQualifiedName~OperationalEvidenceApiTests|FullyQualifiedName~RobotAlarmObservationApiTests|FullyQualifiedName~RdsAlarmObservationWorkerTests|FullyQualifiedName~VariantScopedRdsCommissioningApiTests|FullyQualifiedName~RdsCommissioningActivationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests|FullyQualifiedName~OperationalReportingApiTests|FullyQualifiedName~VariantOperationReadinessApiTests|FullyQualifiedName~PresentationExecutionAlignmentApiTests|FullyQualifiedName~SharedEndpointReservationApiTests'
+    [string]$TestFilter = 'FullyQualifiedName~AuthenticatedApiTests|FullyQualifiedName~CompatibleVariantsApiTests|FullyQualifiedName~MachinePartOptionsApiTests|FullyQualifiedName~TransportBatchApiTests|FullyQualifiedName~TransportReadinessApiTests|FullyQualifiedName~WarehousePreparationApiTests|FullyQualifiedName~ContainerActionsApiTests|FullyQualifiedName~ProductionSessionApiTests|FullyQualifiedName~ProductionEndCleanupApiTests|FullyQualifiedName~WarehouseRoleAuthorizationApiTests|FullyQualifiedName~TerminalMachineBindingApiTests|FullyQualifiedName~SingleActiveSessionApiTests|FullyQualifiedName~GlobalTaskVisibilityAndCancellationScopeApiTests|FullyQualifiedName~OperationalAuditEventsApiTests|FullyQualifiedName~OperationalAuditContainerActionEventsApiTests|FullyQualifiedName~ActiveTransportProjectionApiTests|FullyQualifiedName~FinishedContainerFlowApiTests|FullyQualifiedName~PartDemandApiTests|FullyQualifiedName~DeviceNotificationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests|FullyQualifiedName~OperationalEvidenceApiTests|FullyQualifiedName~RobotAlarmObservationApiTests|FullyQualifiedName~RdsAlarmObservationWorkerTests|FullyQualifiedName~VariantScopedRdsCommissioningApiTests|FullyQualifiedName~RdsCommissioningActivationApiTests|FullyQualifiedName~FinishedGoodsAreasApiTests|FullyQualifiedName~OperationalReportingApiTests|FullyQualifiedName~VariantOperationReadinessApiTests|FullyQualifiedName~PresentationExecutionAlignmentApiTests|FullyQualifiedName~SharedEndpointReservationApiTests|FullyQualifiedName~M4DiscoveryApiTests'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +86,8 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\034_finished_product_container_options.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\035_area_based_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\036_deferred_transport_resources.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\037_fleet_provider_compatibility.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\038_m4_readonly_discovery.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\039_cancelled_preparation_cleanup.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\042_user_machine_permission_consistency.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\043_part_demand_batch_results.sql')))
@@ -133,6 +135,8 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\034_finished_product_container_options.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\035_area_based_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\036_deferred_transport_resources.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\037_fleet_provider_compatibility.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\038_m4_readonly_discovery.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\039_cancelled_preparation_cleanup.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\042_user_machine_permission_consistency.sql')))
 
@@ -192,6 +196,8 @@ SELECT md5(jsonb_build_array(
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\034_finished_product_container_options.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\035_area_based_production_end_priorities.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\036_deferred_transport_resources.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\037_fleet_provider_compatibility.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\038_m4_readonly_discovery.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\039_cancelled_preparation_cleanup.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\042_user_machine_permission_consistency.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\003_tkg_rds_variant_commissioning.sql')))

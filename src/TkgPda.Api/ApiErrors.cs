@@ -75,6 +75,27 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
                 : StatusCodes.Status409Conflict;
             await ApiErrorWriter.WriteAsync(context, status, error.Code, error.Message);
         }
+        catch (M4DiscoveryRuleException error)
+        {
+            await ApiErrorWriter.WriteAsync(
+                context,
+                StatusCodes.Status400BadRequest,
+                error.Code,
+                error.Message);
+        }
+        catch (M4HttpException error)
+        {
+            logger.LogWarning(
+                "M4 read failed with {Code} for request {TraceIdentifier}.",
+                error.Code,
+                context.TraceIdentifier);
+            var status = error.Code is "M4_DISABLED" or "M4_READ_DISABLED" or "M4_TIMEOUT" or "M4_UNAVAILABLE"
+                ? StatusCodes.Status503ServiceUnavailable
+                : error.Code == "M4_READ_ENDPOINT_NOT_ALLOWED"
+                    ? StatusCodes.Status422UnprocessableEntity
+                    : StatusCodes.Status502BadGateway;
+            await ApiErrorWriter.WriteAsync(context, status, error.Code, error.Message);
+        }
         catch (BadHttpRequestException error)
         {
             await ApiErrorWriter.WriteAsync(context, StatusCodes.Status400BadRequest, "INVALID_HTTP_REQUEST", error.Message);
