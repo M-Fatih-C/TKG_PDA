@@ -206,17 +206,50 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         await StartProductionAsync(client, setup);
         await DemandAsync(client, setup, setup.AltPart, "single-before-batch");
 
-        var conflict = await BatchAsync(
+        var result = await ReadBatchAsync(await BatchAsync(
             client,
             setup,
             [setup.AltPart],
-            "batch-after-single");
+            "batch-after-single"));
 
-        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
-        Assert.Equal("PART_REQUEST_ALREADY_ACTIVE", await ApiTestFixture.ErrorCodeAsync(conflict));
+        Assert.Empty(result.Items);
+        Assert.Equal("PART_REQUEST_ALREADY_ACTIVE", Assert.Single(result.RejectedItems).Code);
         Assert.Equal(1L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
-        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
             "SELECT count(*) FROM ops.transport_batches"));
+    }
+
+    [Fact]
+    public async Task Mixed_batch_creates_other_parts_and_replays_the_same_outcome_after_restart()
+    {
+        var setup = await SetupAsync();
+        var second = await AddAltPartAsync(setup, "BATCH-INDEPENDENT");
+        using var client = await fixture.LoginClientAsync(setup.Operator);
+        await StartProductionAsync(client, setup);
+        await DemandAsync(client, setup, setup.AltPart, "already-active");
+
+        var result = await ReadBatchAsync(await BatchAsync(client, setup,
+            [setup.AltPart, setup.MainPart, second], "mixed-batch"));
+        Assert.Single(result.Items);
+        Assert.Equal(2, result.RejectedItems.Count);
+        Assert.Contains(result.RejectedItems, item => item.PartId == setup.AltPart && item.Code == "PART_REQUEST_ALREADY_ACTIVE");
+        Assert.Contains(result.RejectedItems, item => item.PartId == setup.MainPart && item.Code == "PART_NOT_ALT_PART");
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+
+        // Even if the formerly active demand is cancelled, retrying the lost
+        // batch response must not silently create it or duplicate the accepted item.
+        var existing = await fixture.ScalarAsync<Guid>("SELECT id FROM ops.transport_requests WHERE idempotency_key = 'already-active'");
+        await using (var store = new PostgresTransportWorkflowStore(fixture.ConnectionString))
+            await store.CancelAsync(existing, setup.Operator.UserId);
+        await using var api = new RestartApiProcess(fixture.ConnectionString);
+        await api.StartAsync();
+        using var restarted = await api.LoginAsync(setup.Operator);
+        var replay = await ReadBatchAsync(await BatchAsync(restarted, setup,
+            [second, setup.MainPart, setup.AltPart], "mixed-batch"));
+        Assert.True(replay.IdempotentReplay);
+        Assert.Equal(result.Items.Single().RequestNo, replay.Items.Single().RequestNo);
+        Assert.Equal(result.RejectedItems, replay.RejectedItems);
+        Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
     [Fact]
@@ -332,7 +365,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
     }
 
     [Fact]
-    public async Task Batch_creates_one_request_per_alt_part_and_rolls_back_when_one_part_is_not_alt()
+    public async Task Batch_reports_invalid_and_already_active_parts_without_creating_duplicates()
     {
         var setup = await SetupAsync();
         var secondSlot = await NextAltSlotAsync(setup.Context.LayoutId, setup.Context.VariantId, setup.Slot);
@@ -360,9 +393,10 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         Assert.All(body.Items, item => Assert.Equal("BRING_FULL", item.TaskType));
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
 
-        var rejected = await BatchAsync(client, setup, [setup.MainPart, second], "batch-bad");
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, rejected.StatusCode);
-        Assert.Equal("PART_NOT_ALT_PART", await ApiTestFixture.ErrorCodeAsync(rejected));
+        var rejected = await ReadBatchAsync(await BatchAsync(client, setup, [setup.MainPart, second], "batch-bad"));
+        Assert.Empty(rejected.Items);
+        Assert.Contains(rejected.RejectedItems, item => item.Code == "PART_NOT_ALT_PART");
+        Assert.Contains(rejected.RejectedItems, item => item.Code == "PART_REQUEST_ALREADY_ACTIVE");
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
@@ -846,10 +880,52 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
     }
 
-    private async Task<Setup> SetupAsync(string occupancy = "VACANT", string load = "UNKNOWN")
+    [Fact]
+    public async Task Independent_batch_and_duplicate_guard_apply_to_every_published_machine_variant()
     {
         await fixture.ResetAsync();
-        var context = await fixture.ConfigureMachineAsync();
+        var matrixJson = await fixture.ScalarAsync<string>(
+            """
+            SELECT json_agg(row_to_json(scene))::text FROM (
+                SELECT m.code AS machine, v.code AS variant
+                FROM master.machines m JOIN master.variants v ON v.machine_id = m.id
+                WHERE m.is_active AND v.is_active AND EXISTS (
+                    SELECT 1 FROM master.variant_layout_assignments a
+                    JOIN master.layouts l ON l.id = a.layout_id AND l.status = 'PUBLISHED'
+                    WHERE a.machine_id = m.id AND a.variant_id = v.id)
+                ORDER BY m.code, v.code
+            ) scene
+            """);
+        using var matrix = System.Text.Json.JsonDocument.Parse(matrixJson);
+        var scenes = matrix.RootElement.EnumerateArray().Select(row => (
+            Machine: row.GetProperty("machine").GetString()!,
+            Variant: row.GetProperty("variant").GetString()!)).ToArray();
+        Assert.Equal(9, scenes.Select(scene => scene.Machine).Distinct().Count());
+        foreach (var scene in scenes)
+        {
+            var setup = await SetupAsync(machineCode: scene.Machine, variantCode: scene.Variant);
+            var second = await AddAltPartToSlotAsync(setup, "P05-MATRIX-" + Guid.NewGuid().ToString("N"), setup.Slot);
+            using var client = await fixture.LoginClientAsync(setup.Operator);
+            await StartProductionAsync(client, setup);
+            (await DemandAsync(client, setup, setup.AltPart, "matrix-first")).EnsureSuccessStatusCode();
+            var batch = await ReadBatchAsync(await BatchAsync(client, setup,
+                [setup.AltPart, setup.MainPart, second], "matrix-batch"));
+            Assert.Single(batch.Items);
+            Assert.Equal(2, batch.RejectedItems.Count);
+            var replay = await ReadBatchAsync(await BatchAsync(client, setup,
+                [second, setup.MainPart, setup.AltPart], "matrix-batch"));
+            Assert.True(replay.IdempotentReplay);
+            Assert.Equal(batch.Items.Single().RequestNo, replay.Items.Single().RequestNo);
+            Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
+            Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
+        }
+    }
+
+    private async Task<Setup> SetupAsync(string occupancy = "VACANT", string load = "UNKNOWN",
+        string machineCode = "SH-01-A", string variantCode = "1")
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync(machineCode, variantCode);
         var slot = await NextAltSlotAsync(context.LayoutId, context.VariantId, null);
         var main = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code, description) VALUES ('P05-MAMUL', 'Mamul') RETURNING id");
         var alt = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code, description) VALUES ('P05-ALT-A', 'Alt A') RETURNING id");
@@ -872,7 +948,7 @@ public sealed class PartDemandApiTests(ApiTestFixture fixture) : IClassFixture<A
         {
             await SetOccupiedContainerAsync(slot, containerTypeId);
         }
-        var oper = await fixture.SeedIdentityAsync(role: RoleCodes.LineOperator, machineCode: "SH-01-A");
+        var oper = await fixture.SeedIdentityAsync(role: RoleCodes.LineOperator, machineCode: machineCode);
         return new Setup(context, oper, group, main, alt, slot);
     }
 

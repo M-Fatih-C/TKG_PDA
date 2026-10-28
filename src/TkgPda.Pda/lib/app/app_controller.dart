@@ -1288,13 +1288,28 @@ class AppController extends ChangeNotifier {
         partIds: partIds,
         idempotencyKey: key,
       );
+      final rejected = result.rejectedItems;
+      final remainingIds = rejected
+          .where((item) => item.code != 'PART_REQUEST_ALREADY_ACTIVE')
+          .map((item) => item.partId)
+          .toSet();
+      final details = rejected
+          .map((item) {
+            final part = _selectedAltParts.where(
+              (part) => part.partId == item.partId,
+            );
+            return '${part.isEmpty ? 'Parça' : part.first.partCode}: ${item.message}';
+          })
+          .join('\n');
       _notice = UiNotice(
-        '${result.items.length} alt parça talebi oluşturuldu.',
-        UiNoticeSeverity.success,
+        '${result.items.length} alt parça talebi oluşturuldu.${details.isEmpty ? '' : '\n$details'}',
+        rejected.isEmpty ? UiNoticeSeverity.success : UiNoticeSeverity.warning,
       );
-      _selectedAltParts.clear();
+      _selectedAltParts.removeWhere(
+        (part) => !remainingIds.contains(part.partId),
+      );
       _altBatchKey = null;
-      _batchMode = false;
+      _batchMode = _selectedAltParts.isNotEmpty;
       await refreshContext();
     } on ConnectivityException {
       _notice = UiNotice(

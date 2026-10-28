@@ -463,6 +463,21 @@ public static class PdaExecutionProjector
     {
         var code = request.FailureCode?.Trim();
         var normalized = code?.ToUpperInvariant();
+        if (request.Status == TransportRequestStatus.Queued)
+        {
+            var message = normalized switch
+            {
+                "QUEUE_CONFIGURATION_REQUIRED" => "Görev kaydedildi. Alan veya görev tanımı kontrolü gerekiyor; yöneticinize bildirin.",
+                "QUEUE_STORE_CAPACITY" => "Görev kaydedildi. Uygun depo veya dönüş alanı boşaldığında devam edecek.",
+                "QUEUE_PHYSICAL_STATE_UNKNOWN" => "Görev kaydedildi. Fiziksel alan durumu doğrulaması bekleniyor.",
+                "QUEUE_PREDECESSOR" => "Önceki taşımanın tamamlanması bekleniyor.",
+                "QUEUE_MACHINE_BUSY" => "Makine alanındaki önceki taşıma bekleniyor.",
+                "QUEUE_PALLET_CONSUMPTION" => "Makine alanındaki dolu paletin tüketilmesi bekleniyor.",
+                "QUEUE_MACHINE_STATE" => "Makine alanının bu işlem için uygun duruma gelmesi bekleniyor.",
+                _ => null
+            };
+            if (message is not null) return (normalized, "QUEUE", message);
+        }
         if (normalized is "60008" or "FAIL_LOCK_BIN")
         {
             return ("WORKSITE_BUSY", "WORKSITE", "Çalışma alanı başka bir görev tarafından kullanılıyor.");

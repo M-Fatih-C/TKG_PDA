@@ -386,6 +386,16 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
             var reqAId = await fixture.ScalarAsync<Guid>(
                 "SELECT id FROM ops.transport_requests WHERE machine_id = @m", ("m", setup.SceneA.MachineId));
             await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+            Assert.Equal(0, await store.ActivatePreparedPartDemandsAsync(100, null));
+            Assert.Equal(0, await store.ActivatePreparedPartDemandsAsync(100, null));
+            Assert.Equal(1L, await fixture.ScalarAsync<long>(
+                "SELECT count(*) FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'QUEUE_WAITING'",
+                ("id", reqBId)));
+            var waitingContext = await clientB.GetFromJsonAsync<OperationalContextRecord>(
+                $"/api/v1/machines/{setup.SceneB.MachineId}/operational-context");
+            var waitingTask = Assert.Single(waitingContext!.ActiveTransportRequests);
+            Assert.Equal("QUEUE_STORE_CAPACITY", waitingTask.Execution.FailureCode);
+            Assert.Contains("depo", waitingTask.Execution.OperatorMessage!);
             await store.RecordExecutionOutcomeAsync(
                 reqAId,
                 new ExecutionOutcome(
@@ -400,11 +410,46 @@ public sealed class SharedEndpointReservationApiTests(ApiTestFixture fixture) : 
                 "SELECT store_endpoint_reservation_active FROM ops.transport_requests WHERE id = @id", ("id", reqBId)));
             Assert.Equal("FG-01", await fixture.ScalarAsync<string>(
                 "SELECT destination_business_code FROM ops.transport_requests WHERE id = @id", ("id", reqBId)));
+            var resumedContext = await clientB.GetFromJsonAsync<OperationalContextRecord>(
+                $"/api/v1/machines/{setup.SceneB.MachineId}/operational-context");
+            Assert.Null(Assert.Single(resumedContext!.ActiveTransportRequests).Execution.FailureCode);
         }
         finally
         {
             await fixture.ResetAsync();
         }
+    }
+
+    [Fact]
+    public async Task Missing_mapping_is_visible_and_does_not_block_another_eligible_task()
+    {
+        var setup = await PrepareTwoMachineScenesAsync(includeFg02: false);
+        using var clientA = await fixture.LoginClientAsync(setup.SceneA.Operator);
+        using var clientB = await fixture.LoginClientAsync(setup.SceneB.Operator);
+        await StartAsync(clientA, setup.SceneA);
+        await StartAsync(clientB, setup.SceneB);
+        (await clientA.SendAsync(CreateFullContainerActionRequest(setup.SceneA, "mapping-a"))).EnsureSuccessStatusCode();
+        (await clientB.SendAsync(CreateFullContainerActionRequest(setup.SceneB, "mapping-b"))).EnsureSuccessStatusCode();
+        var waitingId = await fixture.ScalarAsync<Guid>(
+            "SELECT id FROM ops.transport_requests WHERE machine_id = @machine", ("machine", setup.SceneB.MachineId));
+        await fixture.ExecuteAsync(
+            "DELETE FROM integration.profile_shared_endpoint_bindings WHERE navigation_profile_id = @nav AND endpoint_class = 'FINISHED_GOODS'",
+            ("nav", setup.SceneB.NavigationId));
+        await using var store = new PostgresTransportWorkflowStore(fixture.ConnectionString);
+        Assert.Equal(0, await store.ActivatePreparedPartDemandsAsync(100, null));
+        Assert.Equal(0, await store.ActivatePreparedPartDemandsAsync(100, null));
+        var context = await clientB.GetFromJsonAsync<OperationalContextRecord>(
+            $"/api/v1/machines/{setup.SceneB.MachineId}/operational-context");
+        var waiting = Assert.Single(context!.ActiveTransportRequests);
+        Assert.Equal("QUEUED", waiting.Status);
+        Assert.Equal("QUEUE_CONFIGURATION_REQUIRED", waiting.Execution.FailureCode);
+        Assert.Contains("yöneticinize", waiting.Execution.OperatorMessage!);
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_request_events WHERE transport_request_id = @id AND event_type = 'QUEUE_WAITING'",
+            ("id", waitingId)));
+        Assert.Equal(1L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM ops.transport_requests WHERE status = 'QUEUED' AND machine_slot_reservation_active AND store_endpoint_reservation_active"));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>("SELECT count(*) FROM integration.rds_tasks"));
     }
 
     [Fact]

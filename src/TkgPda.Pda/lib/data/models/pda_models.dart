@@ -833,10 +833,12 @@ class PartDemandBatchResult {
   const PartDemandBatchResult({
     required this.idempotentReplay,
     required this.items,
+    this.rejectedItems = const [],
   });
 
   final bool idempotentReplay;
   final List<PartDemandResult> items;
+  final List<PartDemandRejection> rejectedItems;
 
   factory PartDemandBatchResult.fromJson(Map<String, dynamic> json) {
     final raw = json['items'];
@@ -849,8 +851,31 @@ class PartDemandBatchResult {
     return PartDemandBatchResult(
       idempotentReplay: json['idempotentReplay'] as bool? ?? false,
       items: items,
+      rejectedItems: (json['rejectedItems'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(PartDemandRejection.fromJson)
+          .toList(growable: false),
     );
   }
+}
+
+class PartDemandRejection {
+  const PartDemandRejection({
+    required this.partId,
+    required this.code,
+    required this.message,
+  });
+
+  final String partId;
+  final String code;
+  final String message;
+
+  factory PartDemandRejection.fromJson(Map<String, dynamic> json) =>
+      PartDemandRejection(
+        partId: json['partId'] as String? ?? '',
+        code: json['code'] as String? ?? '',
+        message: json['message'] as String? ?? 'Talep oluşturulamadı.',
+      );
 }
 
 class OperationalContext {

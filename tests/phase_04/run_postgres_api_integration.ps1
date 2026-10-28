@@ -34,12 +34,14 @@ try {
     Invoke-Checked (Join-Path $PgBin 'initdb.exe') @(
         '-D', $dataDir, '-U', 'postgres', '-A', 'trust', '--no-locale', '-E', 'UTF8'
     )
-    Invoke-Checked (Join-Path $PgBin 'pg_ctl.exe') @(
-        '-D', $dataDir,
-        '-l', (Join-Path $tempRoot 'postgres.log'),
-        '-o', "-p $Port -h 127.0.0.1",
-        '-w', 'start'
-    )
+    # Detach the server from the caller's output handles on Windows. Otherwise
+    # redirected CI/agent output can wait on postgres after pg_ctl has exited.
+    $pgStart = Start-Process -FilePath (Join-Path $PgBin 'pg_ctl.exe') -WindowStyle Hidden -PassThru `
+        -ArgumentList @('-D', ('"' + $dataDir + '"'), '-l', ('"' + (Join-Path $tempRoot 'postgres.log') + '"'),
+            '-o', ('"-p ' + $Port + ' -h 127.0.0.1"'), '-w', 'start') `
+        -RedirectStandardOutput (Join-Path $tempRoot 'pg-start.out') `
+        -RedirectStandardError (Join-Path $tempRoot 'pg-start.err')
+    if (-not $pgStart.WaitForExit(30000) -or $pgStart.ExitCode -ne 0) { throw 'Isolated PostgreSQL failed to start.' }
     $started = $true
 
     Invoke-Checked (Join-Path $PgBin 'createdb.exe') @(
@@ -86,6 +88,7 @@ try {
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\036_deferred_transport_resources.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\039_cancelled_preparation_cleanup.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\042_user_machine_permission_consistency.sql')))
+    Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\migrations\043_part_demand_batch_results.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\004_finished_goods_internal_locations.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002a_customer_textual_master_data.sql')))
     Invoke-Checked $psql ($common + @('-f', (Join-Path $projectRoot 'db\seeds\generated\002b_customer_physical_layouts.sql')))

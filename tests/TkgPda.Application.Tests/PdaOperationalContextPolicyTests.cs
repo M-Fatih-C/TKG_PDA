@@ -6,6 +6,22 @@ namespace TkgPda.Application.Tests;
 
 public sealed class PdaOperationalContextPolicyTests
 {
+    [Theory]
+    [InlineData("QUEUE_CONFIGURATION_REQUIRED", "tanımı")]
+    [InlineData("QUEUE_STORE_CAPACITY", "depo")]
+    [InlineData("QUEUE_PHYSICAL_STATE_UNKNOWN", "Fiziksel")]
+    [InlineData("QUEUE_MACHINE_BUSY", "önceki")]
+    public void Queued_blocker_uses_safe_business_wording_without_changing_execution_state(string code, string wording)
+    {
+        var projection = PdaExecutionProjector.Project(Request(TransportRequestStatus.Queued,
+            failureCode: code, failureMessage: "SECRET-MAPPING-INTERNAL"));
+        Assert.Equal("QUEUED", projection.State);
+        Assert.Equal(code, projection.FailureCode);
+        Assert.Equal("QUEUE", projection.FailureCategory);
+        Assert.Contains(wording, projection.OperatorMessage!);
+        Assert.DoesNotContain("SECRET", projection.OperatorMessage!);
+    }
+
     [Fact]
     public void Machine_region_exposes_no_enabled_transport_action()
     {

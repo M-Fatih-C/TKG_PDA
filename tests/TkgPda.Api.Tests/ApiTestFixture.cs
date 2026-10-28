@@ -63,6 +63,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>
         await ExecuteScriptAsync(MigrationFile("036_deferred_transport_resources.sql"));
         await ExecuteScriptAsync(MigrationFile("039_cancelled_preparation_cleanup.sql"));
         await ExecuteScriptAsync(MigrationFile("042_user_machine_permission_consistency.sql"));
+        await ExecuteScriptAsync(MigrationFile("043_part_demand_batch_results.sql"));
         RdsClient.Reset();
         RdsCoreDiscoveryClient.Reset();
         await ExecuteAsync(

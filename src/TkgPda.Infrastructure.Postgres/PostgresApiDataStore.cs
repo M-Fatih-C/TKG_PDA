@@ -696,7 +696,13 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
                    r.requested_by, u.username,
                    r.source_slot_id, r.destination_slot_id,
                    r.product_group_id, r.part_id, r.container_type_id,
-                   r.priority, r.created_at, r.failure_code, r.failure_message,
+                   r.priority, r.created_at,
+                   COALESCE(r.failure_code, CASE WHEN r.status = 'QUEUED' AND (
+                       NOT r.machine_slot_reservation_active OR NOT r.store_endpoint_reservation_active
+                       OR EXISTS (SELECT 1 FROM ops.transport_request_dependencies d
+                           JOIN ops.transport_requests pred ON pred.id = d.predecessor_request_id
+                           WHERE d.successor_request_id = r.id AND pred.status <> 'COMPLETED'))
+                       THEN queue_wait.code END), r.failure_message,
                    r.correlation_id,
                    rt.id, rt.rds_task_record_id, rt.rds_task_label,
                    rt.out_order_no, rt.agv_id, rt.rds_status, rt.ended_reason,
@@ -755,6 +761,13 @@ public sealed class PostgresApiDataStore(NpgsqlDataSource dataSource, RdsPhysica
             LEFT JOIN master.product_group_parts pgp
                    ON pgp.product_group_id = r.product_group_id AND pgp.part_id = r.part_id
             LEFT JOIN integration.rds_tasks rt ON rt.transport_request_id = r.id
+            LEFT JOIN LATERAL (
+                SELECT e.data_json ->> 'code' AS code
+                FROM ops.transport_request_events e
+                WHERE e.transport_request_id = r.id
+                  AND e.event_type IN ('QUEUE_WAITING', 'QUEUE_READY')
+                ORDER BY e.created_at DESC, e.id DESC LIMIT 1
+            ) queue_wait ON true
             WHERE r.machine_id = @machine_id
               AND r.status IN ('CREATED','VALIDATING','QUEUED','SENT_TO_RDS','RUNNING')
             ORDER BY r.created_at DESC, r.request_no DESC

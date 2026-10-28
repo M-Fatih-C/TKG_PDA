@@ -941,6 +941,17 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
     public async Task New_production_can_create_an_independent_demand_while_old_cleanup_runs()
     {
         var setup = await OccupyAsync(1, "FULL");
+        var altSlot = await fixture.ScalarAsync<Guid>(
+            """
+            SELECT s.id FROM master.layout_slots s
+            WHERE s.layout_id = @layout AND s.is_enabled AND s.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE', 'DROP')
+              AND NOT EXISTS (SELECT 1 FROM master.layout_slot_parts mapping
+                  JOIN master.product_groups product ON product.main_part_id = mapping.part_id
+                      AND product.variant_id = @variant AND product.is_active
+                  WHERE mapping.layout_slot_id = s.id)
+            ORDER BY s.display_order, s.code LIMIT 1
+            """, ("layout", setup.Context.LayoutId), ("variant", setup.Context.VariantId));
+        await fixture.SetSlotAsync(altSlot, "VACANT", "UNKNOWN");
         var alt = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code) VALUES (@code) RETURNING id", ("code", "PE-ALT-" + Guid.NewGuid().ToString("N")[..8]));
         var container = await fixture.ScalarAsync<Guid>("SELECT id FROM master.container_types ORDER BY code LIMIT 1");
         await fixture.ExecuteAsync("""
@@ -949,11 +960,12 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
             """, ("group", setup.Group), ("part", alt), ("container", container));
         await fixture.ExecuteAsync(
             "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part)",
-            ("slot", setup.Slots[0]),
+            ("slot", altSlot),
             ("part", alt));
         using var client = await fixture.LoginClientAsync(setup.User);
         var oldSession = await StartAsync(client, setup, "production-start-old");
-        (await EndAsync(client, setup, oldSession.Id, "end-background-alt")).EnsureSuccessStatusCode();
+        var ended = await EndAsync(client, setup, oldSession.Id, "end-background-alt");
+        Assert.True(ended.IsSuccessStatusCode, await ended.Content.ReadAsStringAsync());
         var cleanupId = await fixture.ScalarAsync<Guid>("SELECT transport_request_id FROM ops.production_end_run_items");
         var newSession = await StartAsync(client, setup, "production-start-new");
 
@@ -964,6 +976,7 @@ public sealed class ProductionEndCleanupApiTests(ApiTestFixture fixture) : IClas
         demand.Headers.Add(ApiHeaders.IdempotencyKey, "alt-after-background-end");
         var response = await client.SendAsync(demand);
 
+        Assert.True(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         Assert.Equal(2L, await fixture.ScalarAsync<long>("SELECT count(*) FROM ops.transport_requests"));
         Assert.Equal(oldSession.Id, await fixture.ScalarAsync<Guid>(
