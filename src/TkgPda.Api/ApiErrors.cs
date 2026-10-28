@@ -181,6 +181,7 @@ public sealed class ApiExceptionMiddleware(RequestDelegate next, ILogger<ApiExce
         {
             "WEAK_PASSWORD" or "INVALID_FIELD" or "INVALID_ENUM_VALUE" or "INVALID_JSON_OBJECT"
                 or "ID_REQUIRED" or "ROLE_REQUIRED" or "UNKNOWN_ROLE" or "CONCURRENCY_TOKEN_REQUIRED"
+                or "MACHINE_VIEW_PERMISSION_REQUIRED"
                 => StatusCodes.Status400BadRequest,
             "INVALID_SLOT_GEOMETRY" or "INVALID_CONTAINER_DIMENSIONS"
                 => StatusCodes.Status422UnprocessableEntity,

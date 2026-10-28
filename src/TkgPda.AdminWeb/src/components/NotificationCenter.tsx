@@ -3,6 +3,7 @@ import { AlertCircle, AlertTriangle, Bell, CheckCheck, ExternalLink, Info, X } f
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAdminApi } from '../api/ApiContext'
+import type { DataIssue } from '../api/types'
 
 export interface NotificationItem {
   id: string
@@ -91,12 +92,19 @@ export function NotificationCenter() {
     const items: NotificationItem[] = []
 
     // 1. Critical Data Quality Issues
-    const highIssues = (issuesQuery.data ?? []).filter((i) => i.severity === 'HIGH')
-    highIssues.forEach((issue) => {
+    const highIssueGroups = new Map<string, { issue: DataIssue; count: number }>()
+    for (const issue of (issuesQuery.data ?? []).filter((item) => item.severity === 'HIGH')) {
+      const groupKey = `${issue.kind}:${issue.code}:${issue.message}`
+      const existing = highIssueGroups.get(groupKey)
+      highIssueGroups.set(groupKey, existing
+        ? { issue: existing.issue, count: existing.count + 1 }
+        : { issue, count: 1 })
+    }
+    highIssueGroups.forEach(({ issue, count }, groupKey) => {
       items.push({
-        id: `issue:${issue.kind}:${issue.entityId}:${issue.code}`,
-        title: `Veri Kalite Uyarısı: ${issue.code}`,
-        message: issue.message,
+        id: `issue:${groupKey}`,
+        title: `Veri Kalite Uyarısı: ${issue.code}${count > 1 ? ` (${count} kayıt)` : ''}`,
+        message: count > 1 ? `${issue.message} Aynı durum ${count} kayıtta bulunuyor.` : issue.message,
         severity: 'danger',
         source: 'Ana Veri',
       })

@@ -191,17 +191,17 @@ public sealed partial class PostgresAdminConfigurationStore(NpgsqlDataSource dat
                 WHERE ppm.source_note IS NOT NULL AND btrim(ppm.source_note) <> ''
                 UNION ALL
                 SELECT 'UNKNOWN_CONTAINER_FOOTPRINT', 'MEDIUM', 'CONTAINER_TYPE', c.id::text, c.code,
-                       'One or more physical footprint dimensions are unknown and remain NULL.'
+                       'Kasa tipinin bir veya daha fazla fiziksel ölçüsü tanımlanmamış.'
                 FROM master.container_types c
                 WHERE c.length_mm IS NULL OR c.width_mm IS NULL OR c.height_mm IS NULL
                 UNION ALL
                 SELECT 'UNRESOLVED_SLOT_PART', 'HIGH', 'LAYOUT_SLOT', s.id::text, s.code,
-                       'The source layout did not prove a canonical part association.'
+                       'Kaynak yerleşimde bu alan için doğrulanmış parça eşleştirmesi bulunmuyor.'
                 FROM master.layout_slots s
                 WHERE COALESCE((s.metadata_json->>'part_association_unresolved')::boolean, false)
                 UNION ALL
                 SELECT 'UNRESOLVED_SLOT_CONTAINER', 'HIGH', 'LAYOUT_SLOT', s.id::text, s.code,
-                       'The source layout did not prove a container association.'
+                       'Kaynak yerleşimde bu alan için doğrulanmış kasa veya palet eşleştirmesi bulunmuyor.'
                 FROM master.layout_slots s
                 WHERE COALESCE((s.metadata_json->>'container_association_unresolved')::boolean, false)
                 UNION ALL

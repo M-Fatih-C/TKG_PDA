@@ -16,6 +16,10 @@ void main() {
           'Malzeme konumunun durumu çelişkili. Durumu kontrol edip yenileyin.',
       'PART_SLOT_NOT_CONFIGURED':
           'Bu parçanın makine konumu eşleşmemiş. Sistem yöneticisine başvurun.',
+      'PART_SLOT_CONTAINER_MISMATCH':
+          'Parçanın kasa tipi ile makine konumu uyuşmuyor. Sistem yöneticisine başvurun.',
+      'CONTAINER_CONFLICT':
+          'Parçanın kasa tipi ile makine konumu uyuşmuyor. Sistem yöneticisine başvurun.',
       'PART_DEMAND_DUPLICATE': 'Aynı alt parçayı toplu talepte bir kez seçin.',
       'PRODUCTION_SESSION_NOT_FOUND':
           'Bu makinede açık üretim bulunamadı. Üretim durumunu yenileyin.',

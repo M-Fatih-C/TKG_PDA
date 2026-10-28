@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowUpRight, Bot, Boxes, PackageOpen, RadioTower, Refre
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAdminApi } from '../api/ApiContext'
-import { Button, EmptyState, ErrorState, LoadingState, PageHeader, Panel, PanelHeader, StatusPill, compactNumber, formatDate } from '../components/ui'
+import { Button, EmptyState, ErrorState, InfoBox, LoadingState, PageHeader, Panel, PanelHeader, StatusPill, compactNumber, formatDate } from '../components/ui'
 import { auditActionLabel, auditEntityLabel } from '../displayLabels'
 
 export function DashboardPage() {
@@ -115,6 +115,8 @@ export function DashboardPage() {
         }
       />
 
+      <InfoBox title="Genel bakış nasıl okunur?">Bu ekran anlık operasyon ve bağlantı özetidir. Uyarı görülen karta tıklayarak ilgili yönetim sayfasındaki ayrıntıya ulaşabilirsiniz; kartlar tek başına robot komutu oluşturmaz.</InfoBox>
+
       <div className="stat-grid">
         {cards.map(({ label, value, meta, icon: Icon, to, tone }) => (
           <Link className={`stat-card stat-card--${tone}`} to={to} key={label}>
@@ -164,7 +166,7 @@ export function DashboardPage() {
               <strong>{activeRobots}</strong>
             </div>
             <div>
-              <span><PackageOpen /> Ölçüsü Eksik Kasalar</span>
+              <span><PackageOpen /> Fiziksel Ölçüsü Netleşmemiş Kasa Tipleri</span>
               <strong>{containers.data?.filter((item) => item.lengthMm === null || item.widthMm === null || item.heightMm === null).length ?? 0}</strong>
             </div>
           </div>

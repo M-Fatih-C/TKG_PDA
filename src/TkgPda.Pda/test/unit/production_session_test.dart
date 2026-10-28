@@ -103,6 +103,52 @@ void main() {
     expect(repo.lastContainerPositionPartId, testMainPartId);
   });
 
+  test(
+    'partial alt batch keeps only correctable rejections and uses a new retry key',
+    () async {
+      final repo = FakePdaRepository()..productionValue = productionRecord();
+      final c = await controller(repo);
+      final first = c.selectedMainPart!.relatedParts.first;
+      const second = MachineRelatedPart(
+        partId: 'another-alt',
+        partCode: 'ALT-B',
+        relationType: 'ALT_PART',
+        description: null,
+      );
+      c.enterBatchSelection();
+      await c.requestAltPart(first);
+      await c.requestAltPart(second);
+      repo.partDemandBatchResponse = PartDemandBatchResult.fromJson({
+        'idempotentReplay': false,
+        'items': [],
+        'rejectedItems': [
+          {
+            'partId': first.partId,
+            'code': 'PART_REQUEST_ALREADY_ACTIVE',
+            'message': 'Talep #10 zaten sırada.',
+          },
+          {
+            'partId': second.partId,
+            'code': 'PART_SLOT_NOT_CONFIGURED',
+            'message': 'Alan tanımı eksik.',
+          },
+        ],
+      });
+      await c.submitSelectedAltParts();
+      expect(c.selectedAltParts.map((part) => part.partId), [second.partId]);
+      expect(c.batchMode, isTrue);
+      expect(c.notice, contains('Talep #10'));
+      expect(c.notice, contains('ALT-B: Alan tanımı eksik.'));
+      final firstKey = repo.lastPartDemandKey;
+      repo.partDemandBatchResponse = null;
+      await c.submitSelectedAltParts();
+      expect(repo.lastPartDemandKey, isNot(firstKey));
+      expect(repo.lastPartDemandIds, [second.partId]);
+      expect(c.selectedAltParts, isEmpty);
+      expect(c.batchMode, isFalse);
+    },
+  );
+
   test('alt part batch selection does not retarget mamul kasa', () async {
     final repo = FakePdaRepository();
     final c = await controller(repo);

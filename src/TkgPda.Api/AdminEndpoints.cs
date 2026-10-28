@@ -433,7 +433,7 @@ public static class AdminEndpoints
         var username = request.Username?.Trim().ToLowerInvariant() ?? string.Empty;
         if (username.Length is < 1 or > 100 || string.IsNullOrEmpty(request.Password) || request.Password.Length > 256)
         {
-            throw new ApiException(StatusCodes.Status400BadRequest, "INVALID_LOGIN_REQUEST", "Username and password are required and must fit the supported limits.");
+            throw new ApiException(StatusCodes.Status400BadRequest, "INVALID_LOGIN_REQUEST", "Kullanıcı adı ve parola zorunludur; desteklenen uzunluk sınırlarına uygun olmalıdır.");
         }
 
         var user = await dataStore.FindUserByUsernameAsync(username, cancellationToken);
@@ -443,7 +443,7 @@ public static class AdminEndpoints
         if (user is null || !user.IsActive || !passwordValid || !user.Roles.Contains(RoleCodes.Admin, StringComparer.Ordinal))
         {
             await WriteLoginAuditAsync(dataStore, context, null, "ADMIN_WEB_LOGIN_FAILED", username, new { reason = "INVALID_CREDENTIALS" }, cancellationToken);
-            throw new ApiException(StatusCodes.Status401Unauthorized, "INVALID_CREDENTIALS", "The username or password is invalid.");
+            throw new ApiException(StatusCodes.Status401Unauthorized, "INVALID_CREDENTIALS", "Kullanıcı adı veya parola geçersiz.");
         }
 
         await dataStore.MarkLoginSucceededAsync(user.Id, cancellationToken);

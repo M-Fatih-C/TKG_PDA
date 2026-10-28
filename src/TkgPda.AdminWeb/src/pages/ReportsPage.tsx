@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAdminApi } from '../api/ApiContext'
 import type { ReportWindow, TaskReportRow } from '../api/types'
-import { Button, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, SelectInput, StatusPill, TableFrame, TextInput } from '../components/ui'
+import { Button, EmptyState, ErrorState, Field, InfoBox, LoadingState, PageHeader, Panel, SelectInput, StatusPill, TableFrame, TextInput } from '../components/ui'
 
 type Tab = 'tasks' | 'sessions' | 'summary' | 'failures'
 type Preset = 'today' | '7' | '30' | 'month' | 'custom'
@@ -51,6 +51,7 @@ export function ReportsPage() {
         description="Taşıma görevleri, operatör oturumları ve operasyonel dönem analizleri."
         actions={<div className="no-print"><Button variant="secondary" onClick={() => void api.downloadReport(tab === 'sessions' ? 'sessions' : 'tasks', range, tab === 'sessions' ? 'TKG_Oturum_Raporu.xlsx' : 'TKG_Gorev_Raporu.xlsx')}>Excel indir</Button><Button variant="ghost" onClick={() => window.print()}>Yazdır</Button></div>}
       />
+      <InfoBox className="no-print" title="Rapor kapsamı">Tarih ve alan filtreleri hem ekrandaki sonuçlara hem de indirilen Excel dosyasına uygulanır. Süreler saat:dakika:saniye biçiminde gösterilir; görev ayrıntısında hazırlık ve robot süreleri ayrıca incelenebilir.</InfoBox>
       <div className="no-print report-toolbar">
         {presets.map((item) => <Button key={item.id} size="sm" variant={preset === item.id ? 'primary' : 'secondary'} onClick={() => applyPreset(item.id)}>{item.label}</Button>)}
         {preset === 'custom' && <>
@@ -162,7 +163,7 @@ function tone(status: string): 'success' | 'danger' | 'warning' | 'info' {
 
 function machineText(state: string, code: string | null) {
   if (state === 'UNKNOWN') return 'Geçmiş makine bilgisi kayıtlı değil'
-  if (state === 'UNBOUND') return 'Bağlı makine yok'
+  if (state === 'UNBOUND') return 'Serbest saha / depo cihazı'
   return code ?? 'Bilgi yok'
 }
 

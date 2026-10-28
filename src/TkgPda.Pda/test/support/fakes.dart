@@ -669,6 +669,7 @@ class FakePdaRepository implements PdaDataSource {
   List<String> lastPartDemandIds = const [];
   String? lastPartDemandKey;
   Object? partDemandError;
+  PartDemandBatchResult? partDemandBatchResponse;
 
   @override
   Future<PartDemandResult> createPartDemand({
@@ -698,6 +699,7 @@ class FakePdaRepository implements PdaDataSource {
     partDemandBatchCount++;
     lastPartDemandIds = partIds;
     lastPartDemandKey = idempotencyKey;
+    if (partDemandBatchResponse case final response?) return response;
     return PartDemandBatchResult(
       idempotentReplay: false,
       items: [

@@ -237,6 +237,27 @@ public sealed class OperationalReportingApiTests(ApiTestFixture fixture) : IClas
         Assert.Equal("UNKNOWN", expiredRow.MachineState);
         Assert.Null(expiredRow.MachineCode);
 
+        var staleUser = await fixture.SeedIdentityAsync(role: RoleCodes.LineOperator, machineCode: "SH-01-A", employeeNo: "9911");
+        var staleSession = Guid.NewGuid();
+        var staleCreated = WindowStart.AddDays(3);
+        await fixture.ExecuteAsync(
+            """
+            INSERT INTO auth.user_sessions (id, user_id, device_id, created_at, last_seen_at, lease_expires_at, token_expires_at, revoked_at, revocation_reason)
+            VALUES (@id, @user, @device, @created, @created, @lease, @token, NULL, NULL)
+            """,
+            ("id", staleSession), ("user", staleUser.UserId), ("device", staleUser.DeviceId),
+            ("created", staleCreated), ("lease", staleCreated.AddMinutes(5)), ("token", WindowEnd));
+
+        var stale = await client.GetFromJsonAsync<SessionPage>($"{Report("sessions")}&employeeNo=9911");
+        var staleRow = Assert.Single(stale!.Items);
+        Assert.Equal("Süre doldu", staleRow.StatusLabel);
+        Assert.Equal(300, staleRow.DurationSeconds);
+
+        var activeOnly = await client.GetFromJsonAsync<SessionPage>($"{Report("sessions")}&employeeNo=9911&activity=active");
+        Assert.Empty(activeOnly!.Items);
+        var endedOnly = await client.GetFromJsonAsync<SessionPage>($"{Report("sessions")}&employeeNo=9911&activity=ended&endReason=LEASE_EXPIRED");
+        Assert.Single(endedOnly!.Items);
+
         var excel = await client.GetAsync($"/api/v1/admin/reports/sessions/export.xlsx?from={Uri.EscapeDataString(WindowStart.ToString("O"))}&to={Uri.EscapeDataString(WindowEnd.ToString("O"))}&employeeNo=4455");
         excel.EnsureSuccessStatusCode();
         await using var excelStream = await excel.Content.ReadAsStreamAsync();

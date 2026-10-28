@@ -1,4 +1,4 @@
-import { AlertTriangle, Inbox, LoaderCircle, RefreshCw, Search, X } from 'lucide-react'
+import { AlertTriangle, CircleHelp, Inbox, LoaderCircle, RefreshCw, Search, X } from 'lucide-react'
 import type { ButtonHTMLAttributes, InputHTMLAttributes, PropsWithChildren, ReactNode, SelectHTMLAttributes } from 'react'
 import { ApiProblem } from '../api/client'
 import { displayStatusLabel } from '../displayLabels'
@@ -26,6 +26,10 @@ export function Panel({ children, className = '' }: PropsWithChildren<{ classNam
 
 export function PanelHeader({ title, description, action }: { title: string; description?: string; action?: ReactNode }) {
   return <div className="panel-header"><div><h2>{title}</h2>{description && <p>{description}</p>}</div>{action}</div>
+}
+
+export function InfoBox({ title, children, tone = 'info', className = '' }: PropsWithChildren<{ title: string; tone?: 'info' | 'warning'; className?: string }>) {
+  return <aside className={`info-box info-box--${tone} ${className}`} aria-label={`${title} bilgisi`}><CircleHelp size={20} /><div><strong>{title}</strong><span>{children}</span></div></aside>
 }
 
 export function StatusPill({ value, tone }: { value: string; tone?: 'success' | 'warning' | 'danger' | 'neutral' | 'info' }) {

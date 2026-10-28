@@ -21,11 +21,18 @@ public sealed record PartDemandResult(
     TransportRequestSnapshot? Predecessor,
     bool WasIdempotentReplay);
 
+public sealed record PartDemandRejection(Guid PartId, string Code, string Message);
+
+public sealed record PartDemandBatchResult(
+    IReadOnlyList<PartDemandResult> Items,
+    IReadOnlyList<PartDemandRejection> RejectedItems,
+    bool WasIdempotentReplay);
+
 public interface IPartDemandStore
 {
     Task<PartDemandResult> CreateAsync(PartDemandCommand command, CancellationToken cancellationToken = default);
 
-    Task<IReadOnlyList<PartDemandResult>> CreateBatchAsync(PartDemandBatchCommand command, CancellationToken cancellationToken = default);
+    Task<PartDemandBatchResult> CreateBatchAsync(PartDemandBatchCommand command, CancellationToken cancellationToken = default);
 }
 
 public sealed class PartDemandService(IPartDemandStore store)
@@ -37,7 +44,7 @@ public sealed class PartDemandService(IPartDemandStore store)
         return store.CreateAsync(command, cancellationToken);
     }
 
-    public Task<IReadOnlyList<PartDemandResult>> CreateBatchAsync(PartDemandBatchCommand command, CancellationToken cancellationToken = default)
+    public Task<PartDemandBatchResult> CreateBatchAsync(PartDemandBatchCommand command, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
         Validate(command.IdempotencyKey, command.ActorUserId, command.MachineId, command.PartIds);

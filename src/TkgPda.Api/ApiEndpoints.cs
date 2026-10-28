@@ -726,7 +726,7 @@ public static class ApiEndpoints
                 request.PartIds ?? [],
                 OperationalContext(context)),
             cancellationToken);
-        var replay = results.Count > 0 && results.All(item => item.WasIdempotentReplay);
+        var replay = results.WasIdempotentReplay;
         context.Response.Headers[ApiHeaders.IdempotencyReplayed] = replay ? "true" : "false";
         await WriteAuditAsync(
             dataStore,
@@ -736,11 +736,11 @@ public static class ApiEndpoints
             replay ? "PART_DEMAND_BATCH_REPLAYED" : "PART_DEMAND_BATCH_CREATED",
             "TRANSPORT_BATCH",
             machineId.ToString(),
-            new { itemCount = results.Count },
+            new { itemCount = results.Items.Count, rejectedCount = results.RejectedItems.Count },
             cancellationToken);
         return Results.Json(
-            new PartDemandBatchHttpResponse(replay, results.Select(ToPartDemandResponse).ToArray()),
-            statusCode: replay ? StatusCodes.Status200OK : StatusCodes.Status201Created);
+            new PartDemandBatchHttpResponse(replay, results.Items.Select(ToPartDemandResponse).ToArray(), results.RejectedItems),
+            statusCode: replay || results.Items.Count == 0 ? StatusCodes.Status200OK : StatusCodes.Status201Created);
     }
 
     private static void EnsurePartDemandAllowed(ClaimsPrincipal principal)

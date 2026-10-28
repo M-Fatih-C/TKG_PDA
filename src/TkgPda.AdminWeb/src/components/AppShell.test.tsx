@@ -17,7 +17,7 @@ describe('AppShell navigation', () => {
     expect(screen.getByRole('link', { name: /Cihazlar/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Makine & Varyantlar/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /Denetim Geçmişi/i })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Üretim Bitiş Önceliği/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Üretim Sonu Sırası/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /RDS Entegrasyonu/i })).toBeInTheDocument()
 
     // MUST NOT be present in navigation (WP-01)

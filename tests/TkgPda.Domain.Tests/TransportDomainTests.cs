@@ -167,6 +167,25 @@ public sealed class TransportDomainTests
         Assert.Equal("CONTAINER_CONFLICT", error.Code);
     }
 
+    [Fact]
+    public void Explicit_part_mapping_allows_a_part_container_that_differs_from_slot_default()
+    {
+        var partId = Guid.NewGuid();
+        var containerId = Guid.NewGuid();
+        var request = Request(TransportTaskType.BringFull) with
+        {
+            PartId = partId,
+            ContainerTypeId = containerId
+        };
+        var slot = Slot(request.ReservedSlotId, OccupancyState.Vacant, LoadState.Unknown) with
+        {
+            DefaultContainerTypeId = Guid.NewGuid(),
+            KnownPartIds = new HashSet<Guid> { partId }
+        };
+
+        TransportRules.ValidateReservation(request, slot);
+    }
+
     [Theory]
     [InlineData(TransportTaskType.BringEmpty, OccupancyState.Vacant, LoadState.Unknown)]
     [InlineData(TransportTaskType.RemoveFull, OccupancyState.Occupied, LoadState.Full)]
@@ -210,8 +229,9 @@ public sealed class TransportDomainTests
 
     private static CreateTransportRequest Request(TransportTaskType taskType)
     {
-        Guid? source = taskType == TransportTaskType.BringEmpty ? null : Guid.NewGuid();
-        Guid? destination = taskType == TransportTaskType.BringEmpty ? Guid.NewGuid() : null;
+        var deliversToMachine = taskType is TransportTaskType.BringEmpty or TransportTaskType.BringFull;
+        Guid? source = deliversToMachine ? null : Guid.NewGuid();
+        Guid? destination = deliversToMachine ? Guid.NewGuid() : null;
         return new CreateTransportRequest(
             "test-key",
             RequestOrigin.LineOperator,

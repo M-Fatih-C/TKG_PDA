@@ -132,7 +132,8 @@ public sealed record PartDemandHttpResponse(
 
 public sealed record PartDemandBatchHttpResponse(
     bool IdempotentReplay,
-    IReadOnlyList<PartDemandHttpResponse> Items);
+    IReadOnlyList<PartDemandHttpResponse> Items,
+    IReadOnlyList<PartDemandRejection> RejectedItems);
 
 public sealed record ContainerActionHttpResponse(
     int PositionNumber,

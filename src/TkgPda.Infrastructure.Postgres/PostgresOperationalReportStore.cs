@@ -167,8 +167,21 @@ public sealed class PostgresOperationalReportStore(NpgsqlDataSource dataSource) 
               AND (@employee_no IS NULL OR lower(btrim(u.employee_no)) = lower(btrim(@employee_no)))
               AND (@device_id IS NULL OR s.device_id = @device_id)
               AND (@machine_id IS NULL OR (snap.machine_id IS NOT NULL AND snap.machine_id = @machine_id::text))
-              AND (@activity IS NULL OR (@activity = 'active' AND s.revoked_at IS NULL) OR (@activity = 'ended' AND s.revoked_at IS NOT NULL))
-              AND (@end_reason IS NULL OR s.revocation_reason = @end_reason)
+              AND (@activity IS NULL
+                   OR (@activity = 'active'
+                       AND s.revoked_at IS NULL
+                       AND s.lease_expires_at > clock_timestamp()
+                       AND s.token_expires_at > clock_timestamp())
+                   OR (@activity = 'ended'
+                       AND (s.revoked_at IS NOT NULL
+                            OR s.lease_expires_at <= clock_timestamp()
+                            OR s.token_expires_at <= clock_timestamp())))
+              AND (@end_reason IS NULL OR COALESCE(
+                    s.revocation_reason,
+                    CASE
+                        WHEN s.token_expires_at <= clock_timestamp() THEN 'TOKEN_EXPIRED'
+                        WHEN s.lease_expires_at <= clock_timestamp() THEN 'LEASE_EXPIRED'
+                    END) = @end_reason)
             """;
         var fromSql = """
             FROM auth.user_sessions s
@@ -201,7 +214,19 @@ public sealed class PostgresOperationalReportStore(NpgsqlDataSource dataSource) 
         var items = new List<SessionReportRow>();
         await using (var command = new NpgsqlCommand(
             $"""
-            SELECT s.id, u.id, u.full_name, u.employee_no, u.username, s.created_at, s.revoked_at, s.revocation_reason,
+            SELECT s.id, u.id, u.full_name, u.employee_no, u.username, s.created_at,
+                   CASE
+                       WHEN s.revoked_at IS NOT NULL THEN s.revoked_at
+                       WHEN s.token_expires_at <= clock_timestamp() OR s.lease_expires_at <= clock_timestamp()
+                           THEN LEAST(s.token_expires_at, s.lease_expires_at)
+                       ELSE NULL
+                   END AS effective_ended_at,
+                   COALESCE(
+                       s.revocation_reason,
+                       CASE
+                           WHEN s.token_expires_at <= clock_timestamp() THEN 'TOKEN_EXPIRED'
+                           WHEN s.lease_expires_at <= clock_timestamp() THEN 'LEASE_EXPIRED'
+                       END) AS effective_end_reason,
                    d.id, d.device_code, d.name, d.device_type,
                    snap.machine_id, snap.machine_code,
                    COALESCE((

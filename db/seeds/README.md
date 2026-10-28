@@ -18,6 +18,12 @@ Customer part codes, container types, layout slots, product groups, planning met
 
 Phase 02A implements the textual customer-data portion as a deterministic, source-traceable generated-seed pipeline. Real parts with missing planning inputs are still imported; missing inputs and uncomputable derived metrics remain `NULL`.
 
+`db/seeds/006_blank_alt_part_euro_pallet.sql` records the customer-approved
+operational rule dated 27 October 2026: when an `ALT_PART` container field is
+blank in the source, its transport container is `EURO_PALET`. The supplemental
+seed runs after the generated source seed, preserves every explicit container
+code, and keeps the generated extraction evidence unchanged.
+
 ## Phase 02A generated-seed workflow
 
 Run with the configured Python environment containing `openpyxl==3.1.5`:

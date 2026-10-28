@@ -75,6 +75,7 @@ $seeds = @(
     'db\seeds\generated\003_tkg_rds_variant_commissioning.sql',
     'db\seeds\generated\005_tkg_variant_task_templates.sql',
     'db\seeds\004_finished_goods_internal_locations.sql',
+    'db\seeds\006_blank_alt_part_euro_pallet.sql',
     'db\seeds\generated\002d_simulation_rds_trial_mappings.sql'
 )
 foreach ($s in $seeds) {

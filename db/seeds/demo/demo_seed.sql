@@ -18,7 +18,7 @@ BEGIN
     SELECT id INTO v_sf_wh_role FROM auth.roles WHERE code = 'SEMI_FINISHED_WAREHOUSE_OPERATOR';
     SELECT id INTO v_fg_wh_role FROM auth.roles WHERE code = 'FINISHED_GOODS_WAREHOUSE_OPERATOR';
 
-    -- 1. Demo Users (PBKDF2 hash for 'Admin123!')
+    -- 1. Demo users. Password hashes are provisioned without exposing plaintext credentials.
     -- Free up any conflicting employee numbers assigned to legacy or other test users
     UPDATE auth.users SET employee_no = NULL
     WHERE employee_no IN ('DEV-ADM', 'DEV-SUP', 'DEV-LINE', '1001', 'DEV-WH', '2001', '2002')
@@ -41,11 +41,18 @@ BEGIN
     UPDATE auth.users SET employee_no = '2001' WHERE username = 'dev-wh-semi';
     UPDATE auth.users SET employee_no = '2002' WHERE username = 'dev-wh-finished';
 
-    -- 2. User Roles (Grant SUPERVISOR to operators so they can browse all 9 machines & change variants)
+    -- 2. Demo roles are replaced on every seed replay so removed privileges do not linger.
+    DELETE FROM auth.user_roles ur
+    USING auth.users u
+    WHERE ur.user_id = u.id
+      AND u.username IN ('dev-admin', 'dev-supervisor', 'dev-line', 'operator-1001', 'dev-warehouse', 'dev-wh-semi', 'dev-wh-finished');
+
+    -- The two cross-machine demo operator accounts retain SUPERVISOR deliberately;
+    -- production LINE_OPERATOR accounts remain bound to one physical machine device.
     INSERT INTO auth.user_roles (user_id, role_id)
     SELECT u.id, v_admin_role FROM auth.users u WHERE u.username IN ('dev-admin', 'dev-supervisor') ON CONFLICT DO NOTHING;
     INSERT INTO auth.user_roles (user_id, role_id)
-    SELECT u.id, v_sup_role FROM auth.users u WHERE u.username IN ('dev-admin', 'dev-supervisor', 'dev-line', 'operator-1001') ON CONFLICT DO NOTHING;
+    SELECT u.id, v_sup_role FROM auth.users u WHERE u.username IN ('dev-supervisor', 'dev-line', 'operator-1001') ON CONFLICT DO NOTHING;
     INSERT INTO auth.user_roles (user_id, role_id)
     SELECT u.id, v_line_role FROM auth.users u WHERE u.username IN ('dev-line', 'operator-1001') ON CONFLICT DO NOTHING;
     INSERT INTO auth.user_roles (user_id, role_id)
@@ -75,13 +82,19 @@ BEGIN
     FROM master.machines m WHERE m.is_active
     ON CONFLICT (device_code) DO UPDATE SET name = EXCLUDED.name, machine_id = EXCLUDED.machine_id, is_active = true;
 
-    -- 4. Full Machine Permissions for all demo users across all active machines
+    -- 4. Replace demo machine permissions with the minimum cross-machine demo scope.
+    -- ADMIN has a server-side global bypass; warehouse roles do not need machine permissions.
+    DELETE FROM auth.user_machine_permissions permission
+    USING auth.users u
+    WHERE permission.user_id = u.id
+      AND u.username IN ('dev-admin', 'dev-supervisor', 'dev-line', 'operator-1001', 'dev-warehouse', 'dev-wh-semi', 'dev-wh-finished');
+
     INSERT INTO auth.user_machine_permissions (user_id, machine_id, can_view, can_operate, can_change_variant, can_manage_slots)
-    SELECT u.id, m.id, true, true, true, true
+    SELECT u.id, m.id, true, true, true, false
     FROM auth.users u CROSS JOIN master.machines m
-    WHERE u.username IN ('dev-admin', 'dev-supervisor', 'dev-line', 'operator-1001', 'dev-warehouse') AND m.is_active
+    WHERE u.username IN ('dev-supervisor', 'dev-line', 'operator-1001') AND m.is_active
     ON CONFLICT (user_id, machine_id) DO UPDATE
-    SET can_view = true, can_operate = true, can_change_variant = true, can_manage_slots = true;
+    SET can_view = true, can_operate = true, can_change_variant = true, can_manage_slots = false;
 
     -- 5. Publish All Navigation Profiles so robot route checking is valid
     UPDATE master.navigation_profiles SET status = 'PUBLISHED' WHERE status <> 'PUBLISHED';
@@ -447,15 +460,19 @@ BEGIN
     ON CONFLICT (operation_code) DO UPDATE
     SET priority = EXCLUDED.priority, updated_at = now();
 
-    -- 12. Seed EURO_PALET Container Type and assign to unassigned ALT_PARTs
+    -- 12. Seed EURO_PALET and apply the customer-approved fallback for every
+    -- active ALT_PART whose source container field is blank. Explicit source
+    -- values such as 4311, 4322 and KCK are preserved unchanged.
     INSERT INTO master.container_types (code, name, category, length_mm, width_mm, height_mm)
     VALUES ('EURO_PALET', 'Euro Palet', 'PALLET', 1200, 800, 144)
     ON CONFLICT (code) DO UPDATE
     SET name = EXCLUDED.name, category = EXCLUDED.category, length_mm = EXCLUDED.length_mm, width_mm = EXCLUDED.width_mm, height_mm = EXCLUDED.height_mm;
 
     UPDATE master.product_group_parts
-    SET container_type_id = (SELECT id FROM master.container_types WHERE code = 'EURO_PALET' LIMIT 1)
-    WHERE relation_type = 'ALT_PART' AND container_type_id IS NULL;
+    SET container_type_id = (SELECT id FROM master.container_types WHERE code = 'EURO_PALET' LIMIT 1),
+        updated_at = now()
+    WHERE relation_type = 'ALT_PART'
+      AND container_type_id IS NULL;
 
     -- 13. Clean any unremoved store units so the two finished-goods delivery
     -- positions start empty. Empty-container demand is now prepared against

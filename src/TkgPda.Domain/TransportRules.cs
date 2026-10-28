@@ -89,14 +89,9 @@ public static class TransportRules
                 "Bu parça için makine alanı tanımlı değil.");
         }
 
-        if (request.ContainerTypeId.HasValue
-            && destination.DefaultContainerTypeId.HasValue
-            && destination.DefaultContainerTypeId != request.ContainerTypeId)
-        {
-            throw new WorkflowRuleException(
-                "CONTAINER_CONFLICT",
-                "Talep edilen kasa tipi konumun kaynak verideki kasa tipiyle uyumlu değil.");
-        }
+        // The explicit Part-to-Slot mapping above is the operational routing
+        // authority. DefaultContainerTypeId is baseline presentation metadata,
+        // not a per-part allow-list for a shared machine position.
     }
 
     public static SlotState CancellationState(TransportTaskType taskType, SlotState current) => taskType switch
@@ -237,7 +232,11 @@ public static class TransportRules
 
         if (request.ContainerTypeId.HasValue)
         {
-            if (slot.DefaultContainerTypeId.HasValue && slot.DefaultContainerTypeId != request.ContainerTypeId)
+            var hasExplicitPartMapping = request.PartId.HasValue
+                && slot.KnownPartIds.Contains(request.PartId.Value);
+            if (!hasExplicitPartMapping
+                && slot.DefaultContainerTypeId.HasValue
+                && slot.DefaultContainerTypeId != request.ContainerTypeId)
             {
                 throw new WorkflowRuleException("CONTAINER_CONFLICT", "The requested container conflicts with the slot's source-backed container mapping.");
             }

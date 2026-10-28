@@ -96,6 +96,40 @@ public sealed class OperationalEvidenceApiTests(ApiTestFixture fixture) : IClass
         Assert.Equal("PRODUCTION_END_AREA_MAPPING_INVALID", await ApiTestFixture.ErrorCodeAsync(invalid));
     }
 
+    [Fact]
+    public async Task Area_priority_batch_is_atomic_when_one_mapping_is_invalid()
+    {
+        await fixture.ResetAsync();
+        var context = await fixture.ConfigureMachineAsync();
+        var part = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.parts (part_code) VALUES (@code) RETURNING id",
+            ("code", "AREA-BATCH-" + Guid.NewGuid().ToString("N")[..8]));
+        var group = await fixture.ScalarAsync<Guid>(
+            "INSERT INTO master.product_groups (variant_id, main_part_id, name) VALUES (@variant, @part, 'Toplu alan sırası') RETURNING id",
+            ("variant", context.VariantId),
+            ("part", part));
+        var slot = (await fixture.LogisticsSlotsAsync(context.LayoutId, 1))[0];
+        await fixture.ExecuteAsync(
+            "INSERT INTO master.layout_slot_parts (layout_slot_id, part_id) VALUES (@slot, @part) ON CONFLICT DO NOTHING",
+            ("slot", slot),
+            ("part", part));
+        var admin = await fixture.SeedIdentityAsync(role: RoleCodes.Admin, machineCode: "SH-01-A", bindDeviceToMachine: false);
+        using var client = await fixture.AdminLoginClientAsync(admin);
+
+        var response = await client.PutAsJsonAsync(
+            "/api/v1/admin/production-end-area-priorities/batch",
+            new SetProductionEndAreaPrioritiesHttpRequest([
+                new SetProductionEndAreaPriorityHttpRequest(group, slot, part, 10),
+                new SetProductionEndAreaPriorityHttpRequest(group, Guid.NewGuid(), part, 20),
+            ]));
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal("PRODUCTION_END_AREA_MAPPING_INVALID", await ApiTestFixture.ErrorCodeAsync(response));
+        Assert.Equal(0L, await fixture.ScalarAsync<long>(
+            "SELECT count(*) FROM master.production_end_area_priorities WHERE product_group_id=@group",
+            ("group", group)));
+    }
+
     private sealed record PriorityRow(string OperationCode, int? Priority);
     private sealed record AreaPriorityRow(Guid ProductGroupId, Guid LayoutSlotId, Guid PartId, string PartRole, int? Priority);
 }
