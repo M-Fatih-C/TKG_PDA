@@ -300,11 +300,15 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             "UPDATE ops.machine_runtime_state SET active_navigation_id = @nav WHERE machine_id = @machine",
             ("nav", navigationId), ("machine", context.MachineId));
         var slot = await fixture.ScalarAsync<Guid>("""
-            SELECT id FROM master.layout_slots
-            WHERE layout_id = @layout AND is_enabled AND slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-            ORDER BY display_order, code, id
+            SELECT s.id FROM master.layout_slots s
+            WHERE s.layout_id = @layout AND s.is_enabled AND s.slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
+              AND NOT EXISTS (SELECT 1 FROM master.layout_slot_parts mapping
+                  JOIN master.product_groups product ON product.main_part_id = mapping.part_id
+                      AND product.variant_id = @variant AND product.is_active
+                  WHERE mapping.layout_slot_id = s.id)
+            ORDER BY s.display_order, s.code, s.id
             LIMIT 1
-            """, ("layout", context.LayoutId));
+            """, ("layout", context.LayoutId), ("variant", context.VariantId));
         var position = await fixture.ScalarAsync<int>("""
             SELECT position_number FROM (
                 SELECT id, row_number() OVER (ORDER BY display_order, code, id)::int AS position_number
