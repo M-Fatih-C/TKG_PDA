@@ -309,14 +309,9 @@ public sealed class PresentationExecutionAlignmentApiTests(ApiTestFixture fixtur
             ORDER BY s.display_order, s.code, s.id
             LIMIT 1
             """, ("layout", context.LayoutId), ("variant", context.VariantId));
-        var position = await fixture.ScalarAsync<int>("""
-            SELECT position_number FROM (
-                SELECT id, row_number() OVER (ORDER BY display_order, code, id)::int AS position_number
-                FROM master.layout_slots
-                WHERE layout_id = @layout AND is_enabled AND slot_role NOT IN ('MACHINE', 'EMPTY_STORAGE')
-            ) numbered
-            WHERE id = @slot
-            """, ("layout", context.LayoutId), ("slot", slot));
+        // Logical container numbering is part-scoped. The synthetic main part
+        // below is mapped to exactly one position, regardless of layout order.
+        const int position = 1;
         var main = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code, description) VALUES ('P05-ALIGN-MAIN', 'Mamul') RETURNING id");
         var alt = await fixture.ScalarAsync<Guid>("INSERT INTO master.parts (part_code, description) VALUES ('P05-ALIGN-ALT', 'Alt') RETURNING id");
         var group = await fixture.ScalarAsync<Guid>(
